@@ -88,6 +88,15 @@ function UserMessage({ text, time, sessionId, seq }: { text: string; time: numbe
             <button
               className="mm-item"
               onClick={() => {
+                if (sessionId) void appStore.forkAt(sessionId, seq);
+                setMenu(null);
+              }}
+            >
+              分叉
+            </button>
+            <button
+              className="mm-item"
+              onClick={() => {
                 if (sessionId) {
                   void (async () => {
                     try {
@@ -124,7 +133,7 @@ function UserMessage({ text, time, sessionId, seq }: { text: string; time: numbe
   );
 }
 
-function AssistantMessage({ ev }: { ev: HistoryEntryLike["event"] }) {
+function AssistantMessage({ ev, sessionId }: { ev: HistoryEntryLike["event"]; sessionId?: SessionId }) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const data = ev.data as { message?: { content?: unknown }; content?: unknown };
   const blocks = (data?.message?.content ?? data?.content) as Array<{ type?: string; text?: string; thinking?: string }> | undefined;
@@ -165,6 +174,15 @@ function AssistantMessage({ ev }: { ev: HistoryEntryLike["event"] }) {
             >
               复制
             </button>
+            <button
+              className="mm-item"
+              onClick={() => {
+                if (sessionId) void appStore.forkAt(sessionId, ev.seq);
+                setMenu(null);
+              }}
+            >
+              分叉
+            </button>
           </div>
         </>
       )}
@@ -184,7 +202,7 @@ export function EventRow({ item, sessionId }: { item: HistoryEntryLike; sessionI
       return <UserMessage text={text || "(空)"} time={ev.time} sessionId={sessionId} seq={ev.seq} />;
     }
     case "assistant/message": {
-      return <AssistantMessage ev={ev} />;
+      return <AssistantMessage ev={ev} sessionId={sessionId} />;
     }
 case "assistant/chunk":
     case "session/title":
@@ -285,7 +303,7 @@ export function LiveAssistantRow() {
     <div className="msg-ai live">
       <div className="msg-time">生成中…</div>
       {stream.reasoning && (
-        <details className="reasoning-details" open>
+        <details className="reasoning-details" open={!stream.text}>
           <summary>思考过程</summary>
           <div className="reasoning-body">{stream.reasoning}</div>
         </details>

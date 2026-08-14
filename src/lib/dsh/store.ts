@@ -708,6 +708,24 @@ class AppStore {
     }
   }
 
+  /** 从某条消息处把会话分叉为新会话（dsh 语义：atSeq=消息 seq，包含该消息所在整轮）。 */
+  async forkAt(sessionId: SessionId, seq: number): Promise<void> {
+    const api = this.requireApi();
+    try {
+      const r = await api.sessions.fork({ sessionId, atSeq: seq });
+      if (!r.result.ok) {
+        this.set({ error: `分叉失败: ${r.result.error.code}: ${r.result.error.message}` });
+        return;
+      }
+      const newId = r.result.value.sessionId;
+      this.set({ selectedSessionId: newId });
+      await this.refreshSessions();
+      await this.loadHistory(newId);
+    } catch (e) {
+      this.set({ error: `分叉失败: ${String(e)}` });
+    }
+  }
+
   togglePinned(sessionId: SessionId): void {
     const list = this.state.pinnedSessions.includes(sessionId)
       ? this.state.pinnedSessions.filter((id) => id !== sessionId)
