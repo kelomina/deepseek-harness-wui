@@ -3,6 +3,10 @@ import { dsh, type DshConfig, type ExecMode } from "../lib/tauri";
 import { appStore, useAppState } from "../lib/dsh/store";
 import type { ConfigurableProviderView, SettingsPathOpView } from "@deepseek-ai/dsh-host-apiproxy/api";
 
+type ModelRow = { id: string; name: string; context: string };
+
+const emptyModelRow = (): ModelRow => ({ id: "", name: "", context: "" });
+
 interface ProviderEdit {
   ns: "llm-deepseek" | "llm-pi-ai";
   routeKey: string;
@@ -10,27 +14,29 @@ interface ProviderEdit {
   api: string;
   apiKeyEnv: string;
   baseURL: string;
-  modelId: string;
-  modelName: string;
-  modelContext: string;
+  models: ModelRow[];
   keyDraft: string;
 }
 
 function buildModels(edit: ProviderEdit): Array<{ id: string; name: string; contextWindow?: number }> {
-  const id = edit.modelId.trim();
-  const ctx = edit.modelContext.trim();
-  const model: { id: string; name: string; contextWindow?: number } = {
-    id,
-    name: edit.modelName.trim() || id,
-  };
-  if (ctx) {
-    const n = Number(ctx);
-    if (!Number.isFinite(n) || n <= 0) {
-      throw new Error("模型上下文窗口必须是正整数");
+  const out: Array<{ id: string; name: string; contextWindow?: number }> = [];
+  for (const row of edit.models) {
+    const id = row.id.trim();
+    if (!id) continue;
+    const model: { id: string; name: string; contextWindow?: number } = { id, name: row.name.trim() || id };
+    if (row.context.trim()) {
+      const n = Number(row.context.trim());
+      if (!Number.isFinite(n) || n <= 0) {
+        throw new Error(`模型「${id}」的上下文窗口必须是正整数`);
+      }
+      model.contextWindow = n;
     }
-    model.contextWindow = n;
+    out.push(model);
   }
-  return [model];
+  if (out.length === 0) {
+    throw new Error("至少填写一个模型的「请求模型」ID");
+  }
+  return out;
 }
 export function SettingsPage() {
   const { config, status, connected, hiddenPresets } = useAppState();
@@ -64,7 +70,7 @@ export function SettingsPage() {
   }, [refreshProviders]);
 
   const openAdd = () => {
-    setEdit({ ns: "llm-pi-ai", routeKey: "", displayName: "", api: "openai-completions", apiKeyEnv: "", baseURL: "", modelId: "", modelName: "", modelContext: "", keyDraft: "" });
+    setEdit({ ns: "llm-pi-ai", routeKey: "", displayName: "", api: "openai-completions", apiKeyEnv: "", baseURL: "", models: [emptyModelRow()], keyDraft: "" });
     setProviderMsg(null);
     setFormOpen(true);
   };
@@ -73,16 +79,10 @@ export function SettingsPage() {
     setProviderMsg(null);
     let apiKeyEnv = "";
     let baseURL = "";
-    let modelId = "";
-    let modelName = "";
-    let modelContext = "";
+    let models: ModelRow[] = [];
     try {
       const info = await appStore.getSettingsNamespace(p.settingsNs);
       const val = info?.value as { apiKeyEnv?: string; models?: unknown[]; providers?: Record<string, { apiKeyEnv?: string; baseURL?: string; models?: unknown[] }> } | undefined;
-      const firstModel = (() => {
-        const list = (val?.models ?? (val?.providers ? Object.values(val.providers).flatMap((x) => x.models ?? []) : [])) as Array<{ id?: string; name?: string; contextWindow?: number }>;
-        return list[0] ?? null;
-      })();
       if (p.settingsNs === "llm-deepseek") {
         apiKeyEnv = val?.apiKeyEnv ?? "DEEPSEEK_API_KEY";
       } else if (val?.providers) {
@@ -91,11 +91,8 @@ export function SettingsPage() {
         apiKeyEnv = prof?.apiKeyEnv ?? "";
         baseURL = prof?.baseURL ?? "";
       }
-      if (firstModel) {
-        modelId = firstModel.id ?? "";
-        modelName = firstModel.name ?? "";
-        modelContext = firstModel.contextWindow != null ? String(firstModel.contextWindow) : "";
-      }
+      const list = (val?.models ?? (val?.providers ? Object.values(val.providers).flatMap((x) => x.models ?? []) : [])) as Array<{ id?: string; name?: string; contextWindow?: number }>;
+      models = list.map((m) => ({ id: m.id ?? "", name: m.name ?? "", context: m.contextWindow != null ? String(m.contextWindow) : "" }));
     } catch (e) {
       setProviderMsg(String(e));
     }
@@ -106,9 +103,7 @@ export function SettingsPage() {
       api: "openai-completions",
       apiKeyEnv,
       baseURL,
-      modelId,
-      modelName,
-      modelContext,
+      models: models.length ? models : [emptyModelRow()],
       keyDraft: "",
     });
     setFormOpen(true);
@@ -122,7 +117,7 @@ export function SettingsPage() {
       if (edit.apiKeyEnv.trim() && edit.apiKeyEnv.trim() !== "DEEPSEEK_API_KEY") {
         ops.push({ op: "set", path: ["apiKeyEnv"], value: edit.apiKeyEnv.trim() });
       }
-      if (edit.modelId.trim()) {
+      if (edit.models.some((m) => m.id.trim())) {
         try {
           ops.push({ op: "set", path: ["models"], value: buildModels(edit) });
         } catch (e) {
@@ -140,7 +135,7 @@ export function SettingsPage() {
       ops.push({ op: "set", path: [...base, "api"], value: edit.api });
       ops.push({ op: "set", path: [...base, "apiKeyEnv"], value: ref });
       if (edit.baseURL.trim()) ops.push({ op: "set", path: [...base, "baseURL"], value: edit.baseURL.trim() });
-      if (edit.modelId.trim()) {
+      if (edit.models.some((m) => m.id.trim())) {
         try {
           ops.push({ op: "set", path: [...base, "models"], value: buildModels(edit) });
         } catch (e) {
@@ -300,19 +295,41 @@ export function SettingsPage() {
                 <input className="grow" type="password" value={edit.keyDraft} onChange={(e) => setEdit({ ...edit, keyDraft: e.currentTarget.value })} placeholder="输入新值可覆盖；留空则保留已存值" autoComplete="off" />
               </div>
 
-              <div className="f-label">模型（留空则不修改模型列表）</div>
-              <div className="two">
-                <div>
-                  <div className="f-label" style={{ marginTop: 0 }}>请求模型（API 模型 ID）</div>
-                  <input type="text" value={edit.modelId} onChange={(e) => setEdit({ ...edit, modelId: e.currentTarget.value })} placeholder="如 moonshot-v1-8k" />
+              <div className="f-label">模型列表（留空则不修改；默认一个模型，可添加多个）</div>
+              {edit.models.map((m, idx) => (
+                <div key={idx} style={{ border: "1px dashed var(--border)", borderRadius: 8, padding: 10, marginBottom: 8 }}>
+                  <div className="two">
+                    <div>
+                      <div className="f-label" style={{ marginTop: 0 }}>请求模型（API 模型 ID）</div>
+                      <input type="text" value={m.id} onChange={(e) => {
+                        const next = [...edit.models];
+                        next[idx] = { ...m, id: e.currentTarget.value };
+                        setEdit({ ...edit, models: next });
+                      }} placeholder="如 moonshot-v1-8k" />
+                    </div>
+                    <div>
+                      <div className="f-label" style={{ marginTop: 0 }}>显示模型（显示名）</div>
+                      <input type="text" value={m.name} onChange={(e) => {
+                        const next = [...edit.models];
+                        next[idx] = { ...m, name: e.currentTarget.value };
+                        setEdit({ ...edit, models: next });
+                      }} placeholder="留空则同请求模型" />
+                    </div>
+                  </div>
+                  <div className="row" style={{ marginTop: 6, alignItems: "flex-end" }}>
+                    <div style={{ flex: 1 }}>
+                      <div className="f-label" style={{ marginTop: 0 }}>模型上下文窗口（tokens）</div>
+                      <input type="text" value={m.context} onChange={(e) => {
+                        const next = [...edit.models];
+                        next[idx] = { ...m, context: e.currentTarget.value };
+                        setEdit({ ...edit, models: next });
+                      }} placeholder="如 8192" />
+                    </div>
+                    <button className="btn danger-o" disabled={edit.models.length <= 1} onClick={() => setEdit({ ...edit, models: edit.models.filter((_, i) => i !== idx) })}>删除模型</button>
+                  </div>
                 </div>
-                <div>
-                  <div className="f-label" style={{ marginTop: 0 }}>显示模型（显示名）</div>
-                  <input type="text" value={edit.modelName} onChange={(e) => setEdit({ ...edit, modelName: e.currentTarget.value })} placeholder="留空则同请求模型" />
-                </div>
-              </div>
-              <div className="f-label" style={{ marginTop: 0 }}>模型上下文窗口（tokens）</div>
-              <input type="text" value={edit.modelContext} onChange={(e) => setEdit({ ...edit, modelContext: e.currentTarget.value })} placeholder="如 8192" />
+              ))}
+              <button className="btn sm" onClick={() => setEdit({ ...edit, models: [...edit.models, emptyModelRow()] })}>＋ 添加模型</button>
 
               <div className="actions">
                 <button className="btn primary" onClick={() => void saveProvider()}>保存提供商</button>
@@ -368,5 +385,6 @@ export function SettingsPage() {
     </section>
   );
 }
+
 
 
