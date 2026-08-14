@@ -45,8 +45,8 @@ export default function App() {
           onSelectSession={selectSession}
         />
         <main className="main">
-          {view === "welcome" && <WelcomeView onEnterSession={() => setView(mode === "code" ? "code" : "session")} onOpenSettings={() => setView("settings")} />}
-          {view === "session" && <WorkSessionView />}
+          {view === "welcome" && <WelcomeView mode={mode} onEnterSession={() => setView(mode === "code" ? "code" : "session")} onOpenSettings={() => setView("settings")} />}
+          {view === "session" && <WorkSessionView onOpenSettings={() => setView("settings")} />}
           {view === "code" && <CodeView />}
           {view === "status" && <StatusPage />}
           {view === "workspaces" && <WorkspacesPage />}
@@ -57,3 +57,4 @@ export default function App() {
     </>
   );
 }
+

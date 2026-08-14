@@ -7,6 +7,7 @@ import type {
   ConfigurableProviderView,
   CredentialView,
   HostFrame,
+  ModelProviderGroup,
   MuxFrame,
   QuestionResponsePayload,
   RpcId,
@@ -47,6 +48,7 @@ export interface AppState {
   selectedSessionId: SessionId | null;
   activeWorkspaceId: WorkspaceId | null;
   hiddenPresets: string[];
+  selectedModel: { provider: string; model: string } | null;
   history: Map<SessionId, unknown[]>;
   loading: boolean;
   error: string | null;
@@ -66,6 +68,7 @@ const initialState: AppState = {
   selectedSessionId: null,
   activeWorkspaceId: null,
   hiddenPresets: [],
+  selectedModel: null,
   history: new Map(),
   loading: false,
   error: null,
@@ -99,12 +102,15 @@ class AppStore {
     this.started = true;
     const [status, config] = await Promise.all([dsh.status(), dsh.getConfig()]);
     let hiddenPresets: string[] = [];
+    let selectedModel: { provider: string; model: string } | null = null;
     try {
       hiddenPresets = JSON.parse(window.localStorage.getItem("hiddenPresets") ?? "[]") as string[];
+      selectedModel = JSON.parse(window.localStorage.getItem("selectedModel") ?? "null") as { provider: string; model: string } | null;
     } catch {
       hiddenPresets = [];
+      selectedModel = null;
     }
-    this.set({ status, config, hiddenPresets });
+    this.set({ status, config, hiddenPresets, selectedModel });
     this.unlisteners.push(
       await onDshStatus((s) => {
         this.set({ status: s });
@@ -277,6 +283,14 @@ class AppStore {
     if (r.result.ok) {
       const id = r.result.value.sessionId;
       this.set({ selectedSessionId: id });
+      const sel = this.state.selectedModel;
+      if (sel) {
+        try {
+          await api.sessions.selectModel({ sessionId: id, provider: sel.provider, model: sel.model });
+        } catch {
+          // 模型选择失败不阻断会话创建
+        }
+      }
       await this.refreshSessions();
       return id;
     }
@@ -429,6 +443,22 @@ class AppStore {
     }
   }
 
+  async listModels(): Promise<ModelProviderGroup[]> {
+    const api = this.requireApi();
+    const r = await api.llm.models({});
+    if (r.result.ok) return r.result.value.groups;
+    throw new Error(`获取模型目录失败: ${r.result.error.code}: ${r.result.error.message}`);
+  }
+
+  setSelectedModel(sel: { provider: string; model: string } | null): void {
+    try {
+      window.localStorage.setItem("selectedModel", JSON.stringify(sel));
+    } catch {
+      // ignore storage failures
+    }
+    this.set({ selectedModel: sel });
+  }
+
   hidePreset(provider: string): void {
     const list = [...this.state.hiddenPresets.filter((p) => p !== provider), provider];
     try {
@@ -464,6 +494,7 @@ export const appStore = new AppStore();
 export function useAppState(): AppState {
   return useSyncExternalStore(appStore.subscribe, appStore.get);
 }
+
 
 
 

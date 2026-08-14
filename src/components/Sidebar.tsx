@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { SessionSummary } from "@deepseek-ai/dsh-host-apiproxy/api";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { DshStatus } from "../lib/tauri";
@@ -25,6 +26,8 @@ export function Sidebar({
   onNavigate: (v: View) => void;
   onSelectSession: (id: SessionId) => void;
 }) {
+  const [pinnedOpen, setPinnedOpen] = useState(true);
+  const [tasksOpen, setTasksOpen] = useState(true);
   const fmtTime = (ms: number) => {
     const d = new Date(ms);
     const now = new Date();
@@ -42,12 +45,17 @@ export function Sidebar({
         <button className="nav-item" title="自动化（开发中）">自动化</button>
       </nav>
       <div className="side-block">
-        <div className="side-head"><span>置顶</span><span className="arrow">›</span></div>
+        <div className="side-head" onClick={() => setPinnedOpen((v) => !v)}>
+          <span>置顶</span><span className="arrow">{pinnedOpen ? "▾" : "›"}</span>
+        </div>
+        {pinnedOpen && <div className="empty-state" style={{ padding: "6px 4px", textAlign: "left" }}>暂无置顶任务</div>}
       </div>
       <div className="side-block">
-        <div className="side-head"><span>任务列表</span><span className="arrow">›</span></div>
-        {sessions.length === 0 && <div className="empty-state" style={{ padding: "8px 4px" }}>暂无会话</div>}
-        {sessions.map((s) => (
+        <div className="side-head" onClick={() => setTasksOpen((v) => !v)}>
+          <span>任务列表</span><span className="arrow">{tasksOpen ? "▾" : "›"}</span>
+        </div>
+        {tasksOpen && sessions.length === 0 && <div className="empty-state" style={{ padding: "8px 4px" }}>暂无会话</div>}
+        {tasksOpen && sessions.map((s) => (
           <button
             key={s.sessionId}
             className={`task-item${s.sessionId === selectedSessionId && (view === "session" || view === "code") ? " active" : ""}`}
@@ -71,4 +79,6 @@ export function Sidebar({
     </aside>
   );
 }
+
+
 

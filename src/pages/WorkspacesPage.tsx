@@ -32,8 +32,8 @@ export function WorkspacesPage() {
             <span className="ws-name">{w.title}</span>
             <span className="ws-path">{w.path ?? shortId(w.workspaceId)}</span>
             <span className="ws-act">
-              <span onClick={() => { setRenameId(w.workspaceId); setRenameTitle(w.title); }}>重命名</span>
-              <span onClick={() => setConfirmDelete(w.workspaceId)}>删除</span>
+              <span className="link" onClick={() => { setRenameId(w.workspaceId); setRenameTitle(w.title); }}>重命名</span>
+              <span className="link danger" onClick={() => setConfirmDelete(w.workspaceId)}>删除</span>
             </span>
           </div>
         ))}
@@ -70,4 +70,5 @@ export function WorkspacesPage() {
     </section>
   );
 }
+
 

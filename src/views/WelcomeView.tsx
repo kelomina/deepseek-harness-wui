@@ -1,8 +1,17 @@
 import { useState } from "react";
 import { appStore, useAppState } from "../lib/dsh/store";
+import { ModelMenu } from "../components/ModelMenu";
 
-export function WelcomeView({ onEnterSession, onOpenSettings }: { onEnterSession: () => void; onOpenSettings: () => void }) {
-  const { connected, host, activeWorkspaceId, workspaces } = useAppState();
+export function WelcomeView({
+  mode,
+  onEnterSession,
+  onOpenSettings,
+}: {
+  mode: "work" | "code";
+  onEnterSession: () => void;
+  onOpenSettings: () => void;
+}) {
+  const { connected, activeWorkspaceId, workspaces } = useAppState();
   const [draft, setDraft] = useState("");
   const activeWs = workspaces.find((w) => w.workspaceId === activeWorkspaceId) ?? null;
 
@@ -29,17 +38,28 @@ export function WelcomeView({ onEnterSession, onOpenSettings }: { onEnterSession
   return (
     <section className="view active" id="view-welcome">
       <div className="col col-welcome">
-        <h1 className="hero"><span className="logo">&lt;/&gt;</span>Code with DeepSeek</h1>
+        <h1 className="hero">
+          <span className="logo">{mode === "work" ? "|&gt;_" : "&lt;/&gt;"}</span>
+          {mode === "work" ? "Work with DeepSeek-Harness" : "Code with DeepSeek-Harness"}
+        </h1>
         <div className="composer-wrap">
           <div className="composer">
-            <div className="ph">帮你编写代码、调试 Bug、优化性能等开发工作，交付生产级代码产物。</div>
+            <textarea
+              className="composer-input"
+              value={draft}
+              onChange={(e) => setDraft(e.currentTarget.value)}
+              placeholder="帮你编写代码、调试 Bug、优化性能等开发工作，交付生产级代码产物。"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  void send();
+                }
+              }}
+            />
             <div className="toolbar">
               <div className="tools"><button className="plus-btn" title="附件（开发中）">+</button></div>
               <div className="tools">
-                <button className="model-btn" title="配置模型" onClick={onOpenSettings}>
-                  <span className="name">{host?.model ?? "DeepSeek-V4-Flash-0731(Default)"}</span>
-                  <span className="caret">▾</span>
-                </button>
+                <ModelMenu onOpenSettings={onOpenSettings} />
                 <button className="send-btn" title="发送" disabled={!connected || !draft.trim()} onClick={() => void send()}>↑</button>
               </div>
             </div>
@@ -53,7 +73,5 @@ export function WelcomeView({ onEnterSession, onOpenSettings }: { onEnterSession
         </div>
       </div>
     </section>
-
   );
 }
-

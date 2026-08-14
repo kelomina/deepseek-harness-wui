@@ -2,9 +2,10 @@ import { useState } from "react";
 import { appStore, useAppState } from "../lib/dsh/store";
 import { sessionTitle } from "../lib/dsh/sessionTitle";
 import { ApprovalCard, EventRow, QuestionCard, shortId, useConversationItems, useSessionInteractives } from "../components/Conversation";
+import { ModelMenu } from "../components/ModelMenu";
 
-export function WorkSessionView() {
-  const { connected, sessions, selectedSessionId, host, activeWorkspaceId, workspaces } = useAppState();
+export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => void }) {
+  const { connected, sessions, selectedSessionId, activeWorkspaceId, workspaces } = useAppState();
   const [draft, setDraft] = useState("");
   const items = useConversationItems();
   const interactives = useSessionInteractives();
@@ -34,14 +35,22 @@ export function WorkSessionView() {
         </div>
         <div className="composer-wrap">
           <div className="composer">
-            <div className="ph">输入消息…</div>
+            <textarea
+              className="composer-input"
+              value={draft}
+              onChange={(e) => setDraft(e.currentTarget.value)}
+              placeholder="输入消息…"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  send();
+                }
+              }}
+            />
             <div className="toolbar">
               <div className="tools"><button className="plus-btn" title="附件（开发中）">+</button></div>
               <div className="tools">
-                <button className="model-btn" title="配置模型">
-                  <span className="name">{host?.model ?? "DeepSeek-V4-Flash-0731(Default)"}</span>
-                  <span className="caret">▾</span>
-                </button>
+                <ModelMenu onOpenSettings={onOpenSettings} />
                 <button
                   className={`send-btn${running ? " stop" : ""}`}
                   title={running ? "停止当前任务" : "发送消息"}
@@ -62,3 +71,4 @@ export function WorkSessionView() {
     </section>
   );
 }
+
