@@ -367,6 +367,13 @@ class AppStore {
     this.set({ interactives: this.state.interactives.filter((i) => i !== item) });
   }
 
+  async pickDirectory(): Promise<string | null> {
+    const api = this.requireApi();
+    const r = await api.host.pickDirectory({}, new AbortController().signal);
+    if (r.result.ok) return r.result.value.path;
+    throw new Error(`目录选择不可用: ${r.result.error.message || r.result.error.code}`);
+  }
+
   async listDirectory(path?: string) {
     const api = this.requireApi();
     return api.host.listDirectory({ path }, new AbortController().signal);
@@ -457,6 +464,7 @@ export const appStore = new AppStore();
 export function useAppState(): AppState {
   return useSyncExternalStore(appStore.subscribe, appStore.get);
 }
+
 
 
 

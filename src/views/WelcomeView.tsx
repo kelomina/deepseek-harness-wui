@@ -1,12 +1,19 @@
 import { useState } from "react";
 import { appStore, useAppState } from "../lib/dsh/store";
-import { FolderBrowser } from "../components/FolderBrowser";
 
 export function WelcomeView({ onEnterSession, onOpenSettings }: { onEnterSession: () => void; onOpenSettings: () => void }) {
   const { connected, host, activeWorkspaceId, workspaces } = useAppState();
   const [draft, setDraft] = useState("");
-  const [browse, setBrowse] = useState(false);
   const activeWs = workspaces.find((w) => w.workspaceId === activeWorkspaceId) ?? null;
+
+  const pickWorkspace = async () => {
+    try {
+      const p = await appStore.pickDirectory();
+      if (p) await appStore.addWorkspace(p);
+    } catch (e) {
+      appStore.set({ error: String(e) });
+    }
+  };
 
   const send = async () => {
     const text = draft.trim();
@@ -39,19 +46,14 @@ export function WelcomeView({ onEnterSession, onOpenSettings }: { onEnterSession
           </div>
           <div className="env-bar">
             <button className="env-btn" title="执行环境（开发中）">本地 <span className="caret">▾</span></button>
-            <span className="folder" onClick={() => setBrowse(true)}>
+            <span className="folder" onClick={() => void pickWorkspace()}>
               📁 {activeWs?.path ?? "选择文件夹（可选，自动拉伸占满剩余宽度）"}
             </span>
           </div>
         </div>
       </div>
-      {browse && (
-        <FolderBrowser
-          title="选择工作区目录"
-          onPick={(path) => { void appStore.addWorkspace(path); setBrowse(false); }}
-          onClose={() => setBrowse(false)}
-        />
-      )}
     </section>
+
   );
 }
+

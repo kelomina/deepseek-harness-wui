@@ -1,15 +1,21 @@
 import { useState } from "react";
 import { appStore, useAppState } from "../lib/dsh/store";
 import { shortId } from "../components/ui";
-import { FolderBrowser } from "../components/FolderBrowser";
 import type { WorkspaceId } from "@deepseek-ai/dsh-host-apiproxy/api";
 
 export function WorkspacesPage() {
   const { workspaces, connected } = useAppState();
-  const [browse, setBrowse] = useState(false);
   const [renameId, setRenameId] = useState<WorkspaceId | null>(null);
   const [renameTitle, setRenameTitle] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<WorkspaceId | null>(null);
+  const addWorkspace = async () => {
+    try {
+      const p = await appStore.pickDirectory();
+      if (p) await appStore.addWorkspace(p);
+    } catch (e) {
+      appStore.set({ error: String(e) });
+    }
+  };
 
   return (
     <section className="view active" id="view-workspaces">
@@ -17,7 +23,7 @@ export function WorkspacesPage() {
         <div className="view-cap">工作区</div>
         <div className="card-head">
           <span className="card-title">工作区</span>
-          <button className="btn" disabled={!connected} onClick={() => setBrowse(true)}>＋ 添加工作区</button>
+          <button className="btn" disabled={!connected} onClick={() => void addWorkspace()}>＋ 添加工作区</button>
         </div>
         {!connected && <div className="muted" style={{ marginTop: 8 }}>dsh 未连接，无法管理工作区</div>}
         {connected && workspaces.length === 0 && <div className="empty-state">尚无工作区，点击右上角添加</div>}
@@ -33,13 +39,6 @@ export function WorkspacesPage() {
         ))}
       </div>
 
-      {browse && (
-        <FolderBrowser
-          title="选择工作区目录"
-          onPick={(path) => { void appStore.addWorkspace(path); setBrowse(false); }}
-          onClose={() => setBrowse(false)}
-        />
-      )}
 
       {renameId && (
         <div className="modal-overlay">
@@ -71,3 +70,4 @@ export function WorkspacesPage() {
     </section>
   );
 }
+
