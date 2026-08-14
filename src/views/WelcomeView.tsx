@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { appStore, useAppState } from "../lib/dsh/store";
 import { ModelMenu } from "../components/ModelMenu";
+import { WorkspaceMenu } from "../components/WorkspaceMenu";
 
 export function WelcomeView({
   mode,
@@ -11,18 +12,9 @@ export function WelcomeView({
   onEnterSession: () => void;
   onOpenSettings: () => void;
 }) {
-  const { connected, activeWorkspaceId, workspaces } = useAppState();
+  const { connected } = useAppState();
   const [draft, setDraft] = useState("");
-  const activeWs = workspaces.find((w) => w.workspaceId === activeWorkspaceId) ?? null;
 
-  const pickWorkspace = async () => {
-    try {
-      const p = await appStore.pickDirectory();
-      if (p) await appStore.addWorkspace(p);
-    } catch (e) {
-      appStore.set({ error: String(e) });
-    }
-  };
 
   const send = async () => {
     const text = draft.trim();
@@ -66,12 +58,12 @@ export function WelcomeView({
           </div>
           <div className="env-bar">
             <button className="env-btn" title="执行环境（开发中）">本地 <span className="caret">▾</span></button>
-            <span className="folder" onClick={() => void pickWorkspace()}>
-              📁 {activeWs?.path ?? "选择文件夹（可选，自动拉伸占满剩余宽度）"}
-            </span>
+            <WorkspaceMenu />
+
           </div>
         </div>
       </div>
     </section>
   );
 }
+

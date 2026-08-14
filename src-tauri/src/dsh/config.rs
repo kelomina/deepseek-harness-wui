@@ -25,6 +25,8 @@ pub struct DshConfig {
     pub log_max_lines: usize,
     pub proxy_enabled: bool,
     pub proxy_url: Option<String>,
+    pub selected_provider: Option<String>,
+    pub selected_model: Option<String>,
 }
 
 impl Default for DshConfig {
@@ -43,6 +45,8 @@ impl Default for DshConfig {
             log_max_lines: 2000,
             proxy_enabled: true,
             proxy_url: None,
+            selected_provider: None,
+            selected_model: None,
         }
     }
 }
@@ -131,3 +135,4 @@ pub fn detect_system_proxy() -> Option<String> {
         Some(format!("http://{val}"))
     }
 }
+

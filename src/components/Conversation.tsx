@@ -64,7 +64,8 @@ export function EventRow({ item }: { item: HistoryEntryLike }) {
     case "assistant/chunk":
     case "session/title":
     case "turn/start":
-    case "turn/end":
+    case "step/start":
+    case "llm/retry-started":
       return null;
     case "tool/call":
     case "tool/result":
@@ -73,13 +74,20 @@ export function EventRow({ item }: { item: HistoryEntryLike }) {
           {ev.type}: {JSON.stringify(ev.data).slice(0, 500)}
         </div>
       );
+    case "turn/end":
+    case "step/end": {
+      const reason = (ev.data as { reason?: { kind?: string } })?.reason?.kind;
+      if (reason === "error") {
+        const raw = JSON.stringify(ev.data);
+        return <div className="toolcall toolcall-err" title={`${ev.type} @${ev.seq}`}>{ev.type} @{ev.seq}: {raw.slice(0, 600)}</div>;
+      }
+      return null;
+    }
     default: {
       const raw = JSON.stringify(ev.data);
       const isError =
         ev.type.toLowerCase().includes("error") ||
         ev.type.toLowerCase().includes("llm/") ||
-        ev.type === "turn/end" ||
-        ev.type === "step/end" ||
         raw.includes("TRANSPORT") ||
         raw.includes("Connection error") ||
         raw.includes("MISSING_CREDENTIAL");
@@ -133,6 +141,7 @@ export function useSessionInteractives() {
 }
 
 export { shortId };
+
 
 
 

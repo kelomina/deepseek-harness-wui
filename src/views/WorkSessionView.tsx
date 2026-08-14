@@ -3,15 +3,16 @@ import { appStore, useAppState } from "../lib/dsh/store";
 import { sessionTitle } from "../lib/dsh/sessionTitle";
 import { ApprovalCard, EventRow, QuestionCard, shortId, useConversationItems, useSessionInteractives } from "../components/Conversation";
 import { ModelMenu } from "../components/ModelMenu";
+import { WorkspaceMenu } from "../components/WorkspaceMenu";
 
 export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => void }) {
-  const { connected, sessions, selectedSessionId, activeWorkspaceId, workspaces } = useAppState();
+  const { connected, sessions, selectedSessionId } = useAppState();
   const [draft, setDraft] = useState("");
   const items = useConversationItems();
   const interactives = useSessionInteractives();
   const selected = sessions.find((s) => s.sessionId === selectedSessionId);
   const running = selected?.running ?? false;
-  const activeWs = workspaces.find((w) => w.workspaceId === activeWorkspaceId) ?? null;
+
 
   const send = () => {
     const text = draft.trim();
@@ -64,11 +65,13 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
           </div>
           <div className="env-bar">
             <button className="env-btn" title="执行环境（开发中）">本地 <span className="caret">▾</span></button>
-            <span className="folder">📁 {activeWs?.path ?? "未选择工作区"}</span>
+            <WorkspaceMenu />
+
           </div>
         </div>
       </div>
     </section>
   );
 }
+
 

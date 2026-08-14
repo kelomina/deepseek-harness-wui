@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { dsh, onDshLog, onDshStatus, type DshConfig, type DshStatus } from "../tauri";
 import { DshApiClient } from "./client";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
@@ -112,6 +113,10 @@ class AppStore {
       hiddenPresets = [];
       selectedModel = null;
     }
+    // Rust 配置中的模型选择优先（跨重启保留）
+    if (config.selected_provider && config.selected_model) {
+      selectedModel = { provider: config.selected_provider, model: config.selected_model };
+    }
     this.set({ status, config, hiddenPresets, selectedModel });
     this.unlisteners.push(
       await onDshStatus((s) => {
@@ -157,6 +162,9 @@ class AppStore {
       const sess = await api.sessions.list({});
       if (sess.result.ok) this.set({ sessions: sess.result.value.items });
       this.set({ connected: true });
+      if (this.state.selectedSessionId) {
+        void this.loadHistory(this.state.selectedSessionId).catch(() => {});
+      }
       void this.pump(api.events.mux({}, abort.signal), "mux");
       void this.pump(api.events.host({}, abort.signal), "host");
     } catch (e) {
@@ -473,6 +481,9 @@ class AppStore {
       // ignore storage failures
     }
     this.set({ selectedModel: sel });
+    if (sel) {
+      void invoke("dsh_set_selected_model", { provider: sel.provider, model: sel.model }).catch(() => {});
+    }
   }
 
   hidePreset(provider: string): void {
@@ -508,7 +519,10 @@ class AppStore {
   }
   selectSession(sessionId: SessionId | null): void {
     this.set({ selectedSessionId: sessionId });
-    if (sessionId) void this.loadHistory(sessionId);
+    if (sessionId && this.state.api) {
+      void this.loadHistory(sessionId).catch(() => {});
+    }
+    // api 未就绪时由 connect() 在连接成功后加载
   }
 
   setError(error: string | null): void {
@@ -521,6 +535,7 @@ export const appStore = new AppStore();
 export function useAppState(): AppState {
   return useSyncExternalStore(appStore.subscribe, appStore.get);
 }
+
 
 
 

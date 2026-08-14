@@ -18,6 +18,16 @@ fn frontend_error(message: String) {
 }
 
 #[tauri::command]
+fn dsh_set_selected_model(app: AppHandle, state: State<AppState>, provider: String, model: String) -> Result<(), String> {
+    {
+        let mut mgr = lock(state.manager.lock());
+        mgr.config_mut().selected_provider = Some(provider);
+        mgr.config_mut().selected_model = Some(model);
+        crate::dsh::config::save(&app, mgr.config())?;
+    }
+    Ok(())
+}
+#[tauri::command]
 fn dsh_status(state: State<AppState>) -> DshStatusView {
     lock(state.manager.lock()).status_view()
 }
@@ -71,6 +81,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             frontend_error,
+            dsh_set_selected_model,
             dsh_status,
             dsh_start,
             dsh_stop,
@@ -113,6 +124,7 @@ pub fn run() {
             }
         });
 }
+
 
 
 

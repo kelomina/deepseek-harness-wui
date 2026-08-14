@@ -69,6 +69,10 @@ impl DshManager {
         &self.config
     }
 
+    pub fn config_mut(&mut self) -> &mut DshConfig {
+        &mut self.config
+    }
+
     pub fn status_view(&self) -> DshStatusView {
         DshStatusView {
             state: self.state,
@@ -499,6 +503,7 @@ fn is_dsh_cmdline(cmd: &str, port: u16) -> bool {
     (cmd.contains("bin.js") && cmd.contains("web") && cmd.contains(&format!("--port {port}")))
         || cmd.contains("@deepseek-ai/dsh")
 }
+
 
 
 
