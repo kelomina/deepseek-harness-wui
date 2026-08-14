@@ -12,6 +12,7 @@ export interface DshStatus {
   message: string;
   uptime_secs: number | null;
   auto_start: boolean;
+  proxy_used: string | null;
 }
 
 export interface DshConfig {
@@ -46,4 +47,5 @@ export function onDshStatus(cb: (s: DshStatus) => void): Promise<() => void> {
 export function onDshLog(cb: (line: string) => void): Promise<() => void> {
   return listen<string>("dsh://log", (e) => cb(e.payload));
 }
+
 

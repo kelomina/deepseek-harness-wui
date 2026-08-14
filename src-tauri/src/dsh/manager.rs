@@ -31,6 +31,7 @@ pub struct DshStatusView {
     pub message: String,
     pub uptime_secs: Option<u64>,
     pub auto_start: bool,
+    pub proxy_used: Option<String>,
 }
 
 pub struct DshManager {
@@ -44,6 +45,7 @@ pub struct DshManager {
     restart_attempts: Vec<Instant>,
     health_failures: u32,
     proxy_port: u16,
+    proxy_used: Option<String>,
 }
 
 impl DshManager {
@@ -59,6 +61,7 @@ impl DshManager {
             restart_attempts: Vec::new(),
             health_failures: 0,
             proxy_port,
+            proxy_used: None,
         }
     }
 
@@ -75,6 +78,7 @@ impl DshManager {
             message: self.message.clone(),
             uptime_secs: self.started_at.map(|t| t.elapsed().as_secs()),
             auto_start: self.config.auto_start,
+            proxy_used: self.proxy_used.clone(),
         }
     }
 
@@ -130,6 +134,9 @@ impl DshManager {
                 cmd.env("HTTP_PROXY", &p);
                 cmd.env("HTTPS_PROXY", &p);
                 cmd.env("NO_PROXY", "localhost,127.0.0.1,::1");
+                self.proxy_used = Some(p);
+            } else {
+                self.proxy_used = None;
             }
         }
         let cwd = self
@@ -424,6 +431,7 @@ fn resolve_npx_cli() -> Result<String, String> {
     }
     Err("npx-cli.js not found (Node.js is required for npx mode)".to_string())
 }
+
 
 
 

@@ -72,10 +72,18 @@ export function EventRow({ item }: { item: HistoryEntryLike }) {
         </div>
       );
     default: {
-      const isError = ev.type.toLowerCase().includes("error") || ev.type.toLowerCase().includes("llm/");
+      const raw = JSON.stringify(ev.data);
+      const isError =
+        ev.type.toLowerCase().includes("error") ||
+        ev.type.toLowerCase().includes("llm/") ||
+        ev.type === "turn/end" ||
+        ev.type === "step/end" ||
+        raw.includes("TRANSPORT") ||
+        raw.includes("Connection error") ||
+        raw.includes("MISSING_CREDENTIAL");
       return (
         <div className={`toolcall${isError ? " toolcall-err" : ""}`} title={`${ev.type} @${ev.seq}`}>
-          {ev.type} @{ev.seq}: {JSON.stringify(ev.data).slice(0, 600)}
+          {ev.type} @{ev.seq}: {raw.slice(0, 600)}
         </div>
       );
     }
@@ -123,4 +131,5 @@ export function useSessionInteractives() {
 }
 
 export { shortId };
+
 

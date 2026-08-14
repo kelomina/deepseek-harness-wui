@@ -32,6 +32,7 @@ export function StatusPage() {
           <div className="kv"><span className="k">代理端口</span><span className="v">{status?.proxy_port ?? "-"}</span></div>
           <div className="kv"><span className="k">运行时长</span><span className="v">{status?.uptime_secs != null ? `${Math.floor(status.uptime_secs / 60)}分${status.uptime_secs % 60}秒` : "-"}</span></div>
           <div className="kv"><span className="k">协议连接</span><span className="v">{connected ? "已连接" : "未连接"}</span></div>
+          <div className="kv"><span className="k">dsh 代理</span><span className="v">{status?.proxy_used ?? "未启用（直连）"}</span></div>
           <div className="actions">
             <button className="btn primary" disabled={running} onClick={() => void dsh.start()}>启动 dsh</button>
             <button className="btn danger-o" disabled={!running} onClick={() => void dsh.stop()}>停止 dsh</button>
@@ -57,3 +58,4 @@ export function StatusPage() {
     </section>
   );
 }
+
