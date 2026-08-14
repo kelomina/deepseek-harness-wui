@@ -43,6 +43,7 @@ export interface AppState {
   interactives: InteractiveItem[];
   live: Map<SessionId, MuxFrame[]>;
   selectedSessionId: SessionId | null;
+  activeWorkspaceId: WorkspaceId | null;
   history: Map<SessionId, unknown[]>;
   loading: boolean;
   error: string | null;
@@ -60,6 +61,7 @@ const initialState: AppState = {
   interactives: [],
   live: new Map(),
   selectedSessionId: null,
+  activeWorkspaceId: null,
   history: new Map(),
   loading: false,
   error: null,
@@ -254,15 +256,22 @@ class AppStore {
     if (r.result.ok) this.set({ workspaces: r.result.value.items });
   }
 
-  async createSession(workspaceId?: WorkspaceId): Promise<void> {
+  setActiveWorkspace(workspaceId: WorkspaceId | null): void {
+    this.set({ activeWorkspaceId: workspaceId });
+  }
+
+  async createSession(workspaceId?: WorkspaceId): Promise<SessionId | null> {
     const api = this.requireApi();
-    const r = await api.sessions.create({ workspaceId });
+    const wid = workspaceId ?? this.state.activeWorkspaceId;
+    const r = await api.sessions.create({ workspaceId: wid ?? undefined });
     if (r.result.ok) {
-      this.set({ selectedSessionId: r.result.value.sessionId });
+      const id = r.result.value.sessionId;
+      this.set({ selectedSessionId: id });
       await this.refreshSessions();
-    } else {
-      this.set({ error: `创建会话失败: ${r.result.error.code}: ${r.result.error.message}` });
+      return id;
     }
+    this.set({ error: `创建会话失败: ${r.result.error.code}: ${r.result.error.message}` });
+    return null;
   }
 
   async sendPrompt(sessionId: SessionId, text: string): Promise<void> {
@@ -295,13 +304,17 @@ class AppStore {
     }
   }
 
-  async addWorkspace(path: string): Promise<void> {
+  async addWorkspace(path: string): Promise<WorkspaceId | null> {
     const api = this.requireApi();
     const r = await api.workspace.create({ path });
-    if (!r.result.ok) {
-      this.set({ error: `添加工作区失败: ${r.result.error.code}: ${r.result.error.message}` });
+    if (r.result.ok) {
+      await this.refreshWorkspaces();
+      const id = r.result.value.workspace.workspaceId;
+      this.set({ activeWorkspaceId: id });
+      return id;
     }
-    await this.refreshWorkspaces();
+    this.set({ error: `添加工作区失败: ${r.result.error.code}: ${r.result.error.message}` });
+    return null;
   }
 
   async deleteWorkspace(workspaceId: WorkspaceId): Promise<void> {
@@ -399,5 +412,8 @@ export const appStore = new AppStore();
 export function useAppState(): AppState {
   return useSyncExternalStore(appStore.subscribe, appStore.get);
 }
+
+
+
 
 

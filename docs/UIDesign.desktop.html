@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeepSeek Harness Desktop - UI 设计稿（单视图切换版，待批准）</title>
+<style>
+  :root{
+    --bg:#ededf0; --panel:#f4f4f6; --card:#fbfbfc; --border:#e3e3e8;
+    --text:#1f2329; --text-2:#585c62; --text-3:#9ba0a6;
+    --accent:#5b5bd6; --red:#c23a3a; --green:#2f7d4f; --orange:#b26a1b;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    background:var(--bg);color:var(--text);display:flex;flex-direction:column;overflow:hidden}
+  button{font-family:inherit;border:0;background:none;cursor:pointer;color:inherit}
+  input,select{font-family:inherit;font-size:13px;color:var(--text);border:1px solid var(--border);border-radius:8px;
+    padding:8px 12px;background:#fff;outline:none}
+  input::placeholder{color:var(--text-3)}
+  .mono{font-family:ui-monospace,Consolas,"Courier New",monospace}
+
+  /* 标题栏 */
+  .titlebar{flex:none;height:48px;display:flex;align-items:center;justify-content:space-between;padding:0 12px}
+  .tb-group{display:flex;align-items:center;gap:2px}
+  .menu-item{height:32px;padding:0 10px;border-radius:6px;font-size:13px;color:var(--text-2);display:inline-flex;align-items:center}
+  .menu-item:hover{background:#e0e0e4}
+  .win-btn{width:40px;height:32px;border-radius:6px;font-size:14px;color:var(--text-2)}
+  .win-btn:hover{background:#e0e0e4}
+
+  .layout{flex:1;display:flex;min-height:0}
+
+  /* 侧边栏 */
+  .sidebar{flex:none;width:264px;padding:4px 16px 16px;display:flex;flex-direction:column;min-height:0}
+  .mode-tabs{align-self:flex-start;display:flex;align-items:center;gap:2px;background:#e2e2e6;border-radius:10px;padding:3px}
+  .tab{padding:6px 14px;border-radius:8px;font-size:13px;color:var(--text-2)}
+  .tab.active{background:#fff;color:var(--text);font-weight:500;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+  .nav{margin-top:20px;display:flex;flex-direction:column;gap:4px}
+  .nav-item{width:100%;display:flex;align-items:center;gap:8px;height:40px;padding:0 12px;border-radius:8px;font-size:14px;text-align:left}
+  .nav-item:hover{background:#e3e3e7}
+  .nav-item.active{background:#dcdce1}
+  .side-block{margin-top:24px;display:flex;flex-direction:column;gap:4px}
+  .side-head{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-2);padding:0 4px}
+  .side-head .arrow{color:var(--text-3)}
+  .task-item{display:flex;align-items:center;gap:8px;width:100%;min-width:0;padding:8px 12px;border-radius:8px;font-size:13px;text-align:left}
+  .task-item:hover{background:#e3e3e7}
+  .task-item.active{background:#d8d8f0}
+  .t-title{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .t-time{flex:none;font-size:12px;color:var(--text-3)}
+  .dot{flex:none;width:8px;height:8px;border-radius:50%;background:#9aa0a6}
+  .dot.green{background:#2f9e5f}
+  .side-bottom{margin-top:auto;border-top:1px solid #dcdce0;padding-top:12px;display:flex;flex-direction:column;gap:4px}
+
+  /* 主区 */
+  .main{flex:1;min-width:0;min-height:0;background:var(--panel);border-radius:12px 12px 0 0;overflow-y:auto}
+  .view{display:none;padding:48px clamp(20px,4vw,40px);justify-content:center}
+  .view.active{display:flex}
+  .col{display:flex;flex-direction:column;width:100%}
+  .view-cap{font-size:12px;color:var(--text-3);margin-bottom:28px}
+
+  /* ===== 宽度修复 ===== */
+  .col-welcome{width:min(1030px,100%)}
+  .col-conv{width:100%}
+  .col-status{width:100%}
+  .col-ws{width:100%}
+  .col-settings{width:100%}
+
+  /* ===== 欢迎页垂直布局 ===== */
+  #view-welcome{flex-direction:column;align-items:center;min-height:100%}
+  #view-welcome .col-welcome{flex:1}
+  #view-welcome .hero{margin-top:auto;margin-bottom:auto}
+
+  /* ===== 会话页垂直布局 ===== */
+  #view-session{flex-direction:column;align-items:center;min-height:100%;padding-bottom:0}
+  #view-session .col-conv{flex:1}
+  #view-session .msgs{flex:1}
+  #view-session .env-bar{border-radius:0}
+
+  /* 欢迎页 & 输入区 */
+  .hero{display:flex;align-items:center;justify-content:center;gap:14px;font-size:34px;font-weight:600;margin:24px 0 44px}
+  .hero .logo{color:var(--accent);font-weight:700}
+  .composer-wrap{width:100%}
+  .composer{background:#fff;border:1px solid var(--border);border-bottom:0;border-radius:12px 12px 0 0;
+    padding:16px;display:flex;flex-direction:column;gap:24px;min-height:120px}
+  .composer .ph{flex:1;font-size:14px;color:var(--text-3);line-height:1.7;min-height:24px}
+  .toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .tools{display:flex;align-items:center;gap:10px;min-width:0}
+  .plus-btn{width:30px;height:30px;border-radius:8px;font-size:18px;color:var(--text-2)}
+  .plus-btn:hover{background:#f1f1f4}
+  .model-btn{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:8px;font-size:13px;max-width:60%;min-width:0}
+  .model-btn .name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .model-btn:hover{background:#f1f1f4}
+  .caret{font-size:11px;color:var(--text-3)}
+  .send-btn{flex:none;width:38px;height:38px;border-radius:10px;background:var(--accent);color:#fff;font-size:16px}
+  .send-btn.stop{background:var(--red)}
+  .send-btn.mini{width:30px;height:30px;border-radius:8px;font-size:13px}
+  .env-bar{background:#e2e2e7;border-radius:0 0 12px 12px;padding:12px 16px;display:flex;align-items:center;gap:16px;font-size:13px}
+  .env-btn{display:flex;align-items:center;gap:6px;font-size:13px}
+  .folder{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text-3)}
+
+  /* 会话 */
+  .conv-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-bottom:10px;border-bottom:1px solid var(--border)}
+  .conv-title{font-size:16px;font-weight:600}
+  .badge{padding:3px 12px;border-radius:999px;font-size:12px;border:1px solid}
+  .badge.orange{color:var(--orange);border-color:#e0b184;background:#fdf4e7}
+  .badge.green{color:var(--green);border-color:#9cc8a9;background:#eef7f0}
+  .badge.gray{color:var(--text-2);border-color:#c9c9d0;background:#eeeef1}
+  .btn{padding:7px 16px;border-radius:8px;font-size:13px;border:1px solid var(--border);background:#fff}
+  .btn:hover{filter:brightness(.97)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.danger-o{color:var(--red);border-color:#d99a9a;background:#fff}
+  .btn.sm{padding:4px 12px;font-size:12px}
+  .msgs{display:flex;flex-direction:column;gap:16px;padding:20px 0 24px}
+  .msg-time{font-size:12px;color:var(--text-3);margin-bottom:6px}
+  .msg-user{align-self:flex-end;max-width:70%;background:var(--accent);color:#fff;border-radius:12px;padding:12px 16px;font-size:14px;line-height:1.7}
+  .msg-user .msg-time{color:#d6d6f5}
+  .msg-ai{align-self:flex-start;max-width:80%;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px 16px;font-size:14px;line-height:1.8}
+  .toolcall{align-self:stretch;background:#e4e4e9;border-radius:8px;padding:9px 14px;font-size:12px;color:#55565c}
+  .approve{align-self:stretch;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px}
+  .approve .t{font-size:14px;margin-bottom:10px}
+  .approve .d{font-size:13px;color:var(--text-2);margin-bottom:14px}
+  .approve .row{display:flex;gap:10px}
+
+  /* 卡片通用 */
+  .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px}
+  .card + .card{margin-top:20px}
+  .card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+  .card-title{font-size:15px;font-weight:600}
+  .kv{display:flex;gap:24px;padding:7px 0;font-size:13px}
+  .kv .k{flex:none;width:110px;color:var(--text-2)}
+  .kv .v{flex:1;min-width:0;word-break:break-all}
+  .card .actions{display:flex;gap:10px;margin-top:16px}
+  .term{background:#1e1e1e;color:#d4d4d4;border-radius:10px;padding:14px 16px;min-height:240px;
+    font-family:ui-monospace,Consolas,monospace;font-size:12.5px;line-height:1.7;white-space:pre-wrap;word-break:break-all}
+
+  /* 工作区 */
+  .ws-row{display:flex;align-items:center;gap:16px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 16px}
+  .ws-row + .ws-row{margin-top:10px}
+  .ws-name{flex:none;max-width:32%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:14px}
+  .ws-path{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12.5px;color:var(--text-3)}
+  .ws-act{flex:none;display:flex;gap:14px;font-size:13px;color:var(--text-2)}
+
+  /* 设置 */
+  .f-label{font-size:13px;color:var(--text-2);margin:14px 0 8px}
+  .f-label:first-of-type{margin-top:0}
+  .row{display:flex;align-items:center;gap:10px}
+  .row .grow{flex:1;min-width:0}
+  .provider{display:flex;align-items:center;gap:12px;border:1px solid var(--border);border-radius:10px;padding:12px 14px;background:#fff}
+  .provider .pid{margin-left:auto;font-size:12px;color:var(--text-3)}
+  .hint{margin-top:10px;font-size:12px;color:var(--text-3);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  select{width:100%;appearance:auto}
+
+  /* ===== 提供商可配置 ===== */
+  .provider-list{display:flex;flex-direction:column;gap:10px}
+  .provider .p-act{display:flex;gap:12px;flex:none}
+  .link{font-size:12px;color:var(--accent);cursor:pointer}
+  .link.danger{color:var(--red)}
+  .p-form{margin-top:14px;border:1px dashed #cfcfd6;border-radius:10px;padding:16px;background:#fff}
+  .p-form input[type="text"]{width:100%}
+  .p-form .two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .p-form .sub{font-size:12px;color:var(--text-3)}
+  #view-settings .card.wide{grid-column:1/-1}
+
+  /* ===== 合并增强：响应式多列网格 ===== */
+  .col-status,.col-settings{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));gap:20px;align-items:start}
+  .col-status .view-cap,.col-settings .view-cap{grid-column:1/-1}
+  .col-status .card,.col-settings .card{margin-top:0}
+  .col-status .card:last-child,.col-settings .card:last-child{grid-column:1/-1}
+  .toolcall,.approve{width:100%}
+
+  /* ===== 预览工具栏（设计稿专用） ===== */
+  .preview-bar{flex:none;height:34px;display:flex;align-items:center;gap:8px;padding:0 12px;background:#26262b;color:#ccc;font-size:12px}
+  .preview-bar button{color:#ddd;padding:3px 10px;border-radius:6px;font-size:12px}
+  .preview-bar button:hover{background:#3a3a42}
+  .preview-bar button.on{background:var(--accent);color:#fff}
+  .preview-bar .tip{opacity:.7}
+
+  /* ===== 会话页微调 ===== */
+  #view-session .composer-wrap{width:min(1000px,100%);margin:0 auto}
+  #view-session{padding-top:24px}
+  #view-session .view-cap{margin-bottom:12px}
+  #view-session .conv-head{padding-bottom:8px}
+  #view-session .msgs{padding-top:16px}
+
+  /* ===== 右侧控件贴右修复 ===== */
+  .toolbar .tools:last-child{margin-left:auto}
+  .model-btn{max-width:none}
+  .model-btn .name{white-space:nowrap;overflow:visible;text-overflow:clip}
+
+  /* ===== Code 模式（AIDE）：三栏 + 底部 IDE 条 ===== */
+  #view-code{flex-direction:column;align-items:center;min-height:100%;padding-top:24px;padding-bottom:16px}
+  #view-code .col-code{flex:1;width:100%;display:flex;flex-direction:column;min-height:0}
+  #view-code .view-cap{margin-bottom:12px}
+  #view-code .conv-head{padding-bottom:8px}
+  .code-actions{display:flex;align-items:center;gap:10px}
+  .code-layout{flex:1;display:flex;gap:16px;min-height:0;margin-top:12px}
+  .file-pane{flex:none;width:280px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px;display:flex;flex-direction:column;min-height:0}
+  .pane-title{flex:none;font-size:13px;font-weight:600;color:var(--text-2);padding:4px 6px 10px}
+  .file-list{flex:1;overflow:auto;display:flex;flex-direction:column;gap:2px;min-height:0}
+  .file-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;font-size:13px;cursor:pointer}
+  .file-item:hover{background:#ececf0}
+  .file-item.active{background:#d8d8f0}
+  .f-path{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
+  .f-stat{flex:none;font-size:11px;font-family:ui-monospace,Consolas,monospace}
+  .f-stat.add{color:var(--green)}
+  .f-stat.del{color:var(--red)}
+  .pane-foot{flex:none;margin-top:8px;padding:8px 6px 0;border-top:1px solid var(--border);font-size:11.5px;color:var(--text-3)}
+  .diff-pane{flex:1;min-width:0;background:var(--card);border:1px solid var(--border);border-radius:12px;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+  .diff-head{flex:none;display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border)}
+  .d-path{flex:1;min-width:0;font-family:ui-monospace,Consolas,monospace;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .diff-body{flex:1;overflow:auto;font-family:ui-monospace,Consolas,monospace;font-size:12.5px;line-height:1.6;padding:8px 0}
+  .diff-line{display:flex;min-width:100%}
+  .diff-line .ln{flex:none;width:44px;text-align:right;padding-right:10px;color:var(--text-3);user-select:none}
+  .diff-line .code{flex:1;white-space:pre;padding-right:12px}
+  .diff-line.add{background:#e8f5ec}
+  .diff-line.add .code{color:#1a5c2e}
+  .diff-line.del{background:#fdeaea}
+  .diff-line.del .code{color:#8f2a2a}
+  .diff-line.ctx .code{color:var(--text-2)}
+  .hunk-bar{display:flex;align-items:center;gap:8px;padding:6px 12px;background:#f6f6fa;border-top:1px dashed var(--border);border-bottom:1px dashed var(--border)}
+  .hunk-tip{flex:1;font-size:11px;color:var(--text-3)}
+  /* 右栏：AI 侧聊 */
+  .chat-pane{flex:none;width:300px;display:flex;flex-direction:column;background:var(--card);border:1px solid var(--border);border-radius:12px;min-height:0}
+  .chat-msgs{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px}
+  .c-msg{border-radius:10px;padding:8px 10px;font-size:12.5px;line-height:1.6}
+  .c-msg.user{background:var(--accent);color:#fff;align-self:flex-end;max-width:90%}
+  .c-msg.ai{background:#eeeef2;color:var(--text-2);align-self:flex-start;max-width:95%}
+  .chat-input{flex:none;display:flex;align-items:center;gap:8px;padding:10px;border-top:1px solid var(--border)}
+  .chat-input input{flex:1;min-width:0}
+  /* 底部：终端 strip + 状态栏 */
+  .term-strip{flex:none;margin-top:12px;border-radius:10px;background:#1e1e1e;color:#cfcfcf;overflow:hidden}
+  .term-tabs{display:flex;gap:4px;padding:6px 8px;background:#26262b;font-size:11.5px}
+  .t-tab{padding:3px 10px;border-radius:6px;color:#bbb;cursor:pointer}
+  .t-tab.on{background:#3a3a42;color:#fff}
+  .term-line{padding:8px 12px;font-size:12px;line-height:1.7}
+  .status-bar{flex:none;display:flex;align-items:center;gap:16px;margin-top:10px;padding:6px 12px;border:1px solid var(--border);border-radius:8px;background:var(--card);font-size:11.5px;color:var(--text-2)}
+  .status-bar .ok{margin-left:auto;color:var(--green)}
+  @media (max-width:1280px){.chat-pane{display:none}}
+  @media (max-width:960px){.file-pane{width:220px}}
+</style>
+</head>
+<body>
+
+  <div class="preview-bar">
+    <span>设计稿预览（单视图切换）</span>
+    <span class="tip">拖动窗口宽度观察布局伸缩</span>
+    <span style="flex:1"></span>
+    <button data-view="welcome" class="on">欢迎页</button>
+    <button data-view="session">Work 会话</button>
+    <button data-view="code">Code 会话</button>
+    <button data-view="status">连接状态</button>
+    <button data-view="workspaces">工作区</button>
+    <button data-view="settings">设置</button>
+  </div>
+
+  <header class="titlebar">
+    <div class="tb-group">
+      <span class="menu-item">文件(F)</span><span class="menu-item">编辑(E)</span><span class="menu-item">视图(V)</span>
+    </div>
+    <div class="tb-group">
+      <button class="win-btn">–</button><button class="win-btn">□</button><button class="win-btn">×</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="mode-tabs"><button class="tab" data-mode="work">Work</button><button class="tab active" data-mode="code">Code</button></div>
+      <nav class="nav">
+        <button class="nav-item active" data-view="welcome">＋ 新建任务</button>
+        <button class="nav-item">自动化</button>
+      </nav>
+      <div class="side-block">
+        <div class="side-head"><span>置顶</span><span class="arrow">›</span></div>
+        <button class="task-item"><span class="dot green"></span><span class="t-title">部署生产环境</span><span class="t-time">10:24</span></button>
+      </div>
+      <div class="side-block">
+        <div class="side-head"><span>任务列表</span><span class="arrow">›</span></div>
+        <button class="task-item active"><span class="dot green"></span><span class="t-title">优化 Rust 代理性能</span><span class="t-time">09:58</span></button>
+        <button class="task-item"><span class="dot"></span><span class="t-title">修复白屏问题</span><span class="t-time">昨天</span></button>
+        <button class="task-item"><span class="dot"></span><span class="t-title">添加 API Key 配置</span><span class="t-time">昨天</span></button>
+        <button class="task-item"><span class="dot"></span><span class="t-title">初始化 Git 与文档</span><span class="t-time">昨天</span></button>
+      </div>
+      <div class="side-bottom">
+        <button class="nav-item" data-view="status"><span class="dot green"></span><span class="t-title">连接状态</span><span class="t-time">3080</span></button>
+        <button class="nav-item" data-view="workspaces">工作区</button>
+        <button class="nav-item" data-view="settings">设置 · API Key</button>
+      </div>
+    </aside>
+
+    <main class="main">
+
+      <!-- 欢迎页 -->
+      <section class="view active" id="view-welcome"><div class="col col-welcome">
+        <div class="view-cap">欢迎页</div>
+        <h1 class="hero"><span class="logo">&lt;/&gt;</span>Code with DeepSeek</h1>
+        <div class="composer-wrap">
+          <div class="composer">
+            <div class="ph">帮你编写代码、调试 Bug、优化性能等开发工作，交付生产级代码产物。</div>
+            <div class="toolbar">
+              <div class="tools"><button class="plus-btn">+</button></div>
+              <div class="tools">
+                <button class="model-btn"><span class="name">DeepSeek-V4-Flash-0731(Default)</span><span class="caret">▾</span></button>
+                <button class="send-btn">↑</button>
+              </div>
+            </div>
+          </div>
+          <div class="env-bar">
+            <button class="env-btn">本地 <span class="caret">▾</span></button>
+            <span class="folder">📁 选择文件夹（可选，自动拉伸占满剩余宽度）</span>
+          </div>
+        </div>
+      </div></section>
+
+      <!-- Work 会话 -->
+      <section class="view" id="view-session"><div class="col col-conv">
+        <div class="view-cap">会话</div>
+        <div class="conv-head">
+          <span class="conv-title">优化 Rust 代理性能</span>
+          <span class="badge orange" id="conv-badge">运行中</span>
+        </div>
+        <div class="msgs">
+          <div class="msg-user"><div class="msg-time">10:01</div>分析 src-tauri/src/dsh/proxy.rs 的 WS 隧道，找出吞吐瓶颈并优化。</div>
+          <div class="msg-ai"><div class="msg-time">10:01</div>好的。我先读取 proxy.rs 并检查 tokio-tungstenite 的双向转发实现，重点看消息拷贝与背压处理。</div>
+          <div class="toolcall mono">tool/call: {"tool":"fs.read","path":"src-tauri/src/dsh/proxy.rs"}</div>
+          <div class="msg-ai"><div class="msg-time">10:02</div>发现两个瓶颈：1) 每条消息 Vec&lt;u8&gt; 拷贝两次；2) 缺少 send buffer 上限。建议改用 Bytes 零拷贝 + 背压限流。</div>
+          <div class="approve">
+            <div class="t">需要审批：<b>bash.run</b></div>
+            <div class="d">执行 cargo bench --proxy-tunnel 进行压测（在工作区内运行命令）</div>
+            <div class="row"><button class="btn primary">允许一次</button><button class="btn danger-o">拒绝</button></div>
+          </div>
+        </div>
+        <div class="composer-wrap">
+          <div class="composer">
+            <div class="ph">输入消息…</div>
+            <div class="toolbar">
+              <div class="tools"><button class="plus-btn">+</button></div>
+              <div class="tools">
+                <button class="model-btn"><span class="name">DeepSeek-V4-Flash-0731(Default)</span><span class="caret">▾</span></button>
+                <button class="send-btn stop" id="send-stop" title="停止当前任务">■</button>
+              </div>
+            </div>
+          </div>
+          <div class="env-bar">
+            <button class="env-btn">本地 <span class="caret">▾</span></button>
+            <span class="folder">📁 E:\Project\HTML\DeepSeekHarnessWUI</span>
+          </div>
+        </div>
+      </div></section>
+
+      <!-- Code 模式（AIDE） -->
+      <section class="view" id="view-code"><div class="col col-code">
+        <div class="view-cap">Code 模式 · AIDE（人主导、AI 协作）</div>
+        <div class="conv-head">
+          <span class="conv-title">优化 Rust 代理性能</span>
+          <span class="code-actions">
+            <span class="badge gray">Code</span>
+            <button class="btn danger-o">拒绝全部</button>
+            <button class="btn primary">接受全部（+47 −11）</button>
+          </span>
+        </div>
+
+        <div class="code-layout">
+          <!-- 左：变更文件 -->
+          <div class="file-pane">
+            <div class="pane-title">变更文件</div>
+            <div class="file-list">
+              <div class="file-item active"><span class="f-path">src-tauri/src/dsh/proxy.rs</span><span class="f-stat add">+24</span><span class="f-stat del">-6</span></div>
+              <div class="file-item"><span class="f-path">src-tauri/src/dsh/manager.rs</span><span class="f-stat add">+8</span></div>
+              <div class="file-item"><span class="f-path">src/lib/dsh/client.ts</span><span class="f-stat add">+3</span><span class="f-stat del">-1</span></div>
+              <div class="file-item"><span class="f-path">src/pages/SessionsPage.tsx</span><span class="f-stat add">+12</span><span class="f-stat del">-4</span></div>
+            </div>
+            <div class="pane-foot">4 个文件 · +47 −11 · 分支 feat/proxy-zero-copy</div>
+          </div>
+
+          <!-- 中：diff 查看器（逐 hunk 接受/拒绝） -->
+          <div class="diff-pane">
+            <div class="diff-head">
+              <span class="d-path">src-tauri/src/dsh/proxy.rs</span>
+              <span class="badge green">已修改</span>
+              <button class="btn sm">打开文件</button>
+              <button class="btn sm">复制 diff</button>
+            </div>
+            <div class="diff-body mono">
+              <div class="diff-line ctx"><span class="ln">40</span><span class="code">async fn tunnel(ctx: Arc&lt;ProxyContext&gt;, mut client: WebSocket, path: String) {</span></div>
+              <div class="diff-line ctx"><span class="ln">41</span><span class="code">    let port = ctx.dsh_port.load(Ordering::Relaxed);</span></div>
+              <div class="diff-line ctx"><span class="ln">42</span><span class="code">    let url = format!("ws://127.0.0.1:{port}{path}");</span></div>
+              <div class="diff-line del"><span class="ln">43</span><span class="code">    let (mut server, _) = match tokio_tungstenite::connect_async(url).await {</span></div>
+              <div class="diff-line add"><span class="ln">43</span><span class="code">    let (server, _) = match tokio_tungstenite::connect_async(url).await {</span></div>
+              <div class="diff-line ctx"><span class="ln">44</span><span class="code">        Ok(v) =&gt; v,</span></div>
+              <div class="diff-line ctx"><span class="ln">45</span><span class="code">        Err(_) =&gt; {</span></div>
+              <div class="diff-line ctx"><span class="ln">46</span><span class="code">            let _ = client.close().await;</span></div>
+              <div class="diff-line del"><span class="ln">47</span><span class="code">            return;</span></div>
+              <div class="diff-line ctx"><span class="ln">47</span><span class="code">        }</span></div>
+              <div class="diff-line add"><span class="ln">48</span><span class="code">    };</span></div>
+              <div class="hunk-bar">
+                <span class="hunk-tip">Hunk 1/2 · 行 43–48 · 去掉 mut 并简化错误分支</span>
+                <button class="btn sm primary">接受</button>
+                <button class="btn sm danger-o">拒绝</button>
+              </div>
+              <div class="diff-line del"><span class="ln">49</span><span class="code">    // 拷贝热点：每条消息 Vec&lt;u8&gt; 转换两次</span></div>
+              <div class="diff-line add"><span class="ln">49</span><span class="code">    // 零拷贝：直接复用 Bytes 载荷</span></div>
+              <div class="hunk-bar">
+                <span class="hunk-tip">Hunk 2/2 · 行 49 · 零拷贝注释与载荷复用</span>
+                <button class="btn sm primary">接受</button>
+                <button class="btn sm danger-o">拒绝</button>
+              </div>
+              <div class="diff-line ctx"><span class="ln">50</span><span class="code">    let (mut s_sink, mut s_stream) = server.split();</span></div>
+            </div>
+          </div>
+
+          <!-- 右：AI 侧聊 -->
+          <div class="chat-pane">
+            <div class="pane-title">AI 助手 · 针对当前 diff</div>
+            <div class="chat-msgs">
+              <div class="c-msg user">为什么不在这里用 spawn_blocking？</div>
+              <div class="c-msg ai">瓶颈是内存拷贝而非 CPU 阻塞；引入阻塞池反而增加调度开销。保持异步管道 + Bytes 零拷贝更合适。</div>
+              <div class="c-msg user">send buffer 上限加在哪一层？</div>
+              <div class="c-msg ai">建议在 s_sink 外包一层 poll_ready 背压（见 manager.rs hunk 1），并暴露 DSH_SEND_BUF 环境变量。</div>
+            </div>
+            <div class="chat-input">
+              <input type="text" placeholder="提问当前 diff…（@ 引用文件）">
+              <button class="send-btn mini">↑</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 底部：终端 + 状态栏 -->
+        <div class="term-strip">
+          <div class="term-tabs"><span class="t-tab on">终端</span><span class="t-tab">问题 (0)</span><span class="t-tab">输出</span></div>
+          <div class="term-line mono">$ cargo bench --proxy-tunnel
+[out] throughput 412 MiB/s → 569 MiB/s（+38% vs baseline），p99 延迟 -22%</div>
+        </div>
+        <div class="status-bar mono">
+          <span>⎇ feat/proxy-zero-copy</span>
+          <span>Rust</span>
+          <span>UTF-8</span>
+          <span>Ln 43, Col 12</span>
+          <span class="ok">● dsh 已连接 :3080</span>
+        </div>
+      </div></section>
+
+      <!-- 连接状态 -->
+      <section class="view" id="view-status"><div class="col col-status">
+        <div class="view-cap">连接状态</div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">dsh 服务状态</span><span class="badge green">运行中</span></div>
+          <div class="kv"><span class="k">状态消息</span><span class="v">running</span></div>
+          <div class="kv"><span class="k">PID</span><span class="v">354196</span></div>
+          <div class="kv"><span class="k">服务端口</span><span class="v">3080</span></div>
+          <div class="kv"><span class="k">代理端口</span><span class="v">54094</span></div>
+          <div class="kv"><span class="k">运行时长</span><span class="v">12分08秒</span></div>
+          <div class="kv"><span class="k">协议连接</span><span class="v">已连接</span></div>
+          <div class="actions"><button class="btn primary">启动 dsh</button><button class="btn danger-o">停止 dsh</button></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">宿主信息</span></div>
+          <div class="kv"><span class="k">版本</span><span class="v">0.1.0-rc.6</span></div>
+          <div class="kv"><span class="k">工作目录</span><span class="v">C:\Users\Saika</span></div>
+          <div class="kv"><span class="k">默认模型</span><span class="v">deepseek-v4-flash-0731</span></div>
+          <div class="kv"><span class="k">附加会话数</span><span class="v">2</span></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">dsh 日志</span><button class="btn">刷新</button></div>
+          <div class="term">[out] Web UI served at http://127.0.0.1:3080
+[out] profile web ready (dsh 0.1.0-rc.6)
+[out] workspace registry loaded: 3 workspaces</div>
+        </div>
+      </div></section>
+
+      <!-- 工作区 -->
+      <section class="view" id="view-workspaces"><div class="col col-ws">
+        <div class="view-cap">工作区</div>
+        <div class="card-head"><span class="card-title">工作区</span><button class="btn">＋ 添加工作区</button></div>
+        <div class="ws-row"><span class="ws-name">DeepSeekHarnessWUI</span><span class="ws-path">E:\Project\HTML\DeepSeekHarnessWUI</span><span class="ws-act"><span>重命名</span><span>删除</span></span></div>
+        <div class="ws-row"><span class="ws-name">Axon_v2.6Exp</span><span class="ws-path">E:\Project\python\Axon_v2.6Exp</span><span class="ws-act"><span>重命名</span><span>删除</span></span></div>
+        <div class="ws-row"><span class="ws-name">TyphoonTrackLab</span><span class="ws-path">E:\Project\python\TyphoonTrackLab</span><span class="ws-act"><span>重命名</span><span>删除</span></span></div>
+      </div></section>
+
+      <!-- 设置 -->
+      <section class="view" id="view-settings"><div class="col col-settings">
+        <div class="view-cap">设置 · API Key</div>
+
+        <div class="card wide">
+          <div class="card-head"><span class="card-title">模型提供商</span><button class="btn primary" id="add-provider">＋ 添加提供商</button></div>
+
+          <div class="provider-list">
+            <div class="provider">
+              <b>DeepSeek</b>
+              <span class="pid">deepseek-official · deepseek-v4-flash-0731</span>
+              <span class="badge green">激活</span>
+              <span class="p-act"><span class="link">编辑</span><span class="link danger">删除</span></span>
+            </div>
+            <div class="provider">
+              <b>Moonshot</b>
+              <span class="pid">openai-compatible · moonshot-v1-128k</span>
+              <span class="badge gray">未激活</span>
+              <span class="p-act"><span class="link">激活</span><span class="link">编辑</span><span class="link danger">删除</span></span>
+            </div>
+          </div>
+
+          <div class="p-form" id="provider-form">
+            <div class="card-head" style="margin-bottom:4px">
+              <span class="card-title">编辑提供商</span>
+              <span class="sub">示例展开态；实施时由「添加/编辑」触发</span>
+            </div>
+            <div class="two">
+              <div>
+                <div class="f-label">名称</div>
+                <input type="text" value="DeepSeek">
+              </div>
+              <div>
+                <div class="f-label">提供商类型</div>
+                <select>
+                  <option>deepseek-official</option>
+                  <option>openai-compatible</option>
+                  <option>anthropic-compatible</option>
+                  <option>custom</option>
+                </select>
+              </div>
+            </div>
+            <div class="f-label">Base URL（官方类型可留空）</div>
+            <input type="text" placeholder="https://api.deepseek.com">
+            <div class="f-label">API Key（凭据引用，如 DEEPSEEK_API_KEY）</div>
+            <div class="row">
+              <input class="grow" type="password" placeholder="已配置（输入新值可覆盖）">
+              <button class="btn primary">保存</button>
+              <button class="btn danger-o">清除</button>
+            </div>
+            <div class="f-label">默认模型</div>
+            <input type="text" value="deepseek-v4-flash-0731">
+            <div class="actions">
+              <button class="btn primary">保存提供商</button>
+              <button class="btn" id="provider-form-cancel">取消</button>
+            </div>
+            <div class="hint">状态：<span class="badge green">已配置</span> · Key 仅写入 dsh 凭据层，应用不存储 · 激活后立即生效，会话模型下拉按提供商列出模型</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><span class="card-title">dsh 运行配置</span></div>
+          <div class="f-label">执行方式</div>
+          <select><option>Bundled（仓库 runtime/ 固定版本，推荐）</option></select>
+          <div class="f-label">Web 端口</div>
+          <input type="text" value="3080">
+          <div class="f-label">DSH_HOME</div>
+          <input type="text" placeholder="留空使用系统默认">
+          <div class="actions"><button class="btn primary">保存配置</button></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><span class="card-title">运行时硬限制（只读）</span></div>
+          <div class="kv"><span class="k">启动超时</span><span class="v">90 秒</span></div>
+          <div class="kv"><span class="k">健康检查间隔</span><span class="v">2 秒</span></div>
+          <div class="kv"><span class="k">重启上限</span><span class="v">3 次 / 600 秒</span></div>
+          <div class="kv"><span class="k">日志上限</span><span class="v">2000 行（内存环形缓冲）</span></div>
+        </div>
+      </div></section>
+
+    </main>
+  </div>
+
+  <script>
+    // 单视图切换
+    var views = ["welcome","session","code","status","workspaces","settings"];
+    function show(v){
+      views.forEach(function(id){
+        var el = document.getElementById("view-"+id);
+        if(el) el.classList.toggle("active", id===v);
+        var b = document.querySelector('.preview-bar [data-view="'+id+'"]');
+        if(b) b.classList.toggle("on", id===v);
+      });
+    }
+    document.querySelectorAll("[data-view]").forEach(function(b){
+      b.addEventListener("click", function(){ show(b.getAttribute("data-view")); });
+    });
+
+    // Work/Code 模式切换
+    (function(){
+      var tabs = document.querySelectorAll('.mode-tabs .tab');
+      tabs.forEach(function(t){
+        t.addEventListener('click', function(){
+          tabs.forEach(function(x){ x.classList.toggle('active', x===t); });
+          show(t.getAttribute('data-mode') === 'work' ? 'session' : 'code');
+        });
+      });
+    })();
+
+    // 发送/停止 双态按钮演示
+    (function(){
+      var btn = document.getElementById("send-stop");
+      var badge = document.getElementById("conv-badge");
+      if(!btn || !badge) return;
+      var running = true;
+      btn.addEventListener("click", function(){
+        running = !running;
+        btn.classList.toggle("stop", running);
+        btn.textContent = running ? "■" : "↑";
+        btn.title = running ? "停止当前任务" : "发送消息";
+        badge.textContent = running ? "运行中" : "已停止";
+        badge.classList.toggle("orange", running);
+        badge.classList.toggle("gray", !running);
+      });
+    })();
+
+    // 提供商表单 展开/收起 演示
+    (function(){
+      var form = document.getElementById("provider-form");
+      var add = document.getElementById("add-provider");
+      var cancel = document.getElementById("provider-form-cancel");
+      if(!form || !add) return;
+      add.addEventListener("click", function(){ form.style.display = (form.style.display === "none") ? "" : "none"; });
+      if(cancel) cancel.addEventListener("click", function(){ form.style.display = "none"; });
+    })();
+  </script>
+</body>
+</html>

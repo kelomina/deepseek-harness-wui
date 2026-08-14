@@ -7,7 +7,9 @@ DeepSeek Harness 的 Windows 桌面前端：**Tauri 2 (Rust + WebView2) + TypeSc
 
 - 自动托管 dsh：应用启动时拉起 `dsh web`（bundled / npx / 自定义路径），退出时清理进程树。
 - 健康检查与看门狗：启动超时、心跳探测、自动重启（次数/窗口可配）、状态推送。
-- 全新自研前端（Fluent 2 视觉）：连接状态、设置、工作区、会话聊天、审批/提问响应。
+- 全新自研前端（设计稿 docs/UIDesign.desktop.html）：自定义标题栏（无边框窗口）、
+  Work/Code 双模式（Work=对话式会话；Code=AIDE 三栏：变更文件 + diff 逐 hunk 接受/拒绝 + AI 侧聊 + 终端/状态栏）、
+  欢迎页大输入、设置（模型提供商/API Key/运行配置）、工作区、连接状态。
 - Rust 反向代理：绕过 dsh `/api` 的浏览器 Origin 信任围栏（非 loopback Origin → 403）。
 - 协议层复用官方代码：`@deepseek-ai/dsh-host-apiproxy` 的 `AbstractApiClient` + zod schema，
   浏览器 WebSocket 传输参照官方 MIT 实现复刻。
@@ -62,3 +64,4 @@ https://github.com/deepseek-ai/deepseek-harness
 ## License
 
 MIT（与 dsh 一致）。协议层复用与参考的官方代码均保持 MIT 许可。
+

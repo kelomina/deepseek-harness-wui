@@ -41,3 +41,14 @@
   不编译进产物，应用代码不调用 glib。该告警不影响 Windows 交付物。
 - 处置：GitHub Dependabot alert #1 以 `won't fix` dismiss（注释含上述证据）。
 - 升级路径：tauri 发布支持 glib 0.20+ 的新版后执行 `cargo update` 并复验；届时移除本条目。
+
+## 2026-08-14：Code 模式数据契约（已确认，UI 已接入）
+
+- [事实] dsh 工具结果自带 diff：`ToolResultView` 的 `DiffResultView { diffs: FileDiff[] }`，
+  `FileDiff { path, oldText|null, newText }`；write/edit 工具把 `FsDiffMeta{diffs}` 附加于 tool/result meta 并持久化于会话日志，
+  逐 hunk、3 行上下文（官方 `dsh-tools`/`dsh-tool-fs` 类型与 README 实证）。
+- 终端输出：`TerminalCallView`/`TerminalResultView{output,exitCode,signal}`；代码查看：`ReadResultView`（带行号）。
+- [事实] dsh 无 pending-diff/接受语义：工具直接应用修改，diff 是"已应用"结果。设计稿的「接受全部/逐 hunk 接受/拒绝」
+  为 UI 层交互（本实现为本地状态标记；「拒绝=还原 oldText」需新增受限 Rust 写文件命令，列为后续迭代）。
+- 提供商 CRUD：llm.providers 只读；写路径 settings.mutate + credentials.set 可用；本版 UI 保存 API Key 到凭据层，
+  provider 路由/默认模型字段标注"由 dsh settings 管理（开发中）"。

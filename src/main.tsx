@@ -3,7 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { appStore } from "./lib/dsh/store";
 import { invoke } from "@tauri-apps/api/core";
-import "./styles/fluent.css";
+import "./styles/design.css";
 
 const errors = (window as unknown as { __dshErrors?: string[] }).__dshErrors ?? [];
 if (errors.length > 0) {
@@ -18,4 +18,3 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <App />
   </React.StrictMode>,
 );
-
