@@ -51,7 +51,9 @@ export function EventRow({ item }: { item: HistoryEntryLike }) {
       );
     }
     case "assistant/message": {
-      const text = contentText(ev.data?.content);
+      // dsh 的 assistant/message 结构为 { turn, step, message: { content: [...] } }
+      const data = ev.data as { message?: { content?: unknown }; content?: unknown };
+      const text = contentText(data?.message?.content ?? data?.content);
       return (
         <div className="msg-ai">
           <div className="msg-time">{formatTime(ev.time)}</div>
@@ -131,5 +133,6 @@ export function useSessionInteractives() {
 }
 
 export { shortId };
+
 
 
