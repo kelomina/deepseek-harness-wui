@@ -10,10 +10,28 @@ interface ProviderEdit {
   api: string;
   apiKeyEnv: string;
   baseURL: string;
-  modelsJson: string;
+  modelId: string;
+  modelName: string;
+  modelContext: string;
   keyDraft: string;
 }
 
+function buildModels(edit: ProviderEdit): Array<{ id: string; name: string; contextWindow?: number }> {
+  const id = edit.modelId.trim();
+  const ctx = edit.modelContext.trim();
+  const model: { id: string; name: string; contextWindow?: number } = {
+    id,
+    name: edit.modelName.trim() || id,
+  };
+  if (ctx) {
+    const n = Number(ctx);
+    if (!Number.isFinite(n) || n <= 0) {
+      throw new Error("模型上下文窗口必须是正整数");
+    }
+    model.contextWindow = n;
+  }
+  return [model];
+}
 export function SettingsPage() {
   const { config, status, connected, hiddenPresets } = useAppState();
   const [form, setForm] = useState<DshConfig | null>(null);
@@ -46,7 +64,7 @@ export function SettingsPage() {
   }, [refreshProviders]);
 
   const openAdd = () => {
-    setEdit({ ns: "llm-pi-ai", routeKey: "", displayName: "", api: "openai-completions", apiKeyEnv: "", baseURL: "", modelsJson: "", keyDraft: "" });
+    setEdit({ ns: "llm-pi-ai", routeKey: "", displayName: "", api: "openai-completions", apiKeyEnv: "", baseURL: "", modelId: "", modelName: "", modelContext: "", keyDraft: "" });
     setProviderMsg(null);
     setFormOpen(true);
   };
@@ -55,19 +73,28 @@ export function SettingsPage() {
     setProviderMsg(null);
     let apiKeyEnv = "";
     let baseURL = "";
-    let models: unknown[] = [];
+    let modelId = "";
+    let modelName = "";
+    let modelContext = "";
     try {
       const info = await appStore.getSettingsNamespace(p.settingsNs);
       const val = info?.value as { apiKeyEnv?: string; models?: unknown[]; providers?: Record<string, { apiKeyEnv?: string; baseURL?: string; models?: unknown[] }> } | undefined;
+      const firstModel = (() => {
+        const list = (val?.models ?? (val?.providers ? Object.values(val.providers).flatMap((x) => x.models ?? []) : [])) as Array<{ id?: string; name?: string; contextWindow?: number }>;
+        return list[0] ?? null;
+      })();
       if (p.settingsNs === "llm-deepseek") {
         apiKeyEnv = val?.apiKeyEnv ?? "DEEPSEEK_API_KEY";
-        models = val?.models ?? [];
       } else if (val?.providers) {
         const key = p.settingsPath[p.settingsPath.length - 1];
         const prof = key ? val.providers[key] : undefined;
         apiKeyEnv = prof?.apiKeyEnv ?? "";
         baseURL = prof?.baseURL ?? "";
-        models = prof?.models ?? [];
+      }
+      if (firstModel) {
+        modelId = firstModel.id ?? "";
+        modelName = firstModel.name ?? "";
+        modelContext = firstModel.contextWindow != null ? String(firstModel.contextWindow) : "";
       }
     } catch (e) {
       setProviderMsg(String(e));
@@ -79,7 +106,9 @@ export function SettingsPage() {
       api: "openai-completions",
       apiKeyEnv,
       baseURL,
-      modelsJson: models.length ? JSON.stringify(models, null, 2) : "",
+      modelId,
+      modelName,
+      modelContext,
       keyDraft: "",
     });
     setFormOpen(true);
@@ -93,11 +122,11 @@ export function SettingsPage() {
       if (edit.apiKeyEnv.trim() && edit.apiKeyEnv.trim() !== "DEEPSEEK_API_KEY") {
         ops.push({ op: "set", path: ["apiKeyEnv"], value: edit.apiKeyEnv.trim() });
       }
-      if (edit.modelsJson.trim()) {
+      if (edit.modelId.trim()) {
         try {
-          ops.push({ op: "set", path: ["models"], value: JSON.parse(edit.modelsJson) });
-        } catch {
-          setProviderMsg("models 不是合法 JSON 数组");
+          ops.push({ op: "set", path: ["models"], value: buildModels(edit) });
+        } catch (e) {
+          setProviderMsg(String(e));
           return;
         }
       }
@@ -111,11 +140,11 @@ export function SettingsPage() {
       ops.push({ op: "set", path: [...base, "api"], value: edit.api });
       ops.push({ op: "set", path: [...base, "apiKeyEnv"], value: ref });
       if (edit.baseURL.trim()) ops.push({ op: "set", path: [...base, "baseURL"], value: edit.baseURL.trim() });
-      if (edit.modelsJson.trim()) {
+      if (edit.modelId.trim()) {
         try {
-          ops.push({ op: "set", path: [...base, "models"], value: JSON.parse(edit.modelsJson) });
-        } catch {
-          setProviderMsg("models 不是合法 JSON 数组");
+          ops.push({ op: "set", path: [...base, "models"], value: buildModels(edit) });
+        } catch (e) {
+          setProviderMsg(String(e));
           return;
         }
       }
@@ -271,8 +300,19 @@ export function SettingsPage() {
                 <input className="grow" type="password" value={edit.keyDraft} onChange={(e) => setEdit({ ...edit, keyDraft: e.currentTarget.value })} placeholder="输入新值可覆盖；留空则保留已存值" autoComplete="off" />
               </div>
 
-              <div className="f-label">models（可选，JSON 数组）</div>
-              <textarea rows={4} style={{ width: "100%", fontFamily: "Consolas, monospace", fontSize: 12 }} value={edit.modelsJson} onChange={(e) => setEdit({ ...edit, modelsJson: e.currentTarget.value })} placeholder='[{"id":"model-id","name":"显示名","contextWindow":8192}]' />
+              <div className="f-label">模型（留空则不修改模型列表）</div>
+              <div className="two">
+                <div>
+                  <div className="f-label" style={{ marginTop: 0 }}>请求模型（API 模型 ID）</div>
+                  <input type="text" value={edit.modelId} onChange={(e) => setEdit({ ...edit, modelId: e.currentTarget.value })} placeholder="如 moonshot-v1-8k" />
+                </div>
+                <div>
+                  <div className="f-label" style={{ marginTop: 0 }}>显示模型（显示名）</div>
+                  <input type="text" value={edit.modelName} onChange={(e) => setEdit({ ...edit, modelName: e.currentTarget.value })} placeholder="留空则同请求模型" />
+                </div>
+              </div>
+              <div className="f-label" style={{ marginTop: 0 }}>模型上下文窗口（tokens）</div>
+              <input type="text" value={edit.modelContext} onChange={(e) => setEdit({ ...edit, modelContext: e.currentTarget.value })} placeholder="如 8192" />
 
               <div className="actions">
                 <button className="btn primary" onClick={() => void saveProvider()}>保存提供商</button>
@@ -328,3 +368,5 @@ export function SettingsPage() {
     </section>
   );
 }
+
+
