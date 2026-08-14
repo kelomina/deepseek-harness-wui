@@ -51,6 +51,7 @@ export interface AppState {
   activeWorkspaceId: WorkspaceId | null;
   hiddenPresets: string[];
   selectedModel: { provider: string; model: string } | null;
+  selectedReasoning: string | null;
   modelGroups: ModelProviderGroup[] | null;
   history: Map<SessionId, unknown[]>;
   loading: boolean;
@@ -72,6 +73,7 @@ const initialState: AppState = {
   activeWorkspaceId: null,
   hiddenPresets: [],
   selectedModel: null,
+  selectedReasoning: null,
   modelGroups: null,
   history: new Map(),
   loading: false,
@@ -108,18 +110,24 @@ class AppStore {
     const [status, config] = await Promise.all([dsh.status(), dsh.getConfig()]);
     let hiddenPresets: string[] = [];
     let selectedModel: { provider: string; model: string } | null = null;
+    let selectedReasoning: string | null = null;
     try {
       hiddenPresets = JSON.parse(window.localStorage.getItem("hiddenPresets") ?? "[]") as string[];
       selectedModel = JSON.parse(window.localStorage.getItem("selectedModel") ?? "null") as { provider: string; model: string } | null;
+      selectedReasoning = window.localStorage.getItem("selectedReasoning") as string | null;
     } catch {
       hiddenPresets = [];
       selectedModel = null;
+      selectedReasoning = null;
     }
     // Rust 配置中的模型选择优先（跨重启保留）
     if (config.selected_provider && config.selected_model) {
       selectedModel = { provider: config.selected_provider, model: config.selected_model };
     }
-    this.set({ status, config, hiddenPresets, selectedModel });
+    if (config.selected_reasoning) {
+      selectedReasoning = config.selected_reasoning;
+    }
+    this.set({ status, config, hiddenPresets, selectedModel, selectedReasoning });
     // 旧版本 localStorage 选择迁移到 Rust 配置
     if (selectedModel && !(config.selected_provider && config.selected_model)) {
       void invoke("dsh_set_selected_model", { provider: selectedModel.provider, model: selectedModel.model }).catch(() => {});
@@ -170,7 +178,7 @@ class AppStore {
       this.set({ connected: true });
       void this.loadModels();
       if (this.state.selectedSessionId) {
-        void this.loadHistory(this.state.selectedSessionId).catch(() => {});
+        void this.loadHistory(this.state.selectedSessionId).catch((e) => this.set({ error: `历史加载失败: ${String(e)}` }));
       }
       void this.pump(api.events.mux({}, abort.signal), "mux");
       void this.pump(api.events.host({}, abort.signal), "host");
@@ -306,7 +314,12 @@ class AppStore {
       const sel = this.state.selectedModel;
       if (sel) {
         try {
-          await api.sessions.selectModel({ sessionId: id, provider: sel.provider, model: sel.model });
+          await api.sessions.selectModel({
+            sessionId: id,
+            provider: sel.provider,
+            model: sel.model,
+            reasoningEffort: this.state.selectedReasoning ?? undefined,
+          });
         } catch {
           // 模型选择失败不阻断会话创建
         }
@@ -490,6 +503,24 @@ class AppStore {
     throw new Error(`获取模型目录失败: ${r.result.error.code}: ${r.result.error.message}`);
   }
 
+  setSelectedReasoning(id: string | null): void {
+    try {
+      if (id) {
+        window.localStorage.setItem("selectedReasoning", id);
+      } else {
+        window.localStorage.removeItem("selectedReasoning");
+      }
+    } catch {
+      // ignore storage failures
+    }
+    this.set({ selectedReasoning: id });
+    const sel = this.state.selectedModel;
+    if (sel) {
+      void invoke("dsh_set_selected_model", { provider: sel.provider, model: sel.model, reasoning: id ?? null })
+        .catch((e) => this.set({ error: `思考强度保存失败: ${String(e)}` }));
+    }
+  }
+
   setSelectedModel(sel: { provider: string; model: string } | null): void {
     try {
       window.localStorage.setItem("selectedModel", JSON.stringify(sel));
@@ -498,7 +529,7 @@ class AppStore {
     }
     this.set({ selectedModel: sel });
     if (sel) {
-      void invoke("dsh_set_selected_model", { provider: sel.provider, model: sel.model })
+      void invoke("dsh_set_selected_model", { provider: sel.provider, model: sel.model, reasoning: this.state.selectedReasoning ?? null })
         .catch((e) => this.set({ error: `模型选择保存失败: ${String(e)}` }));
     }
   }
@@ -537,7 +568,7 @@ class AppStore {
   selectSession(sessionId: SessionId | null): void {
     this.set({ selectedSessionId: sessionId });
     if (sessionId && this.state.api) {
-      void this.loadHistory(sessionId).catch(() => {});
+      void this.loadHistory(sessionId).catch((e) => this.set({ error: `历史加载失败: ${String(e)}` }));
     }
     // api 未就绪时由 connect() 在连接成功后加载
   }
@@ -552,6 +583,7 @@ export const appStore = new AppStore();
 export function useAppState(): AppState {
   return useSyncExternalStore(appStore.subscribe, appStore.get);
 }
+
 
 
 

@@ -273,3 +273,8 @@ input,textarea,.composer-input{user-select:text;-webkit-user-select:text}
 .side-head:hover{background:var(--bg-hover)}
 .toolcall-err{color:var(--red);border:1px solid #d99a9a;background:#fdeaea}
 
+/* ===== 修复：输入区固定，仅消息区滚动 ===== */
+#view-session{height:100%}
+#view-session .col-conv{height:100%;min-height:0}
+#view-session .msgs{flex:1;min-height:0;overflow:auto}
+#view-session .composer-wrap{flex:none}

@@ -31,6 +31,7 @@ export interface DshConfig {
   proxy_url: string | null;
   selected_provider: string | null;
   selected_model: string | null;
+  selected_reasoning: string | null;
 }
 
 export const dsh = {
@@ -49,6 +50,7 @@ export function onDshStatus(cb: (s: DshStatus) => void): Promise<() => void> {
 export function onDshLog(cb: (line: string) => void): Promise<() => void> {
   return listen<string>("dsh://log", (e) => cb(e.payload));
 }
+
 
 
 

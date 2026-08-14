@@ -18,11 +18,18 @@ fn frontend_error(message: String) {
 }
 
 #[tauri::command]
-fn dsh_set_selected_model(app: AppHandle, state: State<AppState>, provider: String, model: String) -> Result<(), String> {
+fn dsh_set_selected_model(
+    app: AppHandle,
+    state: State<AppState>,
+    provider: String,
+    model: String,
+    reasoning: Option<String>,
+) -> Result<(), String> {
     {
         let mut mgr = lock(state.manager.lock());
         mgr.config_mut().selected_provider = Some(provider);
         mgr.config_mut().selected_model = Some(model);
+        mgr.config_mut().selected_reasoning = reasoning;
         crate::dsh::config::save(&app, mgr.config())?;
     }
     Ok(())
@@ -124,6 +131,7 @@ pub fn run() {
             }
         });
 }
+
 
 
 

@@ -27,6 +27,7 @@ pub struct DshConfig {
     pub proxy_url: Option<String>,
     pub selected_provider: Option<String>,
     pub selected_model: Option<String>,
+    pub selected_reasoning: Option<String>,
 }
 
 impl Default for DshConfig {
@@ -47,6 +48,7 @@ impl Default for DshConfig {
             proxy_url: None,
             selected_provider: None,
             selected_model: None,
+            selected_reasoning: None,
         }
     }
 }
@@ -135,4 +137,5 @@ pub fn detect_system_proxy() -> Option<String> {
         Some(format!("http://{val}"))
     }
 }
+
 
