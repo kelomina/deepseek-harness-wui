@@ -570,28 +570,85 @@ class AppStore {
     }, 500);
     this.historySyncTimers.set(sessionId, timer);
   }
-  async retractMessage(sessionId: SessionId, seq: number): Promise<void> {
-    const api = this.requireApi();
-    const events = (this.state.history.get(sessionId) ?? []) as Array<{ event: { seq: number; type: string } }>;
-    let prevTurnEnd: number | undefined;
+  async collectRevertInfo(sessionId: SessionId, seq: number): Promise<{
+    prevTurnEnd: number | null;
+    files: Array<{ path: string; diffs: Array<{ seq: number; oldText: string | null; newText: string }> }>;
+  }> {
+    const events = (this.state.history.get(sessionId) ?? []) as Array<{
+      event: { seq: number; type: string };
+      view?: { view?: { card?: string; diffs?: Array<{ path: string; oldText: string | null; newText: string }> } };
+    }>;
+    let prevTurnEnd: number | null = null;
     for (const raw of events) {
       if (raw.event.type === "turn/end" && raw.event.seq < seq) prevTurnEnd = raw.event.seq;
     }
-    if (prevTurnEnd === undefined) {
+    const files = new Map<string, { path: string; diffs: Array<{ seq: number; oldText: string | null; newText: string }> }>();
+    if (prevTurnEnd !== null) {
+      for (const raw of events) {
+        if (raw.event.seq <= prevTurnEnd) continue;
+        if (raw.event.type !== "tool/result") continue;
+        const diffs = raw.view?.view?.diffs;
+        if (!diffs) continue;
+        for (const d of diffs) {
+          const f = files.get(d.path) ?? { path: d.path, diffs: [] };
+          f.diffs.push({ seq: raw.event.seq, oldText: d.oldText, newText: d.newText });
+          files.set(d.path, f);
+        }
+      }
+    }
+    return { prevTurnEnd, files: [...files.values()] };
+  }
+
+  async retractMessage(sessionId: SessionId, seq: number, revertFiles: boolean): Promise<void> {
+    const api = this.requireApi();
+    const info = await this.collectRevertInfo(sessionId, seq);
+    if (info.prevTurnEnd === null) {
       this.set({ error: "这是首条消息，dsh 无法回退到更早位置；可继续对话或归档会话" });
       return;
     }
     try {
-      const r = await api.sessions.fork({ sessionId, atSeq: prevTurnEnd });
-      if (r.result.ok) {
-        const newId = r.result.value.sessionId;
-        this.set({ selectedSessionId: newId });
-        await this.refreshSessions();
-        await this.loadHistory(newId);
-        this.set({ error: null });
-      } else {
+      const r = await api.sessions.fork({ sessionId, atSeq: info.prevTurnEnd });
+      if (!r.result.ok) {
         this.set({ error: `撤回失败: ${r.result.error.code}: ${r.result.error.message}` });
+        return;
       }
+      const newId = r.result.value.sessionId;
+      const errors: string[] = [];
+      if (revertFiles) {
+        const sess = this.state.sessions.find((s) => s.sessionId === sessionId);
+        const root = sess?.cwd ?? this.state.host?.cwd;
+        if (root) {
+          // 全部 diff 按 seq 降序（逆序还原）
+          const all = info.files
+            .flatMap((f) => f.diffs.map((d) => ({ path: f.path, seq: d.seq, oldText: d.oldText, newText: d.newText })))
+            .sort((a, b) => b.seq - a.seq);
+          for (const d of all) {
+            try {
+              await invoke("fs_revert", { root, path: d.path, expected: d.newText, oldText: d.oldText ?? null });
+            } catch (e) {
+              errors.push(`${d.path}: ${String(e).slice(0, 120)}`);
+            }
+          }
+          // 用 git 恢复被删除的文件（HEAD 中存在且当前缺失时）
+          try {
+            const restored = await invoke<string[]>("git_restore_deleted", { root });
+            if (restored.length) {
+              errors.push(`已用 git 恢复被删除文件: ${restored.slice(0, 5).join(", ")}${restored.length > 5 ? "…" : ""}`);
+            }
+          } catch (e) {
+            const msg = String(e);
+            if (!msg.includes("不是 git 仓库")) {
+              errors.push(`git 恢复被删文件失败: ${msg.slice(0, 120)}`);
+            }
+          }
+        }
+      }
+      this.set({
+        selectedSessionId: newId,
+        error: errors.length ? `已撤回，但 ${errors.length} 处文件回退失败：${errors.slice(0, 3).join("；")}` : null,
+      });
+      await this.refreshSessions();
+      await this.loadHistory(newId);
     } catch (e) {
       this.set({ error: `撤回失败: ${String(e)}` });
     }
@@ -640,6 +697,8 @@ export const appStore = new AppStore();
 export function useAppState(): AppState {
   return useSyncExternalStore(appStore.subscribe, appStore.get);
 }
+
+
 
 
 

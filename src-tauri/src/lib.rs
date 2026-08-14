@@ -40,6 +40,86 @@ fn clipboard_write(text: String) -> Result<(), String> {
     cb.set_text(text).map_err(|e| e.to_string())
 }
 #[tauri::command]
+fn fs_revert(root: String, path: String, expected: String, old_text: Option<String>) -> Result<String, String> {
+    if expected.len() > 2 * 1024 * 1024 {
+        return Err("expected 文本过大".to_string());
+    }
+    if let Some(old) = &old_text {
+        if old.len() > 2 * 1024 * 1024 {
+            return Err("oldText 文本过大".to_string());
+        }
+    }
+    // 校验目标路径位于 root 内（会话工作区）
+    let root_abs = std::fs::canonicalize(&root).map_err(|e| format!("root 不可访问: {e}"))?;
+    let path_abs = std::path::Path::new(&path);
+    let joined = if path_abs.is_absolute() {
+        path_abs.to_path_buf()
+    } else {
+        root_abs.join(path_abs)
+    };
+    let parent = joined.parent().ok_or("路径无父目录")?;
+    let parent_abs = std::fs::canonicalize(parent).map_err(|e| format!("父目录不可访问: {e}"))?;
+    let file_name = joined.file_name().ok_or("路径无文件名")?.to_os_string();
+    let target = parent_abs.join(file_name);
+    if !target.starts_with(&root_abs) {
+        return Err("目标路径不在会话工作区内".to_string());
+    }
+    match old_text {
+        Some(old) => {
+            let content = std::fs::read_to_string(&target).map_err(|e| format!("读取文件失败: {e}"))?;
+            let idx = content
+                .find(&expected)
+                .ok_or_else(|| format!("文件内容已变化，无法自动回退（找不到预期文本）"))?;
+            let new_content = format!("{}{}{}", &content[..idx], old, &content[idx + expected.len()..]);
+            std::fs::write(&target, new_content).map_err(|e| format!("写入失败: {e}"))?;
+            Ok("reverted".to_string())
+        }
+        None => {
+            // oldText 为空表示该文件是本次新建，回退即删除
+            if target.exists() {
+                std::fs::remove_file(&target).map_err(|e| format!("删除失败: {e}"))?;
+            }
+            Ok("removed".to_string())
+        }
+    }
+}
+#[tauri::command]
+fn git_restore_deleted(root: String) -> Result<Vec<String>, String> {
+    let root_abs = std::fs::canonicalize(&root).map_err(|e| format!("root 不可访问: {e}"))?;
+    let out = std::process::Command::new("git")
+        .args(["-C", root_abs.to_str().ok_or("root 路径非法")?, "status", "--porcelain"])
+        .output()
+        .map_err(|e| format!("git 不可用: {e}"))?;
+    if !out.status.success() {
+        return Err("git status 失败（可能不是 git 仓库）".to_string());
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut restored = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with('D') {
+            continue;
+        }
+        let path = trimmed[1..].trim();
+        if path.is_empty() || path.contains("->") || path.starts_with('"') {
+            continue;
+        }
+        let target = root_abs.join(path);
+        if !target.starts_with(&root_abs) {
+            continue;
+        }
+        if let Ok(o) = std::process::Command::new("git")
+            .args(["-C", root_abs.to_str().unwrap_or("."), "checkout", "--", path])
+            .output()
+        {
+            if o.status.success() {
+                restored.push(path.to_string());
+            }
+        }
+    }
+    Ok(restored)
+}
+#[tauri::command]
 fn dsh_status(state: State<AppState>) -> DshStatusView {
     lock(state.manager.lock()).status_view()
 }
@@ -95,6 +175,8 @@ pub fn run() {
             frontend_error,
             dsh_set_selected_model,
             clipboard_write,
+            fs_revert,
+            git_restore_deleted,
             dsh_status,
             dsh_start,
             dsh_stop,
@@ -137,6 +219,8 @@ pub fn run() {
             }
         });
 }
+
+
 
 
 

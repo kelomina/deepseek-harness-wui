@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { appStore, useAppState, type InteractiveItem } from "../lib/dsh/store";
 import { formatTime, shortId } from "./ui";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
+import { RetractModal, type RevertInfo } from "./RetractModal";
 
 interface HistoryEntryLike {
   seq: number;
@@ -48,6 +49,7 @@ export function mergeItems(
 
 function UserMessage({ text, time, sessionId, seq }: { text: string; time: number; sessionId?: SessionId; seq: number }) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [retract, setRetract] = useState<{ sessionId: SessionId; seq: number; info: RevertInfo } | null>(null);
   return (
     <>
       <div
@@ -85,15 +87,38 @@ function UserMessage({ text, time, sessionId, seq }: { text: string; time: numbe
             <button
               className="mm-item"
               onClick={() => {
-                if (sessionId) void appStore.retractMessage(sessionId, seq);
+                if (sessionId) {
+                  void (async () => {
+                    try {
+                      const info = await appStore.collectRevertInfo(sessionId, seq);
+                      setRetract({ sessionId, seq, info });
+                    } catch (e) {
+                      appStore.set({ error: `撤回准备失败: ${String(e)}` });
+                    }
+                  })();
+                }
                 setMenu(null);
               }}
             >
-              撤回（回退到此消息之前）
+              撤回…
             </button>
           </div>
         </>
       )}
+      {retract ? (
+        <RetractModal
+          info={retract.info}
+          onCancel={() => setRetract(null)}
+          onMessagesOnly={() => {
+            void appStore.retractMessage(retract.sessionId, retract.seq, false);
+            setRetract(null);
+          }}
+          onConfirm={() => {
+            void appStore.retractMessage(retract.sessionId, retract.seq, true);
+            setRetract(null);
+          }}
+        />
+      ) : null}
     </>
   );
 }
