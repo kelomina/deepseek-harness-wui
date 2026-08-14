@@ -35,6 +35,11 @@ fn dsh_set_selected_model(
     Ok(())
 }
 #[tauri::command]
+fn clipboard_write(text: String) -> Result<(), String> {
+    let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    cb.set_text(text).map_err(|e| e.to_string())
+}
+#[tauri::command]
 fn dsh_status(state: State<AppState>) -> DshStatusView {
     lock(state.manager.lock()).status_view()
 }
@@ -89,6 +94,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             frontend_error,
             dsh_set_selected_model,
+            clipboard_write,
             dsh_status,
             dsh_start,
             dsh_stop,
@@ -131,6 +137,7 @@ pub fn run() {
             }
         });
 }
+
 
 
 

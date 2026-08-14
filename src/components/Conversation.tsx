@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { appStore, useAppState, type InteractiveItem } from "../lib/dsh/store";
 import { formatTime, shortId } from "./ui";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
@@ -45,7 +46,7 @@ export function mergeItems(
   return [...map.values()].sort((a, b) => a.seq - b.seq);
 }
 
-function UserMessage({ text, time, sessionId }: { text: string; time: number; sessionId?: SessionId }) {
+function UserMessage({ text, time, sessionId, seq }: { text: string; time: number; sessionId?: SessionId; seq: number }) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   return (
     <>
@@ -63,9 +64,33 @@ function UserMessage({ text, time, sessionId }: { text: string; time: number; se
         <>
           <div style={{ position: "fixed", inset: 0, zIndex: 150 }} onClick={() => setMenu(null)} onContextMenu={(e) => { e.preventDefault(); setMenu(null); }} />
           <div className="model-menu" style={{ left: menu.x, top: menu.y, right: "auto", bottom: "auto", minWidth: 140, zIndex: 151 }}>
-            <button className="mm-item" onClick={() => { void navigator.clipboard.writeText(text).catch(() => {}); setMenu(null); }}>复制</button>
-            <button className="mm-item" onClick={() => { if (sessionId) void appStore.sendPrompt(sessionId, text); setMenu(null); }}>重试</button>
-            <button className="mm-item" onClick={() => { appStore.set({ error: "dsh 暂不支持撤回已发送消息；可继续对话或使用会话菜单归档" }); setMenu(null); }}>撤回（暂不支持）</button>
+            <button
+              className="mm-item"
+              onClick={() => {
+                void invoke("clipboard_write", { text }).catch((e) => appStore.set({ error: `复制失败: ${String(e)}` }));
+                setMenu(null);
+              }}
+            >
+              复制
+            </button>
+            <button
+              className="mm-item"
+              onClick={() => {
+                if (sessionId) void appStore.sendPrompt(sessionId, text);
+                setMenu(null);
+              }}
+            >
+              重试
+            </button>
+            <button
+              className="mm-item"
+              onClick={() => {
+                if (sessionId) void appStore.retractMessage(sessionId, seq);
+                setMenu(null);
+              }}
+            >
+              撤回（回退到此消息之前）
+            </button>
           </div>
         </>
       )}
@@ -78,7 +103,7 @@ export function EventRow({ item, sessionId }: { item: HistoryEntryLike; sessionI
   switch (ev.type) {
     case "user/message": {
       const text = contentText(ev.data?.content);
-      return <UserMessage text={text || "(空)"} time={ev.time} sessionId={sessionId} />;
+      return <UserMessage text={text || "(空)"} time={ev.time} sessionId={sessionId} seq={ev.seq} />;
     }
     case "assistant/message": {
       // dsh 的 assistant/message 结构为 { turn, step, message: { content: [...] } }
@@ -171,6 +196,7 @@ export function useSessionInteractives() {
 }
 
 export { shortId };
+
 
 
 

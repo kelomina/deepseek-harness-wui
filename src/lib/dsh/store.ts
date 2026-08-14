@@ -570,6 +570,33 @@ class AppStore {
     }, 500);
     this.historySyncTimers.set(sessionId, timer);
   }
+  async retractMessage(sessionId: SessionId, seq: number): Promise<void> {
+    const api = this.requireApi();
+    const events = (this.state.history.get(sessionId) ?? []) as Array<{ event: { seq: number; type: string } }>;
+    let prevTurnEnd: number | undefined;
+    for (const raw of events) {
+      if (raw.event.type === "turn/end" && raw.event.seq < seq) prevTurnEnd = raw.event.seq;
+    }
+    if (prevTurnEnd === undefined) {
+      this.set({ error: "这是首条消息，dsh 无法回退到更早位置；可继续对话或归档会话" });
+      return;
+    }
+    try {
+      const r = await api.sessions.fork({ sessionId, atSeq: prevTurnEnd });
+      if (r.result.ok) {
+        const newId = r.result.value.sessionId;
+        this.set({ selectedSessionId: newId });
+        await this.refreshSessions();
+        await this.loadHistory(newId);
+        this.set({ error: null });
+      } else {
+        this.set({ error: `撤回失败: ${r.result.error.code}: ${r.result.error.message}` });
+      }
+    } catch (e) {
+      this.set({ error: `撤回失败: ${String(e)}` });
+    }
+  }
+
   togglePinned(sessionId: SessionId): void {
     const list = this.state.pinnedSessions.includes(sessionId)
       ? this.state.pinnedSessions.filter((id) => id !== sessionId)
@@ -588,6 +615,9 @@ class AppStore {
     if (!r.result.ok) {
       this.set({ error: `归档会话失败: ${r.result.error.code}: ${r.result.error.message}` });
       return;
+    }
+    if (this.state.pinnedSessions.includes(sessionId)) {
+      this.togglePinned(sessionId);
     }
     await this.refreshSessions();
   }
@@ -610,6 +640,7 @@ export const appStore = new AppStore();
 export function useAppState(): AppState {
   return useSyncExternalStore(appStore.subscribe, appStore.get);
 }
+
 
 
 

@@ -23,3 +23,5 @@ axum = { version = "0.8", features = ["ws"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
 dirs = "6"
+arboard = "3"
+
