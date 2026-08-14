@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { appStore, useAppState } from "../lib/dsh/store";
 import { sessionTitle } from "../lib/dsh/sessionTitle";
 import { ApprovalCard, EventRow, QuestionCard, shortId, useConversationItems, useSessionInteractives } from "../components/Conversation";
@@ -8,13 +8,24 @@ import { WorkspaceMenu } from "../components/WorkspaceMenu";
 export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => void }) {
   const { connected, sessions, selectedSessionId, history } = useAppState();
   const [draft, setDraft] = useState("");
+  const msgsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (selectedSessionId && !history.has(selectedSessionId) && appStore.get().api) {
       void appStore.loadHistory(selectedSessionId).catch((e) => appStore.set({ error: `历史加载失败: ${String(e)}` }));
     }
   }, [selectedSessionId, history]);
+
   const items = useConversationItems();
+  // 贴底滚动：消息变化时若用户已在底部则跟随到底部（不打断上翻查看历史）
+  useEffect(() => {
+    const el = msgsRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (nearBottom) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [items.length]);
   const interactives = useSessionInteractives();
   const selected = sessions.find((s) => s.sessionId === selectedSessionId);
   const running = selected?.running ?? false;
@@ -35,7 +46,7 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
           <span className="conv-title">{selected ? (sessionTitle(selected) ?? shortId(selected.sessionId)) : "未选择会话（从左侧任务列表选择）"}</span>
           <span className={`badge ${running ? "orange" : "gray"}`}>{running ? "运行中" : "已停止"}</span>
         </div>
-        <div className="msgs">
+        <div className="msgs" ref={msgsRef}>
           {interactives.map((i) => (i.kind === "approval" ? <ApprovalCard key={i.rpcId} item={i} /> : <QuestionCard key={i.rpcId} item={i} />))}
           {items.length === 0 && <div className="empty-state">还没有消息</div>}
           {items.map((it) => <EventRow key={it.seq} item={it} />)}
@@ -79,6 +90,8 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
     </section>
   );
 }
+
+
 
 
 

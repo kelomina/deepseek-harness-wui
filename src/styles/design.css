@@ -45,8 +45,8 @@
   .side-bottom{margin-top:auto;border-top:1px solid #dcdce0;padding-top:12px;display:flex;flex-direction:column;gap:4px}
 
   /* 主区 */
-  .main{flex:1;min-width:0;min-height:0;background:var(--panel);border-radius:12px 12px 0 0;overflow-y:auto}
-  .view{display:none;padding:48px clamp(20px,4vw,40px);justify-content:center}
+  .main{flex:1;min-width:0;min-height:0;background:var(--panel);border-radius:12px 12px 0 0;overflow:hidden}
+  .view{display:none;padding:48px clamp(20px,4vw,40px);justify-content:center;overflow:auto}
   .view.active{display:flex}
   .col{display:flex;flex-direction:column;width:100%}
   .view-cap{font-size:12px;color:var(--text-3);margin-bottom:28px}
@@ -64,7 +64,7 @@
   #view-welcome .hero{margin-top:auto;margin-bottom:auto}
 
   /* ===== 会话页垂直布局 ===== */
-  #view-session{flex-direction:column;align-items:center;min-height:100%;padding-bottom:0}
+  #view-session{flex-direction:column;align-items:center;min-height:100%;padding-bottom:0;overflow:hidden}
   #view-session .col-conv{flex:1}
   #view-session .msgs{flex:1}
   #view-session .env-bar{border-radius:0}
@@ -278,3 +278,4 @@ input,textarea,.composer-input{user-select:text;-webkit-user-select:text}
 #view-session .col-conv{height:100%;min-height:0}
 #view-session .msgs{flex:1;min-height:0;overflow:auto}
 #view-session .composer-wrap{flex:none}
+

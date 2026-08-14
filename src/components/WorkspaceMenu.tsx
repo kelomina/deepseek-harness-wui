@@ -24,7 +24,7 @@ export function WorkspaceMenu() {
       {open && (
         <>
           <div style={{ position: "fixed", inset: 0, zIndex: 90 }} onClick={() => setOpen(false)} />
-          <div className="model-menu" style={{ left: 0, right: "auto", top: "calc(100% + 6px)" }}>
+          <div className="model-menu" style={{ left: 0, right: "auto", top: "auto", bottom: "calc(100% + 6px)", maxHeight: "min(60vh, 420px)", overflow: "auto" }}>
             <div className="mm-group">工作区</div>
             {workspaces.length === 0 && <div className="muted" style={{ padding: 8 }}>暂无工作区</div>}
             {workspaces.map((w) => (
@@ -49,3 +49,4 @@ export function WorkspaceMenu() {
     </div>
   );
 }
+
