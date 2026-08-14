@@ -55,7 +55,7 @@ export function EventRow({ item }: { item: HistoryEntryLike }) {
       return (
         <div className="msg-ai">
           <div className="msg-time">{formatTime(ev.time)}</div>
-          {text || "(空)"}
+          {text || "(模型未返回文本内容)"}
         </div>
       );
     }
@@ -71,8 +71,14 @@ export function EventRow({ item }: { item: HistoryEntryLike }) {
           {ev.type}: {JSON.stringify(ev.data).slice(0, 500)}
         </div>
       );
-    default:
-      return <div className="toolcall">{ev.type} @{ev.seq}</div>;
+    default: {
+      const isError = ev.type.toLowerCase().includes("error") || ev.type.toLowerCase().includes("llm/");
+      return (
+        <div className={`toolcall${isError ? " toolcall-err" : ""}`} title={`${ev.type} @${ev.seq}`}>
+          {ev.type} @{ev.seq}: {JSON.stringify(ev.data).slice(0, 600)}
+        </div>
+      );
+    }
   }
 }
 
@@ -117,3 +123,4 @@ export function useSessionInteractives() {
 }
 
 export { shortId };
+
