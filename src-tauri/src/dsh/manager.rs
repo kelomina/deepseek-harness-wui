@@ -109,6 +109,12 @@ impl DshManager {
         if self.child.is_some() {
             return Ok(());
         }
+        if port_in_use(self.config.port) {
+            return Err(format!(
+                "dsh 端口 {} 已被其他进程占用（可能是残留的 dsh/上一次未正常退出）；请先释放该端口或在设置中更换端口",
+                self.config.port
+            ));
+        }
         let (program, args) = self.build_command()?;
         let mut cmd = Command::new(&program);
         cmd.args(&args)
@@ -431,7 +437,9 @@ fn resolve_npx_cli() -> Result<String, String> {
     }
     Err("npx-cli.js not found (Node.js is required for npx mode)".to_string())
 }
-
-
-
-
+fn port_in_use(port: u16) -> bool {
+    if port == 0 {
+        return false;
+    }
+    std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+}
