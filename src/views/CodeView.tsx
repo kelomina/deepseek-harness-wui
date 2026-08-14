@@ -100,7 +100,7 @@ export function CodeView() {
 
         {changes.length === 0 ? (
           <div className="empty-state" style={{ flex: 1 }}>
-            当前会话还没有文件变更。在 Work 模式让 AI 读写代码后，这里会显示 diff。
+            当前会话还没有文件变更。消息内容请切换到左侧「Work」标签查看；AI 读写代码后这里会显示 diff。
           </div>
         ) : (
           <div className="code-layout">
@@ -236,3 +236,4 @@ export function CodeView() {
     </section>
   );
 }
+

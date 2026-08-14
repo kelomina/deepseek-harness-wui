@@ -26,7 +26,7 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
       <div className="col col-conv">
         <div className="view-cap">会话</div>
         <div className="conv-head">
-          <span className="conv-title">{selected ? (sessionTitle(selected) ?? shortId(selected.sessionId)) : "未选择会话"}</span>
+          <span className="conv-title">{selected ? (sessionTitle(selected) ?? shortId(selected.sessionId)) : "未选择会话（从左侧任务列表选择）"}</span>
           <span className={`badge ${running ? "orange" : "gray"}`}>{running ? "运行中" : "已停止"}</span>
         </div>
         <div className="msgs">
@@ -73,5 +73,6 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
     </section>
   );
 }
+
 
 

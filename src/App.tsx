@@ -13,7 +13,7 @@ import type { SessionId } from "@deepseek-ai/dsh-session/types";
 
 export default function App() {
   const [view, setView] = useState<View>("welcome");
-  const [mode, setMode] = useState<Mode>("code");
+  const [mode, setMode] = useState<Mode>("work");
   const { sessions, selectedSessionId, status, error } = useAppState();
 
   useEffect(() => {
@@ -57,4 +57,5 @@ export default function App() {
     </>
   );
 }
+
 

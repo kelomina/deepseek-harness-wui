@@ -118,6 +118,10 @@ class AppStore {
       selectedModel = { provider: config.selected_provider, model: config.selected_model };
     }
     this.set({ status, config, hiddenPresets, selectedModel });
+    // 旧版本 localStorage 选择迁移到 Rust 配置
+    if (selectedModel && !(config.selected_provider && config.selected_model)) {
+      void invoke("dsh_set_selected_model", { provider: selectedModel.provider, model: selectedModel.model }).catch(() => {});
+    }
     this.unlisteners.push(
       await onDshStatus((s) => {
         this.set({ status: s });
@@ -482,7 +486,8 @@ class AppStore {
     }
     this.set({ selectedModel: sel });
     if (sel) {
-      void invoke("dsh_set_selected_model", { provider: sel.provider, model: sel.model }).catch(() => {});
+      void invoke("dsh_set_selected_model", { provider: sel.provider, model: sel.model })
+        .catch((e) => this.set({ error: `模型选择保存失败: ${String(e)}` }));
     }
   }
 
@@ -535,6 +540,7 @@ export const appStore = new AppStore();
 export function useAppState(): AppState {
   return useSyncExternalStore(appStore.subscribe, appStore.get);
 }
+
 
 
 

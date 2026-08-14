@@ -24,11 +24,11 @@ export function ModelMenu({ onOpenSettings }: { onOpenSettings?: () => void }) {
     }
   };
 
-  let label = host?.model ?? "选择模型";
+  let label = host?.provider && host?.model ? `${host.provider} · ${host.model}` : "选择模型";
   if (selectedModel) {
     const g = groups?.find((x) => x.id === selectedModel.provider);
     const m = g?.models.find((x) => x.id === selectedModel.model);
-    label = m?.name ?? selectedModel.model;
+    label = `${selectedModel.provider} · ${m?.name ?? selectedModel.model}`;
   }
 
   return (
@@ -73,3 +73,4 @@ export function ModelMenu({ onOpenSettings }: { onOpenSettings?: () => void }) {
     </div>
   );
 }
+
