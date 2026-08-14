@@ -110,10 +110,28 @@ impl DshManager {
             return Ok(());
         }
         if port_in_use(self.config.port) {
-            return Err(format!(
-                "dsh 端口 {} 已被其他进程占用（可能是残留的 dsh/上一次未正常退出）；请先释放该端口或在设置中更换端口",
-                self.config.port
-            ));
+            let stale = find_dsh_pids(self.config.port);
+            if !stale.is_empty() {
+                for pid in &stale {
+                    kill_tree(*pid);
+                }
+                self.push_log(
+                    format!("[dsh] 端口 {} 被残留 dsh 进程占用，已自动清理: {:?}", self.config.port, stale),
+                    app,
+                );
+                for _ in 0..15 {
+                    if !port_in_use(self.config.port) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            }
+            if port_in_use(self.config.port) {
+                return Err(format!(
+                    "dsh 端口 {} 已被其他进程占用（非 dsh，无法自动清理）；请释放该端口或在设置中更换端口",
+                    self.config.port
+                ));
+            }
         }
         let (program, args) = self.build_command()?;
         let mut cmd = Command::new(&program);
@@ -443,3 +461,44 @@ fn port_in_use(port: u16) -> bool {
     }
     std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
 }
+
+/// Find stale dsh node processes (bundled bin.js web --port N or @deepseek-ai/dsh).
+/// Uses PowerShell Get-CimInstance because `wmic` is removed on modern Windows.
+fn find_dsh_pids(port: u16) -> Vec<u32> {
+    let mut out = Vec::new();
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let script = r#"Get-CimInstance Win32_Process -Filter "Name='node.exe'" | ForEach-Object { $_.ProcessId.ToString() + '|' + $_.CommandLine }"#;
+        let Ok(output) = Command::new("powershell")
+            .args(["-NoProfile", "-Command", script])
+            .creation_flags(0x0800_0000)
+            .output()
+        else {
+            return out;
+        };
+        let text = String::from_utf8_lossy(&output.stdout);
+        for raw in text.lines() {
+            let line = raw.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Some((pid_s, cmd)) = line.split_once('|') {
+                if let Ok(pid) = pid_s.trim().parse::<u32>() {
+                    if is_dsh_cmdline(cmd, port) {
+                        out.push(pid);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn is_dsh_cmdline(cmd: &str, port: u16) -> bool {
+    (cmd.contains("bin.js") && cmd.contains("web") && cmd.contains(&format!("--port {port}")))
+        || cmd.contains("@deepseek-ai/dsh")
+}
+
+
+
