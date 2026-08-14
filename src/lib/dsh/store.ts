@@ -11,6 +11,8 @@ import type {
   QuestionResponsePayload,
   RpcId,
   SessionSummary,
+  SettingsNamespaceView,
+  SettingsPathOpView,
   WorkspaceId,
   WorkspaceView,
 } from "@deepseek-ai/dsh-host-apiproxy/api";
@@ -365,6 +367,21 @@ class AppStore {
   async createDirectory(path: string, name: string) {
     const api = this.requireApi();
     return api.host.createDirectory({ path, name });
+  }
+
+  async getSettingsNamespace(ns: string): Promise<SettingsNamespaceView | null> {
+    const api = this.requireApi();
+    const r = await api.settings.describe({});
+    if (r.result.ok) return r.result.value.namespaces.find((n) => n.ns === ns) ?? null;
+    throw new Error(`读取设置失败: ${r.result.error.code}: ${r.result.error.message}`);
+  }
+
+  async mutateSettings(ns: string, ops: SettingsPathOpView[]): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.settings.mutate({ ns, ops });
+    if (!r.result.ok) {
+      throw new Error(`设置被拒绝: ${r.result.error.message || r.result.error.code}`);
+    }
   }
 
   async listProviders(): Promise<ConfigurableProviderView[]> {

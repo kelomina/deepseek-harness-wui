@@ -1,9 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
 import { dsh, type DshConfig, type ExecMode } from "../lib/tauri";
 import { appStore, useAppState } from "../lib/dsh/store";
-import type { ConfigurableProviderView, CredentialView } from "@deepseek-ai/dsh-host-apiproxy/api";
+import type { ConfigurableProviderView, SettingsPathOpView } from "@deepseek-ai/dsh-host-apiproxy/api";
 
-const DEEPSEEK_API_KEY_REF = "DEEPSEEK_API_KEY";
+interface ProviderEdit {
+  ns: "llm-deepseek" | "llm-pi-ai";
+  routeKey: string;
+  displayName: string;
+  api: string;
+  apiKeyEnv: string;
+  baseURL: string;
+  modelsJson: string;
+  keyDraft: string;
+}
 
 export function SettingsPage() {
   const { config, status, connected } = useAppState();
@@ -14,13 +23,8 @@ export function SettingsPage() {
 
   // 模型提供商
   const [providers, setProviders] = useState<ConfigurableProviderView[] | null>(null);
-  const [credState, setCredState] = useState<Record<string, CredentialView> | null>(null);
   const [formOpen, setFormOpen] = useState(false);
-  const [editName, setEditName] = useState("");
-  const [editType, setEditType] = useState("deepseek-official");
-  const [editBaseUrl, setEditBaseUrl] = useState("");
-  const [editKey, setEditKey] = useState("");
-  const [editModel, setEditModel] = useState("");
+  const [edit, setEdit] = useState<ProviderEdit | null>(null);
   const [providerMsg, setProviderMsg] = useState<string | null>(null);
 
   const refreshProviders = useCallback(async () => {
@@ -28,8 +32,6 @@ export function SettingsPage() {
     try {
       const ps = await appStore.listProviders();
       setProviders(ps);
-      const cr = await appStore.describeCredentials([DEEPSEEK_API_KEY_REF]);
-      setCredState(cr);
     } catch (e) {
       setProviderMsg(String(e));
     }
@@ -43,16 +45,102 @@ export function SettingsPage() {
     void refreshProviders();
   }, [refreshProviders]);
 
-  const saveProvider = async () => {
+  const openAdd = () => {
+    setEdit({ ns: "llm-pi-ai", routeKey: "", displayName: "", api: "openai-completions", apiKeyEnv: "", baseURL: "", modelsJson: "", keyDraft: "" });
     setProviderMsg(null);
+    setFormOpen(true);
+  };
+
+  const openEdit = async (p: ConfigurableProviderView) => {
+    setProviderMsg(null);
+    let apiKeyEnv = "";
+    let baseURL = "";
+    let models: unknown[] = [];
     try {
-      const ref = editType === "deepseek-official" ? DEEPSEEK_API_KEY_REF : editName.trim().toUpperCase().replace(/[^A-Z0-9_]/g, "_") + "_API_KEY";
-      if (editKey.trim()) {
-        await appStore.setCredential(ref, editKey.trim());
+      const info = await appStore.getSettingsNamespace(p.settingsNs);
+      const val = info?.value as { apiKeyEnv?: string; models?: unknown[]; providers?: Record<string, { apiKeyEnv?: string; baseURL?: string; models?: unknown[] }> } | undefined;
+      if (p.settingsNs === "llm-deepseek") {
+        apiKeyEnv = val?.apiKeyEnv ?? "DEEPSEEK_API_KEY";
+        models = val?.models ?? [];
+      } else if (val?.providers) {
+        const key = p.settingsPath[p.settingsPath.length - 1];
+        const prof = key ? val.providers[key] : undefined;
+        apiKeyEnv = prof?.apiKeyEnv ?? "";
+        baseURL = prof?.baseURL ?? "";
+        models = prof?.models ?? [];
       }
-      setEditKey("");
-      setProviderMsg(`「${editName.trim() || editType}」的 API Key 已写入凭据层（${ref}）；provider 路由/默认模型由 dsh settings 管理（开发中，可在 dsh web 配置）。`);
+    } catch (e) {
+      setProviderMsg(String(e));
+    }
+    setEdit({
+      ns: (p.settingsNs === "llm-deepseek" ? "llm-deepseek" : "llm-pi-ai") as ProviderEdit["ns"],
+      routeKey: p.provider,
+      displayName: p.displayName,
+      api: "openai-completions",
+      apiKeyEnv,
+      baseURL,
+      modelsJson: models.length ? JSON.stringify(models, null, 2) : "",
+      keyDraft: "",
+    });
+    setFormOpen(true);
+  };
+
+  const saveProvider = async () => {
+    if (!edit) return;
+    const ops: SettingsPathOpView[] = [];
+    const ref = edit.apiKeyEnv.trim() || "DEEPSEEK_API_KEY";
+    if (edit.ns === "llm-deepseek") {
+      if (edit.apiKeyEnv.trim() && edit.apiKeyEnv.trim() !== "DEEPSEEK_API_KEY") {
+        ops.push({ op: "set", path: ["apiKeyEnv"], value: edit.apiKeyEnv.trim() });
+      }
+      if (edit.modelsJson.trim()) {
+        try {
+          ops.push({ op: "set", path: ["models"], value: JSON.parse(edit.modelsJson) });
+        } catch {
+          setProviderMsg("models 不是合法 JSON 数组");
+          return;
+        }
+      }
+    } else {
+      const name = (edit.routeKey || edit.displayName).trim();
+      if (!name) {
+        setProviderMsg("需要提供商名称");
+        return;
+      }
+      const base = ["providers", name];
+      ops.push({ op: "set", path: [...base, "api"], value: edit.api });
+      ops.push({ op: "set", path: [...base, "apiKeyEnv"], value: ref });
+      if (edit.baseURL.trim()) ops.push({ op: "set", path: [...base, "baseURL"], value: edit.baseURL.trim() });
+      if (edit.modelsJson.trim()) {
+        try {
+          ops.push({ op: "set", path: [...base, "models"], value: JSON.parse(edit.modelsJson) });
+        } catch {
+          setProviderMsg("models 不是合法 JSON 数组");
+          return;
+        }
+      }
+    }
+    try {
+      await appStore.mutateSettings(edit.ns, ops);
+      if (edit.keyDraft.trim()) await appStore.setCredential(ref, edit.keyDraft.trim());
+      setProviderMsg(`提供商「${edit.displayName || edit.routeKey}」已保存（凭据引用 ${ref}）`);
       setFormOpen(false);
+      await refreshProviders();
+    } catch (e) {
+      setProviderMsg(String(e));
+    }
+  };
+
+  const deleteProvider = async (p: ConfigurableProviderView) => {
+    if (p.provider === "deepseek-official") {
+      setProviderMsg("DeepSeek 官方提供商为内置，不可删除");
+      return;
+    }
+    const key = p.settingsPath[p.settingsPath.length - 1];
+    if (!key) return;
+    try {
+      await appStore.mutateSettings(p.settingsNs, [{ op: "unset", path: ["providers", key] }]);
+      setProviderMsg(`已删除提供商「${p.provider}」`);
       await refreshProviders();
     } catch (e) {
       setProviderMsg(String(e));
@@ -78,8 +166,6 @@ export function SettingsPage() {
     }
   };
 
-  const deepseek = credState?.[DEEPSEEK_API_KEY_REF];
-
   return (
     <section className="view active" id="view-settings">
       <div className="col col-settings">
@@ -88,67 +174,77 @@ export function SettingsPage() {
         <div className="card wide">
           <div className="card-head">
             <span className="card-title">模型提供商</span>
-            <button className="btn primary" onClick={() => { setFormOpen(true); setEditName(""); setEditType("deepseek-official"); setEditBaseUrl(""); setEditModel(""); }}>
-              ＋ 添加提供商
-            </button>
+            <button className="btn primary" onClick={openAdd}>＋ 添加提供商</button>
           </div>
 
-          {!connected && <div className="muted">dsh 未连接，无法查看或配置凭据</div>}
+          {!connected && <div className="muted">dsh 未连接，无法查看或配置提供商</div>}
           {connected && providers === null && <div className="muted">加载中…</div>}
           {connected && (
             <div className="provider-list">
               {(providers ?? []).map((p) => (
                 <div className="provider" key={p.provider}>
                   <b>{p.displayName}</b>
-                  <span className="pid">{p.provider}{p.settingsNs ? ` · ${p.settingsNs}` : ""}</span>
+                  <span className="pid">{p.provider} · {p.settingsNs}{p.settingsPath.length ? `/${p.settingsPath.slice(-1)[0]}` : ""}</span>
                   <span className={`badge ${p.active ? "green" : "gray"}`}>{p.active ? "激活" : "未激活"}</span>
                   <span className="p-act">
-                    <span className="link" onClick={() => { setFormOpen(true); setEditName(p.displayName); setEditType(p.provider); }}>编辑</span>
-                    <span className="link danger" title="由 dsh settings 管理（开发中）">删除</span>
+                    {!p.active && <span className="link" onClick={() => void openEdit(p)}>激活</span>}
+                    <span className="link" onClick={() => void openEdit(p)}>编辑</span>
+                    <span className="link danger" onClick={() => void deleteProvider(p)}>删除</span>
                   </span>
                 </div>
               ))}
               {providers && providers.length === 0 && <div className="muted">未发现提供商</div>}
             </div>
           )}
+          {providerMsg && <div className="hint" style={{ marginTop: 10 }}>{providerMsg}</div>}
 
-          {formOpen && (
+          {formOpen && edit && (
             <div className="p-form" id="provider-form">
               <div className="card-head" style={{ marginBottom: 4 }}>
-                <span className="card-title">编辑提供商</span>
-                <span className="sub">路由/默认模型字段由 dsh settings 管理（开发中）；本表单当前保存 API Key 到凭据层</span>
+                <span className="card-title">{edit.routeKey && edit.ns === "llm-pi-ai" ? `编辑提供商 ${edit.routeKey}` : "添加提供商"}</span>
+                <span className="sub">{edit.ns === "llm-deepseek" ? "DeepSeek 官方（llm-deepseek）" : "OpenAI 兼容路由（llm-pi-ai）"}</span>
               </div>
-              <div className="two">
-                <div>
-                  <div className="f-label">名称</div>
-                  <input type="text" value={editName} onChange={(e) => setEditName(e.currentTarget.value)} placeholder="如 DeepSeek" />
+
+              {edit.ns === "llm-pi-ai" && (
+                <div className="two">
+                  <div>
+                    <div className="f-label">名称（路由 key）</div>
+                    <input type="text" value={edit.displayName} onChange={(e) => setEdit({ ...edit, displayName: e.currentTarget.value })} placeholder="如 moonshot" disabled={!!edit.routeKey} />
+                  </div>
+                  <div>
+                    <div className="f-label">Wire 协议</div>
+                    <select value={edit.api} onChange={(e) => setEdit({ ...edit, api: e.currentTarget.value })}>
+                      <option value="openai-completions">openai-completions</option>
+                      <option value="openai-responses">openai-responses</option>
+                      <option value="anthropic-messages">anthropic-messages</option>
+                    </select>
+                  </div>
                 </div>
-                <div>
-                  <div className="f-label">提供商类型</div>
-                  <select value={editType} onChange={(e) => setEditType(e.currentTarget.value)}>
-                    <option value="deepseek-official">deepseek-official</option>
-                    <option value="openai-compatible">openai-compatible</option>
-                    <option value="anthropic-compatible">anthropic-compatible</option>
-                    <option value="custom">custom</option>
-                  </select>
-                </div>
-              </div>
-              <div className="f-label">Base URL（官方类型可留空）</div>
-              <input type="text" value={editBaseUrl} onChange={(e) => setEditBaseUrl(e.currentTarget.value)} placeholder="https://api.deepseek.com" />
-              <div className="f-label">API Key（凭据引用）</div>
+              )}
+
+              <div className="f-label">凭据引用（apiKeyEnv）</div>
+              <input type="text" value={edit.apiKeyEnv} onChange={(e) => setEdit({ ...edit, apiKeyEnv: e.currentTarget.value })} placeholder={edit.ns === "llm-deepseek" ? "DEEPSEEK_API_KEY" : "如 MOONSHOT_API_KEY"} />
+
+              {edit.ns === "llm-pi-ai" && (
+                <>
+                  <div className="f-label">Base URL</div>
+                  <input type="text" value={edit.baseURL} onChange={(e) => setEdit({ ...edit, baseURL: e.currentTarget.value })} placeholder="https://api.moonshot.cn/v1" />
+                </>
+              )}
+
+              <div className="f-label">API Key（写入凭据层，应用不存储）</div>
               <div className="row">
-                <input className="grow" type="password" value={editKey} onChange={(e) => setEditKey(e.currentTarget.value)} placeholder="已配置（输入新值可覆盖）" autoComplete="off" />
-                <button className="btn primary" onClick={() => void saveProvider()}>保存</button>
-                <button className="btn danger-o" onClick={() => { void appStore.unsetCredential(editType === "deepseek-official" ? DEEPSEEK_API_KEY_REF : (editName.trim().toUpperCase().replace(/[^A-Z0-9_]/g, "_") + "_API_KEY")); }}>清除</button>
+                <input className="grow" type="password" value={edit.keyDraft} onChange={(e) => setEdit({ ...edit, keyDraft: e.currentTarget.value })} placeholder="输入新值可覆盖；留空则保留已存值" autoComplete="off" />
               </div>
-              <div className="f-label">默认模型</div>
-              <input type="text" value={editModel} onChange={(e) => setEditModel(e.currentTarget.value)} placeholder="deepseek-v4-flash-0731" />
+
+              <div className="f-label">models（可选，JSON 数组）</div>
+              <textarea rows={4} style={{ width: "100%", fontFamily: "Consolas, monospace", fontSize: 12 }} value={edit.modelsJson} onChange={(e) => setEdit({ ...edit, modelsJson: e.currentTarget.value })} placeholder='[{"id":"model-id","name":"显示名","contextWindow":8192}]' />
+
               <div className="actions">
                 <button className="btn primary" onClick={() => void saveProvider()}>保存提供商</button>
                 <button className="btn" onClick={() => setFormOpen(false)}>取消</button>
               </div>
-              <div className="hint">状态：<span className={`badge ${deepseek?.configured ? "green" : "gray"}`}>{deepseek?.configured ? "已配置" : "未配置"}</span> · Key 仅写入 dsh 凭据层，应用不存储</div>
-              {providerMsg && <div className="hint">{providerMsg}</div>}
+              <div className="hint">保存即写入 dsh settings（live 生效）；添加的路由会立即激活。DeepSeek 官方无需 baseURL；模型选择在新建会话时进行。</div>
             </div>
           )}
         </div>
@@ -198,3 +294,4 @@ export function SettingsPage() {
     </section>
   );
 }
+

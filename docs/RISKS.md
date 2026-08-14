@@ -50,5 +50,7 @@
 - 终端输出：`TerminalCallView`/`TerminalResultView{output,exitCode,signal}`；代码查看：`ReadResultView`（带行号）。
 - [事实] dsh 无 pending-diff/接受语义：工具直接应用修改，diff 是"已应用"结果。设计稿的「接受全部/逐 hunk 接受/拒绝」
   为 UI 层交互（本实现为本地状态标记；「拒绝=还原 oldText」需新增受限 Rust 写文件命令，列为后续迭代）。
-- 提供商 CRUD：llm.providers 只读；写路径 settings.mutate + credentials.set 可用；本版 UI 保存 API Key 到凭据层，
-  provider 路由/默认模型字段标注"由 dsh settings 管理（开发中）"。
+- 提供商 CRUD：已实现真实写路径（2026-08-14 实验实证）——`settings.mutate`（set/unset path）增删改路由，
+  `credentials.set` 写 Key；添加 llm-pi-ai 路由需显式 `api`（openai-completions|openai-responses|anthropic-messages），
+  保存即激活（active=true）。"默认模型"无 per-provider 字段，模型选择在新建会话时进行。
+
