@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { appStore, useAppState } from "../lib/dsh/store";
 import { sessionTitle } from "../lib/dsh/sessionTitle";
-import { shortId, useConversationItems } from "../components/Conversation";
+import { shortId, useConversationItems, useLiveAssistant } from "../components/Conversation";
 
 interface FileDiff {
   path: string;
@@ -67,6 +67,7 @@ function collectTerminal(items: Array<{ event: { type: string }; view?: unknown 
 export function CodeView() {
   const { sessions, selectedSessionId, status, activeWorkspaceId, workspaces, connected } = useAppState();
   const items = useConversationItems();
+  const liveAssistant = useLiveAssistant();
   const selected = sessions.find((s) => s.sessionId === selectedSessionId);
   const activeWs = workspaces.find((w) => w.workspaceId === activeWorkspaceId) ?? null;
 
@@ -195,7 +196,8 @@ export function CodeView() {
               {chat.map((m, i) => (
                 <div key={i} className={`c-msg ${m.role}`}>{m.text}</div>
               ))}
-              {selected?.running && <div className="thinking-indicator">● 模型正在思考中…</div>}
+              {liveAssistant?.text && <div className="c-msg ai">{liveAssistant.text}</div>}
+              {selected?.running && !liveAssistant?.text && <div className="thinking-indicator">● 模型正在思考中…</div>}
             </div>
             <div className="chat-input">
               <input

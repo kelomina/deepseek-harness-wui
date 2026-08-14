@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { appStore, useAppState, type InteractiveItem } from "../lib/dsh/store";
+import { appStore, useAppState, type InteractiveItem, type LiveStream } from "../lib/dsh/store";
 import { formatTime, shortId } from "./ui";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import { RetractModal, type RevertInfo } from "./RetractModal";
@@ -124,34 +124,67 @@ function UserMessage({ text, time, sessionId, seq }: { text: string; time: numbe
   );
 }
 
+function AssistantMessage({ ev }: { ev: HistoryEntryLike["event"] }) {
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const data = ev.data as { message?: { content?: unknown }; content?: unknown };
+  const blocks = (data?.message?.content ?? data?.content) as Array<{ type?: string; text?: string; thinking?: string }> | undefined;
+  const list = Array.isArray(blocks) ? blocks : [];
+  const reasoning = list
+    .filter((b) => b.type === "reasoning" || b.type === "thinking")
+    .map((b) => b.text ?? b.thinking ?? "")
+    .join("\n");
+  const text = list.filter((b) => b.type === "text").map((b) => b.text ?? "").join("");
+  return (
+    <>
+      <div
+        className="msg-ai"
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setMenu({ x: e.clientX, y: e.clientY });
+        }}
+      >
+        <div className="msg-time">{formatTime(ev.time)}</div>
+        {reasoning && (
+          <details className="reasoning-details">
+            <summary>思考过程</summary>
+            <div className="reasoning-body">{reasoning}</div>
+          </details>
+        )}
+        {text ? <Markdown text={text} /> : <span>（模型未返回文本内容）</span>}
+      </div>
+      {menu && (
+        <>
+          <div style={{ position: "fixed", inset: 0, zIndex: 150 }} onClick={() => setMenu(null)} onContextMenu={(e) => { e.preventDefault(); setMenu(null); }} />
+          <div className="model-menu" style={{ left: menu.x, top: menu.y, right: "auto", bottom: "auto", minWidth: 140, zIndex: 151 }}>
+            <button
+              className="mm-item"
+              onClick={() => {
+                void invoke("clipboard_write", { text }).catch((e) => appStore.set({ error: `复制失败: ${String(e)}` }));
+                setMenu(null);
+              }}
+            >
+              复制
+            </button>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
 export function EventRow({ item, sessionId }: { item: HistoryEntryLike; sessionId?: SessionId }) {
   const ev = item.event;
   switch (ev.type) {
     case "user/message": {
-      const text = contentText(ev.data?.content);
+      const data = ev.data as { content?: unknown; source?: { kind?: string }; message?: { content?: unknown; source?: { kind?: string } } };
+      const sourceKind = data?.source?.kind ?? data?.message?.source?.kind;
+      // 隐藏 dsh 注入的系统上下文（系统提示词快照、skill catalog、AGENTS.md 等），只展示真实用户消息
+      if (sourceKind && sourceKind !== "user") return null;
+      const text = contentText(data?.content ?? data?.message?.content);
       return <UserMessage text={text || "(空)"} time={ev.time} sessionId={sessionId} seq={ev.seq} />;
     }
-        case "assistant/message": {
-      const data = ev.data as { message?: { content?: unknown }; content?: unknown };
-      const blocks = (data?.message?.content ?? data?.content) as Array<{ type?: string; text?: string; thinking?: string }> | undefined;
-      const list = Array.isArray(blocks) ? blocks : [];
-      const reasoning = list
-        .filter((b) => b.type === "reasoning" || b.type === "thinking")
-        .map((b) => b.text ?? b.thinking ?? "")
-        .join("\n");
-      const text = list.filter((b) => b.type === "text").map((b) => b.text ?? "").join("");
-      return (
-        <div className="msg-ai">
-          <div className="msg-time">{formatTime(ev.time)}</div>
-          {reasoning && (
-            <details className="reasoning-details">
-              <summary>思考过程</summary>
-              <div className="reasoning-body">{reasoning}</div>
-            </details>
-          )}
-          {text ? <Markdown text={text} /> : <span>（模型未返回文本内容）</span>}
-        </div>
-      );
+    case "assistant/message": {
+      return <AssistantMessage ev={ev} />;
     }
 case "assistant/chunk":
     case "session/title":
@@ -231,6 +264,36 @@ export function useConversationItems() {
 export function useSessionInteractives() {
   const { selectedSessionId, interactives } = useAppState();
   return useMemo(() => interactives.filter((i) => i.sessionId === selectedSessionId), [interactives, selectedSessionId]);
+}
+
+/** 当前会话正在流式生成的回复快照（来自 store.streams）。 */
+export function useLiveAssistant(): LiveStream | null {
+  const { selectedSessionId, streams } = useAppState();
+  return useMemo(() => {
+    if (!selectedSessionId) return null;
+    const s = streams.get(selectedSessionId);
+    if (!s || s.finished || (!s.text && !s.reasoning)) return null;
+    return s;
+  }, [selectedSessionId, streams]);
+}
+
+/** 流式回复行：思考过程展开 + 文本实时累积 + 闪烁光标。 */
+export function LiveAssistantRow() {
+  const stream = useLiveAssistant();
+  if (!stream) return null;
+  return (
+    <div className="msg-ai live">
+      <div className="msg-time">生成中…</div>
+      {stream.reasoning && (
+        <details className="reasoning-details" open>
+          <summary>思考过程</summary>
+          <div className="reasoning-body">{stream.reasoning}</div>
+        </details>
+      )}
+      {stream.text ? <Markdown text={stream.text} /> : <span className="stream-cursor">▍</span>}
+      {stream.text && <span className="stream-cursor">▍</span>}
+    </div>
+  );
 }
 
 export { shortId };

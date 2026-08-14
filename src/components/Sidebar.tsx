@@ -30,9 +30,11 @@ export function Sidebar({
   const [pinnedOpen, setPinnedOpen] = useState(true);
   const [tasksOpen, setTasksOpen] = useState(true);
   const [ctx, setCtx] = useState<{ x: number; y: number; id: SessionId } | null>(null);
-  const { pinnedSessions, workspaces } = useAppState();
-  const pinned = sessions.filter((s) => pinnedSessions.includes(s.sessionId));
-  const unpinned = sessions.filter((s) => !pinnedSessions.includes(s.sessionId));
+  const { pinnedSessions, workspaces, archivedSessionIds } = useAppState();
+  // 归档（移除）的会话不再显示在左侧列表；dsh 的 sessions.list 会返回全部会话，需用归档集合过滤
+  const visible = sessions.filter((s) => !archivedSessionIds.includes(s.sessionId));
+  const pinned = visible.filter((s) => pinnedSessions.includes(s.sessionId));
+  const unpinned = visible.filter((s) => !pinnedSessions.includes(s.sessionId));
   const fmtTime = (ms: number) => {
     const d = new Date(ms);
     const now = new Date();

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { appStore, useAppState } from "../lib/dsh/store";
 import { sessionTitle } from "../lib/dsh/sessionTitle";
-import { ApprovalCard, EventRow, QuestionCard, shortId, useConversationItems, useSessionInteractives } from "../components/Conversation";
+import { ApprovalCard, EventRow, LiveAssistantRow, QuestionCard, shortId, useConversationItems, useLiveAssistant, useSessionInteractives } from "../components/Conversation";
 import { ModelMenu } from "../components/ModelMenu";
 import { WorkspaceMenu } from "../components/WorkspaceMenu";
 
@@ -17,7 +17,8 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
   }, [selectedSessionId, history]);
 
   const items = useConversationItems();
-  // 贴底滚动：消息变化时若用户已在底部则跟随到底部（不打断上翻查看历史）
+  const liveAssistant = useLiveAssistant();
+  // 贴底滚动：消息变化或流式内容增长时若用户已在底部则跟随到底部（不打断上翻查看历史）
   useEffect(() => {
     const el = msgsRef.current;
     if (!el) return;
@@ -25,7 +26,7 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
     if (nearBottom) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [items.length]);
+  }, [items.length, liveAssistant?.text.length, liveAssistant?.reasoning.length]);
   const interactives = useSessionInteractives();
   const selected = sessions.find((s) => s.sessionId === selectedSessionId);
   const running = selected?.running ?? false;
@@ -50,7 +51,8 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
           {interactives.map((i) => (i.kind === "approval" ? <ApprovalCard key={i.rpcId} item={i} /> : <QuestionCard key={i.rpcId} item={i} />))}
           {items.length === 0 && <div className="empty-state">还没有消息</div>}
           {items.map((it) => <EventRow key={it.seq} item={it} sessionId={selectedSessionId ?? undefined} />)}
-          {running && <div className="thinking-indicator">● 模型正在思考中…</div>}
+          <LiveAssistantRow />
+          {running && !liveAssistant && <div className="thinking-indicator">● 模型正在思考中…</div>}
         </div>
         <div className="composer-wrap">
           <div className="composer">

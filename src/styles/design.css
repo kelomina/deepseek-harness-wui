@@ -298,6 +298,10 @@ input,textarea,.composer-input{user-select:text;-webkit-user-select:text}
 .reasoning-details{margin:4px 0 8px;border:1px dashed var(--border);border-radius:8px;background:var(--panel-2);padding:6px 10px;font-size:12px}
 .reasoning-details summary{cursor:pointer;color:var(--text-2);font-weight:500}
 .reasoning-details .reasoning-body{white-space:pre-wrap;color:var(--text-2);margin-top:6px}
+/* 流式回复：进行中消息用虚线边框 + 闪烁光标 */
+.msg-ai.live{border-style:dashed;border-color:var(--accent)}
+.stream-cursor{display:inline-block;color:var(--accent);animation:stream-blink 1s ease-in-out infinite;margin-left:2px}
+@keyframes stream-blink{0%,100%{opacity:1}50%{opacity:.2}}
 .ws-group-head{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-2);padding:6px 4px 2px;cursor:pointer;border-radius:6px;user-select:none}
 .ws-group-head:hover{background:var(--bg-hover)}
 .ws-group-head .arrow{color:var(--text-3)}

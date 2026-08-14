@@ -36,6 +36,14 @@ export interface InteractiveItem {
   frame: MuxFrame;
 }
 
+export interface LiveStream {
+  turn: number;
+  step: number;
+  reasoning: string;
+  text: string;
+  finished: boolean;
+}
+
 export interface AppState {
   status: DshStatus | null;
   config: DshConfig | null;
@@ -55,6 +63,8 @@ export interface AppState {
   selectedReasoning: string | null;
   modelGroups: ModelProviderGroup[] | null;
   history: Map<SessionId, unknown[]>;
+  streams: Map<SessionId, LiveStream>;
+  archivedSessionIds: SessionId[];
   loading: boolean;
   error: string | null;
 }
@@ -78,6 +88,8 @@ const initialState: AppState = {
   selectedReasoning: null,
   modelGroups: null,
   history: new Map(),
+  streams: new Map(),
+  archivedSessionIds: [],
   loading: false,
   error: null,
 };
@@ -177,7 +189,7 @@ class AppStore {
       const desc = await api.host.describe({});
       if (desc.result.ok) this.set({ host: desc.result.value as HostDescription });
       const ws = await api.workspace.list({});
-      if (ws.result.ok) this.set({ workspaces: ws.result.value.items });
+      if (ws.result.ok) this.set({ workspaces: ws.result.value.items, archivedSessionIds: ws.result.value.archivedSessionIds });
       const sess = await api.sessions.list({});
       if (sess.result.ok) this.set({ sessions: sess.result.value.items });
       this.set({ connected: true });
@@ -202,6 +214,8 @@ class AppStore {
       workspaces: [],
       sessions: [],
       interactives: [],
+      streams: new Map(),
+      archivedSessionIds: [],
     });
   }
 
@@ -227,7 +241,8 @@ class AppStore {
         if (arr.length > 600) arr.shift();
         const live = new Map(this.state.live);
         live.set(frame.sessionId, arr);
-        this.set({ live });
+        const streams = this.mergeStream(frame);
+        this.set({ live, streams });
         if (frame.event.type === "assistant/message") {
           this.scheduleHistorySync(frame.sessionId);
         }
@@ -266,13 +281,52 @@ class AppStore {
     }
   }
 
+  /** 累积流式 assistant/chunk，为每个会话维护一份进行中的回复快照（不受 live 600 帧上限影响）。 */
+  private mergeStream(frame: MuxFrame): Map<SessionId, LiveStream> {
+    if (frame.type !== "session/event") return this.state.streams;
+    const ev = frame.event;
+    const sid = frame.sessionId;
+    const cur = this.state.streams.get(sid);
+    let next: LiveStream | null = null;
+    if (ev.type === "assistant/chunk") {
+      const data = ev.data as { turn: number; step: number; chunk?: { type?: string; text?: string } };
+      const chunk = data.chunk ?? {};
+      const base =
+        cur && cur.turn === data.turn && cur.step === data.step
+          ? cur
+          : { turn: data.turn, step: data.step, reasoning: "", text: "", finished: false };
+      next = {
+        ...base,
+        reasoning: chunk.type === "reasoning-delta" ? base.reasoning + (chunk.text ?? "") : base.reasoning,
+        text: chunk.type === "text-delta" ? base.text + (chunk.text ?? "") : base.text,
+        // finish chunk 不立即隐藏：等 assistant/message 到达后再切换，避免闪烁
+        finished: base.finished,
+      };
+    } else if (ev.type === "assistant/message" && cur) {
+      const data = ev.data as { turn?: number; step?: number };
+      if (cur.turn === data.turn && cur.step === data.step) {
+        next = { ...cur, finished: true };
+      }
+    } else if (ev.type === "turn/end" && cur) {
+      // turn 结束兜底：未收到 assistant/message（如错误/取消）时不再展示进行中快照
+      next = { ...cur, finished: true };
+    }
+    if (!next) return this.state.streams;
+    const streams = new Map(this.state.streams);
+    streams.set(sid, next);
+    return streams;
+  }
+
   private dispatchHost(envelope: { rpcId: RpcId; payload: unknown }): void {
     const frame = envelope.payload as HostFrame;
     switch (frame.type) {
       case "host/session-added":
       case "host/session-removed":
       case "host/session-status":
+        void this.refreshSessions();
+        break;
       case "host/archived-sessions-changed":
+        this.set({ archivedSessionIds: frame.archivedSessionIds });
         void this.refreshSessions();
         break;
       case "host/workspace-changed":
@@ -302,7 +356,7 @@ class AppStore {
   async refreshWorkspaces(): Promise<void> {
     if (!this.state.api) return;
     const r = await this.state.api.workspace.list({});
-    if (r.result.ok) this.set({ workspaces: r.result.value.items });
+    if (r.result.ok) this.set({ workspaces: r.result.value.items, archivedSessionIds: r.result.value.archivedSessionIds });
   }
 
   setActiveWorkspace(workspaceId: WorkspaceId | null): void {
@@ -676,6 +730,7 @@ class AppStore {
     if (this.state.pinnedSessions.includes(sessionId)) {
       this.togglePinned(sessionId);
     }
+    this.set({ archivedSessionIds: r.result.value.archivedSessionIds });
     await this.refreshSessions();
   }
 
