@@ -55,3 +55,12 @@
   保存即激活（active=true）。"默认模型"无 per-provider 字段，模型选择在新建会话时进行。
 - 预设 provider 删除语义（2026-08-14 实验实证）：dsh 内置 catalog 预设（pi-ai 40+ 路由）无法从 dsh 移除；
   已配置预设删除 = `unset providers.<name>` 回退未激活（仍显示）；未配置预设删除 = 应用本地隐藏（localStorage，可恢复）；DeepSeek 官方禁删。
+
+## 2026-08-14：模型空回复根因（已修复）——Node/dsh 不读系统代理
+
+- [事实] 本机系统代理 127.0.0.1:7897；curl 读环境代理可访问 opencode.ai，而 Node/dsh 默认不读环境代理（需 NODE_USE_ENV_PROXY=1），
+  直连被网络阻断 → dsh 报 TRANSPORT Connection error（重试后仍失败）→ 会话显示"空回复"。
+- 定位链：复现事件 assistant/chunk 为 error finish（TRANSPORT）→ 注入 HTTP(S)_PROXY + NODE_USE_ENV_PROXY=1 后 opencode-go 正常回复。
+- 修复：dsh-manager 启动 dsh 时注入 NODE_USE_ENV_PROXY=1 + HTTP_PROXY/HTTPS_PROXY/NO_PROXY；
+  代理地址默认自动检测系统代理（HKCU Internet Settings），设置页可开关/覆盖。
+- 附带：会话页现在会显示 llm/error 与错误 finish 事件（不再只见"空"）。

@@ -119,6 +119,19 @@ impl DshManager {
         if let Some(home) = &self.config.dsh_home {
             cmd.env("DSH_HOME", home);
         }
+        if self.config.proxy_enabled {
+            let proxy = self
+                .config
+                .proxy_url
+                .clone()
+                .or_else(crate::dsh::config::detect_system_proxy);
+            if let Some(p) = proxy {
+                cmd.env("NODE_USE_ENV_PROXY", "1");
+                cmd.env("HTTP_PROXY", &p);
+                cmd.env("HTTPS_PROXY", &p);
+                cmd.env("NO_PROXY", "localhost,127.0.0.1,::1");
+            }
+        }
         let cwd = self
             .config
             .workspace_dir
@@ -411,5 +424,6 @@ fn resolve_npx_cli() -> Result<String, String> {
     }
     Err("npx-cli.js not found (Node.js is required for npx mode)".to_string())
 }
+
 
 

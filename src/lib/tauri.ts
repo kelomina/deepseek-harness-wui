@@ -26,6 +26,8 @@ export interface DshConfig {
   restart_window_secs: number;
   health_interval_secs: number;
   log_max_lines: number;
+  proxy_enabled: boolean;
+  proxy_url: string | null;
 }
 
 export const dsh = {
@@ -44,3 +46,4 @@ export function onDshStatus(cb: (s: DshStatus) => void): Promise<() => void> {
 export function onDshLog(cb: (line: string) => void): Promise<() => void> {
   return listen<string>("dsh://log", (e) => cb(e.payload));
 }
+

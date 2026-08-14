@@ -23,6 +23,8 @@ pub struct DshConfig {
     pub restart_window_secs: u64,
     pub health_interval_secs: u64,
     pub log_max_lines: usize,
+    pub proxy_enabled: bool,
+    pub proxy_url: Option<String>,
 }
 
 impl Default for DshConfig {
@@ -39,6 +41,8 @@ impl Default for DshConfig {
             restart_window_secs: 600,
             health_interval_secs: 2,
             log_max_lines: 2000,
+            proxy_enabled: true,
+            proxy_url: None,
         }
     }
 }
@@ -56,6 +60,11 @@ impl DshConfig {
         }
         if self.log_max_lines == 0 {
             return Err("log_max_lines must be > 0".to_string());
+        }
+        if let Some(u) = &self.proxy_url {
+            if !u.starts_with("http://") && !u.starts_with("https://") {
+                return Err("proxy_url must start with http:// or https://".to_string());
+            }
         }
         if self.exec_mode == ExecMode::Path {
             let p = self.exec_path.as_deref().ok_or("exec_path is required in Path mode")?;
@@ -92,3 +101,33 @@ pub fn save(app: &tauri::AppHandle, cfg: &DshConfig) -> Result<(), String> {
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
 }
 
+/// Detect the Windows user-level system proxy (HKCU Internet Settings).
+/// Returns the proxy server with an http:// scheme, or None when disabled/unset.
+pub fn detect_system_proxy() -> Option<String> {
+    let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+    let enabled = std::process::Command::new("reg")
+        .args(["query", key, "/v", "ProxyEnable"])
+        .output()
+        .ok()?;
+    let enabled_text = String::from_utf8_lossy(&enabled.stdout);
+    let on = enabled_text.lines().any(|l| l.contains("0x1"));
+    if !on {
+        return None;
+    }
+    let out = std::process::Command::new("reg")
+        .args(["query", key, "/v", "ProxyServer"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let val = text
+        .lines()
+        .find(|l| l.to_ascii_lowercase().contains("proxyserver"))
+        .and_then(|l| l.split("REG_SZ").nth(1))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())?;
+    if val.starts_with("http://") || val.starts_with("https://") {
+        Some(val)
+    } else {
+        Some(format!("http://{val}"))
+    }
+}

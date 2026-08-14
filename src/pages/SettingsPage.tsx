@@ -387,6 +387,14 @@ export function SettingsPage() {
           <input type="text" value={form?.dsh_home ?? ""} disabled={running} onChange={(e) => set("dsh_home", e.currentTarget.value || null)} placeholder="留空使用系统默认" />
           <div className="f-label">
             <label style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+              <input type="checkbox" checked={form?.proxy_enabled ?? true} disabled={!form} onChange={(e) => set("proxy_enabled", e.currentTarget.checked)} /> 使用网络代理访问模型提供商
+            </label>
+          </div>
+          <div className="f-label">代理地址（留空自动检测系统代理）</div>
+          <input type="text" value={form?.proxy_url ?? ""} disabled={running || !form?.proxy_enabled} onChange={(e) => set("proxy_url", e.currentTarget.value || null)} placeholder="如 http://127.0.0.1:7897" />
+          <div className="hint">dsh（Node）默认不读环境代理，需显式注入；本机系统代理检测到 http://127.0.0.1:7897 时会自动使用，也可在此覆盖。</div>
+          <div className="f-label">
+            <label style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
               <input type="checkbox" checked={form?.auto_start ?? false} disabled={!form} onChange={(e) => set("auto_start", e.currentTarget.checked)} /> 应用启动时自动启动 dsh
             </label>
           </div>
@@ -411,6 +419,7 @@ export function SettingsPage() {
     </section>
   );
 }
+
 
 
 
