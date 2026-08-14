@@ -13,6 +13,11 @@ pub struct AppState {
 }
 
 #[tauri::command]
+fn frontend_error(message: String) {
+    eprintln!("[frontend-error] {message}");
+}
+
+#[tauri::command]
 fn dsh_status(state: State<AppState>) -> DshStatusView {
     lock(state.manager.lock()).status_view()
 }
@@ -65,6 +70,7 @@ pub fn run() {
             proxy: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
+            frontend_error,
             dsh_status,
             dsh_start,
             dsh_stop,
@@ -107,5 +113,6 @@ pub fn run() {
             }
         });
 }
+
 
 

@@ -9,6 +9,16 @@
 
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <script>
+  window.__dshErrors = window.__dshErrors || [];
+  window.addEventListener("error", function (e) {
+    window.__dshErrors.push("error: " + (e.message || "unknown") + " @ " + (e.filename || "") + ":" + (e.lineno || ""));
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    window.__dshErrors.push("unhandledrejection: " + String(e.reason));
+  });
+</script>
+<script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
+
