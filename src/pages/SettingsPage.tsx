@@ -15,17 +15,17 @@ interface ProviderEdit {
 }
 
 export function SettingsPage() {
-  const { config, status, connected } = useAppState();
+  const { config, status, connected, hiddenPresets } = useAppState();
   const [form, setForm] = useState<DshConfig | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
   const running = status?.state !== "stopped";
 
-  // 模型提供商
   const [providers, setProviders] = useState<ConfigurableProviderView[] | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [edit, setEdit] = useState<ProviderEdit | null>(null);
   const [providerMsg, setProviderMsg] = useState<string | null>(null);
+  const [showPresets, setShowPresets] = useState(false);
 
   const refreshProviders = useCallback(async () => {
     if (!connected) return;
@@ -133,19 +133,46 @@ export function SettingsPage() {
 
   const deleteProvider = async (p: ConfigurableProviderView) => {
     if (p.provider === "deepseek-official") {
-      setProviderMsg("DeepSeek 官方提供商为内置，不可删除");
+      setProviderMsg("DeepSeek 官方为内置提供商，不可删除");
       return;
     }
-    const key = p.settingsPath[p.settingsPath.length - 1];
-    if (!key) return;
-    try {
-      await appStore.mutateSettings(p.settingsNs, [{ op: "unset", path: ["providers", key] }]);
-      setProviderMsg(`已删除提供商「${p.provider}」`);
-      await refreshProviders();
-    } catch (e) {
-      setProviderMsg(String(e));
+    if (p.active) {
+      // 已配置：移除配置（回退为未激活预设）
+      const key = p.settingsPath[p.settingsPath.length - 1];
+      if (!key) return;
+      try {
+        await appStore.mutateSettings(p.settingsNs, [{ op: "unset", path: ["providers", key] }]);
+        setProviderMsg(`已移除提供商「${p.provider}」的配置（dsh 内置预设仍保留，可从列表隐藏）`);
+      } catch (e) {
+        setProviderMsg(String(e));
+        return;
+      }
     }
+    // 预设（未配置）或已移除配置：从列表隐藏（dsh 内置预设无法删除）
+    appStore.hidePreset(p.provider);
+    await refreshProviders();
   };
+
+  const providerRow = (p: ConfigurableProviderView, actionable: boolean) => (
+    <div className="provider" key={p.provider}>
+      <b>{p.displayName}</b>
+      <span className="pid">{p.provider} · {p.settingsNs}{p.settingsPath.length ? `/${p.settingsPath.slice(-1)[0]}` : ""}</span>
+      <span className={`badge ${p.active ? "green" : "gray"}`}>{p.active ? "激活" : "未激活"}</span>
+      <span className="p-act">
+        {!p.active && <span className="link" onClick={() => void openEdit(p)}>激活</span>}
+        <span className="link" onClick={() => void openEdit(p)}>编辑</span>
+        {p.provider === "deepseek-official" ? (
+          <span className="link danger" style={{ opacity: 0.4, cursor: "not-allowed" }} title="内置提供商，不可删除">删除</span>
+        ) : (
+          <span className="link danger" onClick={() => void deleteProvider(p)}>{actionable ? "删除" : "隐藏"}</span>
+        )}
+      </span>
+    </div>
+  );
+
+  const activeList = (providers ?? []).filter((p) => p.active || p.provider === "deepseek-official");
+  const presetList = (providers ?? []).filter((p) => !p.active && p.settingsNs === "llm-pi-ai" && !hiddenPresets.includes(p.provider));
+  const hiddenList = (providers ?? []).filter((p) => hiddenPresets.includes(p.provider));
 
   const set = <K extends keyof DshConfig>(key: K, value: DshConfig[K]) =>
     setForm((f) => (f ? { ...f, [key]: value } : f));
@@ -181,19 +208,26 @@ export function SettingsPage() {
           {connected && providers === null && <div className="muted">加载中…</div>}
           {connected && (
             <div className="provider-list">
-              {(providers ?? []).map((p) => (
-                <div className="provider" key={p.provider}>
-                  <b>{p.displayName}</b>
-                  <span className="pid">{p.provider} · {p.settingsNs}{p.settingsPath.length ? `/${p.settingsPath.slice(-1)[0]}` : ""}</span>
-                  <span className={`badge ${p.active ? "green" : "gray"}`}>{p.active ? "激活" : "未激活"}</span>
-                  <span className="p-act">
-                    {!p.active && <span className="link" onClick={() => void openEdit(p)}>激活</span>}
-                    <span className="link" onClick={() => void openEdit(p)}>编辑</span>
-                    <span className="link danger" onClick={() => void deleteProvider(p)}>删除</span>
-                  </span>
+              <div className="f-label">已配置 / 激活</div>
+              {activeList.map((p) => providerRow(p, true))}
+              {activeList.length === 0 && <div className="muted">暂无已配置提供商</div>}
+
+              <div className="f-label" style={{ marginTop: 14 }}>
+                预设（未配置）{presetList.length > 0 && <span className="link" style={{ marginLeft: 8 }} onClick={() => setShowPresets((v) => !v)}>{showPresets ? "收起" : `展开 ${presetList.length} 个`}</span>}
+              </div>
+              {showPresets && presetList.map((p) => providerRow(p, false))}
+              {showPresets && presetList.length === 0 && <div className="muted">没有未配置预设</div>}
+
+              {hiddenList.length > 0 && (
+                <div className="f-label" style={{ marginTop: 14 }}>已隐藏（dsh 内置预设，仅本地隐藏）
+                  {hiddenList.map((p) => (
+                    <span key={p.provider} style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 8 }}>
+                      <span style={{ color: "var(--text-2)" }}>{p.provider}</span>
+                      <span className="link" onClick={() => appStore.unhidePreset(p.provider)}>恢复</span>
+                    </span>
+                  ))}
                 </div>
-              ))}
-              {providers && providers.length === 0 && <div className="muted">未发现提供商</div>}
+              )}
             </div>
           )}
           {providerMsg && <div className="hint" style={{ marginTop: 10 }}>{providerMsg}</div>}
@@ -294,4 +328,3 @@ export function SettingsPage() {
     </section>
   );
 }
-

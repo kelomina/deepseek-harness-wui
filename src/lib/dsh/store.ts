@@ -46,6 +46,7 @@ export interface AppState {
   live: Map<SessionId, MuxFrame[]>;
   selectedSessionId: SessionId | null;
   activeWorkspaceId: WorkspaceId | null;
+  hiddenPresets: string[];
   history: Map<SessionId, unknown[]>;
   loading: boolean;
   error: string | null;
@@ -64,6 +65,7 @@ const initialState: AppState = {
   live: new Map(),
   selectedSessionId: null,
   activeWorkspaceId: null,
+  hiddenPresets: [],
   history: new Map(),
   loading: false,
   error: null,
@@ -96,7 +98,13 @@ class AppStore {
     if (this.started) return;
     this.started = true;
     const [status, config] = await Promise.all([dsh.status(), dsh.getConfig()]);
-    this.set({ status, config });
+    let hiddenPresets: string[] = [];
+    try {
+      hiddenPresets = JSON.parse(window.localStorage.getItem("hiddenPresets") ?? "[]") as string[];
+    } catch {
+      hiddenPresets = [];
+    }
+    this.set({ status, config, hiddenPresets });
     this.unlisteners.push(
       await onDshStatus((s) => {
         this.set({ status: s });
@@ -414,6 +422,26 @@ class AppStore {
     }
   }
 
+  hidePreset(provider: string): void {
+    const list = [...this.state.hiddenPresets.filter((p) => p !== provider), provider];
+    try {
+      window.localStorage.setItem("hiddenPresets", JSON.stringify(list));
+    } catch {
+      // ignore storage failures
+    }
+    this.set({ hiddenPresets: list });
+  }
+
+  unhidePreset(provider: string): void {
+    const list = this.state.hiddenPresets.filter((p) => p !== provider);
+    try {
+      window.localStorage.setItem("hiddenPresets", JSON.stringify(list));
+    } catch {
+      // ignore storage failures
+    }
+    this.set({ hiddenPresets: list });
+  }
+
   selectSession(sessionId: SessionId | null): void {
     this.set({ selectedSessionId: sessionId });
     if (sessionId) void this.loadHistory(sessionId);
@@ -429,6 +457,7 @@ export const appStore = new AppStore();
 export function useAppState(): AppState {
   return useSyncExternalStore(appStore.subscribe, appStore.get);
 }
+
 
 
 
