@@ -30,7 +30,7 @@ export function Sidebar({
   const [pinnedOpen, setPinnedOpen] = useState(true);
   const [tasksOpen, setTasksOpen] = useState(true);
   const [ctx, setCtx] = useState<{ x: number; y: number; id: SessionId } | null>(null);
-  const { pinnedSessions } = useAppState();
+  const { pinnedSessions, workspaces } = useAppState();
   const pinned = sessions.filter((s) => pinnedSessions.includes(s.sessionId));
   const unpinned = sessions.filter((s) => !pinnedSessions.includes(s.sessionId));
   const fmtTime = (ms: number) => {
@@ -38,6 +38,49 @@ export function Sidebar({
     const now = new Date();
     const sameDay = d.toDateString() === now.toDateString();
     return sameDay ? d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }) : "昨天";
+  };
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const taskItem = (s: SessionSummary) => (
+    <button
+      key={s.sessionId}
+      className={`task-item${s.sessionId === selectedSessionId && (view === "session" || view === "code") ? " active" : ""}`}
+      onClick={() => onSelectSession(s.sessionId)}
+      onContextMenu={(e) => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, id: s.sessionId }); }}
+    >
+      <span className={`dot${s.running ? " green" : ""}`} />
+      <span className="t-title">{sessionTitle(s) ?? s.sessionId.slice(0, 8)}</span>
+      <span className="t-time">{fmtTime(s.updatedAt)}</span>
+    </button>
+  );
+  const groupByWs = (list: SessionSummary[]) => {
+    const groups: Array<{ key: string; title: string; items: SessionSummary[] }> = [];
+    const map = new Map<string, SessionSummary[]>();
+    for (const s of list) {
+      const ws = workspaces.find((w) => w.sessionIds.includes(s.sessionId));
+      const key = ws ? ws.workspaceId : "ungrouped";
+      let arr = map.get(key);
+      if (!arr) { arr = []; map.set(key, arr); }
+      arr.push(s);
+    }
+    for (const [key, items] of map) {
+      const ws = workspaces.find((w) => w.workspaceId === key);
+      groups.push({ key, title: ws ? ws.title : "未分组", items });
+    }
+    return groups;
+  };
+  const renderGroup = (g: { key: string; title: string; items: SessionSummary[] }, prefix: string) => {
+    const ck = prefix + g.key;
+    const open = !collapsed[ck];
+    return (
+      <div key={ck}>
+        <div className="ws-group-head" onClick={() => setCollapsed((m) => ({ ...m, [ck]: open }))}>
+          <span className="arrow">{open ? "▾" : "›"}</span>
+          <span>{g.title}</span>
+          <span className="count">{g.items.length}</span>
+        </div>
+        {open && g.items.map(taskItem)}
+      </div>
+    );
   };
   return (
     <aside className="sidebar">
@@ -54,36 +97,14 @@ export function Sidebar({
           <span>置顶</span><span className="arrow">{pinnedOpen ? "▾" : "›"}</span>
         </div>
         {pinnedOpen && pinned.length === 0 && <div className="empty-state" style={{ padding: "6px 4px", textAlign: "left" }}>暂无置顶任务</div>}
-        {pinnedOpen && pinned.map((s) => (
-          <button
-            key={s.sessionId}
-            className={`task-item${s.sessionId === selectedSessionId && (view === "session" || view === "code") ? " active" : ""}`}
-            onClick={() => onSelectSession(s.sessionId)}
-            onContextMenu={(e) => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, id: s.sessionId }); }}
-          >
-            <span className={`dot${s.running ? " green" : ""}`} />
-            <span className="t-title">{sessionTitle(s) ?? s.sessionId.slice(0, 8)}</span>
-            <span className="t-time">{fmtTime(s.updatedAt)}</span>
-          </button>
-        ))}
+        {pinnedOpen && groupByWs(pinned).map((g) => renderGroup(g, "p:"))}
       </div>
       <div className="side-block">
         <div className="side-head" onClick={() => setTasksOpen((v) => !v)}>
           <span>任务列表</span><span className="arrow">{tasksOpen ? "▾" : "›"}</span>
         </div>
         {tasksOpen && unpinned.length === 0 && <div className="empty-state" style={{ padding: "8px 4px" }}>暂无会话</div>}
-        {tasksOpen && unpinned.map((s) => (
-          <button
-            key={s.sessionId}
-            className={`task-item${s.sessionId === selectedSessionId && (view === "session" || view === "code") ? " active" : ""}`}
-            onClick={() => onSelectSession(s.sessionId)}
-            onContextMenu={(e) => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, id: s.sessionId }); }}
-          >
-            <span className={`dot${s.running ? " green" : ""}`} />
-            <span className="t-title">{sessionTitle(s) ?? s.sessionId.slice(0, 8)}</span>
-            <span className="t-time">{fmtTime(s.updatedAt)}</span>
-          </button>
-        ))}
+        {tasksOpen && groupByWs(unpinned).map((g) => renderGroup(g, "t:"))}
       </div>
       {ctx && (
         <>

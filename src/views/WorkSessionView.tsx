@@ -50,6 +50,7 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
           {interactives.map((i) => (i.kind === "approval" ? <ApprovalCard key={i.rpcId} item={i} /> : <QuestionCard key={i.rpcId} item={i} />))}
           {items.length === 0 && <div className="empty-state">还没有消息</div>}
           {items.map((it) => <EventRow key={it.seq} item={it} sessionId={selectedSessionId ?? undefined} />)}
+          {running && <div className="thinking-indicator">● 模型正在思考中…</div>}
         </div>
         <div className="composer-wrap">
           <div className="composer">

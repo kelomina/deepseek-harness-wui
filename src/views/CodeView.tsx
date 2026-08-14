@@ -195,6 +195,7 @@ export function CodeView() {
               {chat.map((m, i) => (
                 <div key={i} className={`c-msg ${m.role}`}>{m.text}</div>
               ))}
+              {selected?.running && <div className="thinking-indicator">● 模型正在思考中…</div>}
             </div>
             <div className="chat-input">
               <input

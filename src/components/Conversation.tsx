@@ -4,6 +4,7 @@ import { appStore, useAppState, type InteractiveItem } from "../lib/dsh/store";
 import { formatTime, shortId } from "./ui";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import { RetractModal, type RevertInfo } from "./RetractModal";
+import { Markdown } from "./Markdown";
 
 interface HistoryEntryLike {
   seq: number;
@@ -60,7 +61,7 @@ function UserMessage({ text, time, sessionId, seq }: { text: string; time: numbe
         }}
       >
         <div className="msg-time">{formatTime(time)}</div>
-        {text || "(空)"}
+        {text ? <Markdown text={text} /> : "(空)"}
       </div>
       {menu && (
         <>
@@ -130,18 +131,29 @@ export function EventRow({ item, sessionId }: { item: HistoryEntryLike; sessionI
       const text = contentText(ev.data?.content);
       return <UserMessage text={text || "(空)"} time={ev.time} sessionId={sessionId} seq={ev.seq} />;
     }
-    case "assistant/message": {
-      // dsh 的 assistant/message 结构为 { turn, step, message: { content: [...] } }
+        case "assistant/message": {
       const data = ev.data as { message?: { content?: unknown }; content?: unknown };
-      const text = contentText(data?.message?.content ?? data?.content);
+      const blocks = (data?.message?.content ?? data?.content) as Array<{ type?: string; text?: string; thinking?: string }> | undefined;
+      const list = Array.isArray(blocks) ? blocks : [];
+      const reasoning = list
+        .filter((b) => b.type === "reasoning" || b.type === "thinking")
+        .map((b) => b.text ?? b.thinking ?? "")
+        .join("\n");
+      const text = list.filter((b) => b.type === "text").map((b) => b.text ?? "").join("");
       return (
         <div className="msg-ai">
           <div className="msg-time">{formatTime(ev.time)}</div>
-          {text || "(模型未返回文本内容)"}
+          {reasoning && (
+            <details className="reasoning-details">
+              <summary>思考过程</summary>
+              <div className="reasoning-body">{reasoning}</div>
+            </details>
+          )}
+          {text ? <Markdown text={text} /> : <span>（模型未返回文本内容）</span>}
         </div>
       );
     }
-    case "assistant/chunk":
+case "assistant/chunk":
     case "session/title":
     case "turn/start":
     case "step/start":
@@ -171,8 +183,9 @@ export function EventRow({ item, sessionId }: { item: HistoryEntryLike; sessionI
         raw.includes("TRANSPORT") ||
         raw.includes("Connection error") ||
         raw.includes("MISSING_CREDENTIAL");
+      if (!isError) return null;
       return (
-        <div className={`toolcall${isError ? " toolcall-err" : ""}`} title={`${ev.type} @${ev.seq}`}>
+        <div className="toolcall toolcall-err" title={`${ev.type} @${ev.seq}`}>
           {ev.type} @{ev.seq}: {raw.slice(0, 600)}
         </div>
       );
