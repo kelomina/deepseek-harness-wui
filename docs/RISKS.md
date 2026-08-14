@@ -31,3 +31,13 @@
 
 - 2026-08-14：spike 实证 Origin 围栏行为（403）；确认 0.1.0-rc.6 客户端包可安装；
   确认浏览器 bundle 不可直接 import，采用 AbstractApiClient 子类方案。
+
+## 已处置：Dependabot glib 告警（GHSA-wrw7-89jp-8q8g，2026-08-14）
+
+- 告警：`glib` `<0.20.0` 的 `VariantStrIter` Iterator 实现存在 unsoundness（medium）。
+- 无法升级原因：`tauri 2.11.5`（当前 crates.io 最新稳定版）锁定 `gtk ^0.18` → `glib ^0.18`；
+  glib 0.20+ 需要 gtk-rs 0.20+ 全家桶，上游尚未升级。`cargo update -p glib --precise 0.20.0` 实测被约束拒绝。
+- 影响面评估：本项目为 Windows-only 构建（WebView2）；glib/gtk 链属于非 Windows target 依赖，
+  不编译进产物，应用代码不调用 glib。该告警不影响 Windows 交付物。
+- 处置：GitHub Dependabot alert #1 以 `won't fix` dismiss（注释含上述证据）。
+- 升级路径：tauri 发布支持 glib 0.20+ 的新版后执行 `cargo update` 并复验；届时移除本条目。
