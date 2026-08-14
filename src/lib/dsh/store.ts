@@ -51,6 +51,7 @@ export interface AppState {
   activeWorkspaceId: WorkspaceId | null;
   hiddenPresets: string[];
   selectedModel: { provider: string; model: string } | null;
+  modelGroups: ModelProviderGroup[] | null;
   history: Map<SessionId, unknown[]>;
   loading: boolean;
   error: string | null;
@@ -71,6 +72,7 @@ const initialState: AppState = {
   activeWorkspaceId: null,
   hiddenPresets: [],
   selectedModel: null,
+  modelGroups: null,
   history: new Map(),
   loading: false,
   error: null,
@@ -166,6 +168,7 @@ class AppStore {
       const sess = await api.sessions.list({});
       if (sess.result.ok) this.set({ sessions: sess.result.value.items });
       this.set({ connected: true });
+      void this.loadModels();
       if (this.state.selectedSessionId) {
         void this.loadHistory(this.state.selectedSessionId).catch(() => {});
       }
@@ -471,6 +474,15 @@ class AppStore {
     throw new Error(`探测失败: ${r.result.error.message || r.result.error.code}`);
   }
 
+  async loadModels(): Promise<void> {
+    try {
+      const groups = await this.listModels();
+      this.set({ modelGroups: groups });
+    } catch {
+      // 目录加载失败不阻塞
+    }
+  }
+
   async listModels(): Promise<ModelProviderGroup[]> {
     const api = this.requireApi();
     const r = await api.llm.models({});
@@ -540,6 +552,7 @@ export const appStore = new AppStore();
 export function useAppState(): AppState {
   return useSyncExternalStore(appStore.subscribe, appStore.get);
 }
+
 
 
 

@@ -7,28 +7,40 @@ export function ModelMenu({ onOpenSettings }: { onOpenSettings?: () => void }) {
   const [groups, setGroups] = useState<ModelProviderGroup[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { selectedModel, host } = useAppState();
+  const { selectedModel, host, modelGroups } = useAppState();
 
   const toggle = async () => {
     const next = !open;
     setOpen(next);
-    if (next && groups === null) {
-      setLoading(true);
-      try {
-        setGroups(await appStore.listModels());
-      } catch (e) {
-        setError(String(e));
-      } finally {
-        setLoading(false);
+    if (next) {
+      const source = groups ?? modelGroups;
+      if (source) {
+        setGroups(source);
+      } else {
+        setLoading(true);
+        try {
+          const list = await appStore.listModels();
+          setGroups(list);
+          appStore.set({ modelGroups: list });
+        } catch (e) {
+          setError(String(e));
+        } finally {
+          setLoading(false);
+        }
       }
     }
   };
 
-  let label = host?.provider && host?.model ? `${host.provider} · ${host.model}` : "选择模型";
+  const catalog = groups ?? modelGroups;
+  const findName = (provider: string, model: string): string | undefined => {
+    const g = catalog?.find((x) => x.id === provider);
+    return g?.models.find((x) => x.id === model)?.name;
+  };
+  let label = "选择模型";
   if (selectedModel) {
-    const g = groups?.find((x) => x.id === selectedModel.provider);
-    const m = g?.models.find((x) => x.id === selectedModel.model);
-    label = `${selectedModel.provider} · ${m?.name ?? selectedModel.model}`;
+    label = `${selectedModel.provider} · ${findName(selectedModel.provider, selectedModel.model) ?? selectedModel.model}`;
+  } else if (host?.model) {
+    label = `${host.provider ?? ""} · ${findName(host.provider ?? "", host.model) ?? host.model}`;
   }
 
   return (
@@ -43,8 +55,8 @@ export function ModelMenu({ onOpenSettings }: { onOpenSettings?: () => void }) {
           <div className="model-menu">
             {loading && <div className="muted" style={{ padding: 8 }}>加载中…</div>}
             {error && <div className="muted" style={{ padding: 8, color: "var(--red)" }}>{error}</div>}
-            {groups && groups.length === 0 && <div className="muted" style={{ padding: 8 }}>没有可用模型</div>}
-            {groups?.map((g) => (
+            {catalog && catalog.length === 0 && <div className="muted" style={{ padding: 8 }}>没有可用模型</div>}
+            {catalog?.map((g) => (
               <div key={g.id}>
                 <div className="mm-group">{g.name}</div>
                 {g.models.map((m) => (
@@ -73,4 +85,5 @@ export function ModelMenu({ onOpenSettings }: { onOpenSettings?: () => void }) {
     </div>
   );
 }
+
 
