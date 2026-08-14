@@ -4,6 +4,8 @@ import { DshApiClient } from "./client";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {
   ApprovalResponsePayload,
+  ConfigurableProviderView,
+  CredentialView,
   HostFrame,
   MuxFrame,
   QuestionResponsePayload,
@@ -350,6 +352,36 @@ class AppStore {
   async createDirectory(path: string, name: string) {
     const api = this.requireApi();
     return api.host.createDirectory({ path, name });
+  }
+
+  async listProviders(): Promise<ConfigurableProviderView[]> {
+    const api = this.requireApi();
+    const r = await api.llm.providers({});
+    if (r.result.ok) return r.result.value.providers;
+    throw new Error(`获取模型提供商失败: ${r.result.error.code}: ${r.result.error.message}`);
+  }
+
+  async describeCredentials(refs: string[]): Promise<Record<string, CredentialView>> {
+    const api = this.requireApi();
+    const r = await api.credentials.describe({ refs });
+    if (r.result.ok) return r.result.value.credentials;
+    throw new Error(`读取凭据状态失败: ${r.result.error.code}: ${r.result.error.message}`);
+  }
+
+  async setCredential(ref: string, value: string): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.credentials.set({ ref, value });
+    if (!r.result.ok) {
+      throw new Error(`保存凭据失败: ${r.result.error.code}: ${r.result.error.message}`);
+    }
+  }
+
+  async unsetCredential(ref: string): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.credentials.unset({ ref });
+    if (!r.result.ok) {
+      throw new Error(`清除凭据失败: ${r.result.error.code}: ${r.result.error.message}`);
+    }
   }
 
   selectSession(sessionId: SessionId | null): void {
