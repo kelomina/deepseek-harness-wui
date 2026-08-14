@@ -81,6 +81,7 @@ class AppStore {
   private abort: AbortController | null = null;
   private unlisteners: Array<() => void> = [];
   private started = false;
+  private historySyncTimers = new Map<string, number>();
 
   get = (): AppState => {
     return this.state;
@@ -199,6 +200,9 @@ class AppStore {
         const live = new Map(this.state.live);
         live.set(frame.sessionId, arr);
         this.set({ live });
+        if (frame.event.type === "assistant/message") {
+          this.scheduleHistorySync(frame.sessionId);
+        }
         break;
       }
       case "approval/requested":
@@ -308,7 +312,11 @@ class AppStore {
     });
     if (!r.result.ok) {
       this.set({ error: `发送失败: ${r.result.error.code}: ${r.result.error.message}` });
+      return;
     }
+    window.setTimeout(() => {
+      void this.loadHistory(sessionId).catch(() => {});
+    }, 1500);
   }
 
   async cancelSession(sessionId: SessionId): Promise<void> {
@@ -487,6 +495,17 @@ class AppStore {
     this.set({ hiddenPresets: list });
   }
 
+  private scheduleHistorySync(sessionId: SessionId): void {
+    const existing = this.historySyncTimers.get(sessionId);
+    if (existing !== undefined) {
+      window.clearTimeout(existing);
+    }
+    const timer = window.setTimeout(() => {
+      this.historySyncTimers.delete(sessionId);
+      void this.loadHistory(sessionId).catch(() => {});
+    }, 500);
+    this.historySyncTimers.set(sessionId, timer);
+  }
   selectSession(sessionId: SessionId | null): void {
     this.set({ selectedSessionId: sessionId });
     if (sessionId) void this.loadHistory(sessionId);
@@ -502,6 +521,7 @@ export const appStore = new AppStore();
 export function useAppState(): AppState {
   return useSyncExternalStore(appStore.subscribe, appStore.get);
 }
+
 
 
 
