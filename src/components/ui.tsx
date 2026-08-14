@@ -52,9 +52,10 @@ export function Modal({
 }
 
 export function ErrorBanner({ message, onDismiss }: { message: string; onDismiss: () => void }) {
+  const shown = message.length > 400 ? `${message.slice(0, 400)}…（已截断，详见日志）` : message;
   return (
-    <div className="error-banner">
-      <span>{message}</span>
+    <div className="error-banner" title={message}>
+      <span>{shown}</span>
       <button className="btn sm subtle" onClick={onDismiss}>关闭</button>
     </div>
   );
@@ -68,3 +69,4 @@ export function formatTime(ms: number | undefined): string {
 export function shortId(id: string): string {
   return id.length > 24 ? `${id.slice(0, 12)}…${id.slice(-6)}` : id;
 }
+

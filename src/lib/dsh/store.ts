@@ -6,6 +6,7 @@ import type {
   ApprovalResponsePayload,
   ConfigurableProviderView,
   CredentialView,
+  DiscoveredModelView,
   HostFrame,
   ModelProviderGroup,
   MuxFrame,
@@ -443,6 +444,13 @@ class AppStore {
     }
   }
 
+  async discoverModels(opts: { settingsNs: string; provider?: string; baseURL?: string; api?: string; apiKey?: string }): Promise<DiscoveredModelView[]> {
+    const api = this.requireApi();
+    const r = await api.llm.discoverModels(opts);
+    if (r.result.ok) return r.result.value.models;
+    throw new Error(`探测失败: ${r.result.error.message || r.result.error.code}`);
+  }
+
   async listModels(): Promise<ModelProviderGroup[]> {
     const api = this.requireApi();
     const r = await api.llm.models({});
@@ -494,6 +502,7 @@ export const appStore = new AppStore();
 export function useAppState(): AppState {
   return useSyncExternalStore(appStore.subscribe, appStore.get);
 }
+
 
 
 

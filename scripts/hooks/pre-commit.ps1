@@ -6,7 +6,7 @@ $staged = git diff --cached --name-only
 if (-not $staged) { exit 0 }
 
 $secretPatterns = @(
-  "(?i)api[_-]?key\s*[:=]",
+  "(?i)api[_-]?key\s*[:=]\s*['""][A-Za-z0-9._-]{16,}",
   "(?i)sk-[A-Za-z0-9]{16,}",
   "(?i)deepseek[a-z0-9_-]*[_-]?key\s*[:=]",
   "(?i)token\s*[:=]\s*['""][A-Za-z0-9._-]{16,}",
@@ -35,4 +35,5 @@ if ($blocked.Count -gt 0) {
   exit 1
 }
 exit 0
+
 

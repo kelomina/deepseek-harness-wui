@@ -50,6 +50,8 @@ export function SettingsPage() {
   const [edit, setEdit] = useState<ProviderEdit | null>(null);
   const [providerMsg, setProviderMsg] = useState<string | null>(null);
   const [showPresets, setShowPresets] = useState(false);
+  const [connLoading, setConnLoading] = useState(false);
+  const [connResult, setConnResult] = useState<string | null>(null);
 
   const refreshProviders = useCallback(async () => {
     if (!connected) return;
@@ -107,6 +109,27 @@ export function SettingsPage() {
       keyDraft: "",
     });
     setFormOpen(true);
+  };
+
+  const testConnection = async () => {
+    if (!edit) return;
+    setConnLoading(true);
+    setConnResult(null);
+    try {
+      const models = await appStore.discoverModels({
+        settingsNs: edit.ns,
+        baseURL: edit.baseURL.trim() || undefined,
+        api: edit.api,
+        apiKey: edit.keyDraft.trim() || undefined,
+      });
+      setConnResult(models.length
+        ? `连接成功，端点广告 ${models.length} 个模型：${models.slice(0, 6).map((m) => m.id).join(", ")}${models.length > 6 ? "…" : ""}`
+        : "连接成功，但端点未返回模型列表");
+    } catch (e) {
+      setConnResult(`连接失败：${String(e).slice(0, 300)}`);
+    } finally {
+      setConnLoading(false);
+    }
   };
 
   const saveProvider = async () => {
@@ -287,6 +310,7 @@ export function SettingsPage() {
                 <>
                   <div className="f-label">Base URL</div>
                   <input type="text" value={edit.baseURL} onChange={(e) => setEdit({ ...edit, baseURL: e.currentTarget.value })} placeholder="https://api.moonshot.cn/v1" />
+                  <div className="hint">OpenAI 兼容 API 根地址（通常以 /v1 结尾，如 https://api.moonshot.cn/v1）；不是官网首页。可先点「测试连接」验证。</div>
                 </>
               )}
 
@@ -333,8 +357,10 @@ export function SettingsPage() {
 
               <div className="actions">
                 <button className="btn primary" onClick={() => void saveProvider()}>保存提供商</button>
+                <button className="btn" disabled={connLoading} onClick={() => void testConnection()}>{connLoading ? "测试中…" : "测试连接"}</button>
                 <button className="btn" onClick={() => setFormOpen(false)}>取消</button>
               </div>
+              {connResult && <div className="hint" style={{ color: connResult.startsWith("连接失败") ? "var(--red)" : "var(--text-3)" }}>{connResult}</div>}
               <div className="hint">保存即写入 dsh settings（live 生效）；添加的路由会立即激活。DeepSeek 官方无需 baseURL；模型选择在新建会话时进行。</div>
             </div>
           )}
@@ -385,6 +411,7 @@ export function SettingsPage() {
     </section>
   );
 }
+
 
 
 
