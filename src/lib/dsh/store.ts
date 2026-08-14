@@ -70,9 +70,9 @@ class AppStore {
   private unlisteners: Array<() => void> = [];
   private started = false;
 
-  get(): AppState {
+  get = (): AppState => {
     return this.state;
-  }
+  };
 
   subscribe = (fn: () => void): (() => void) => {
     this.listeners.add(fn);
@@ -367,4 +367,5 @@ export const appStore = new AppStore();
 export function useAppState(): AppState {
   return useSyncExternalStore(appStore.subscribe, appStore.get);
 }
+
 

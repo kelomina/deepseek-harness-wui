@@ -32,6 +32,7 @@ pub async fn start_proxy(dsh_port: u16) -> Result<ProxyHandle, String> {
         client: reqwest::Client::builder().build().map_err(|e| e.to_string())?,
         allowed_origins: vec![
             "http://localhost:1420".to_string(),
+            "http://127.0.0.1:1420".to_string(),
             "http://tauri.localhost".to_string(),
             "https://tauri.localhost".to_string(),
             "tauri://localhost".to_string(),
@@ -210,5 +211,6 @@ async fn tunnel(ctx: Arc<ProxyContext>, mut client: WebSocket, path: String) {
     };
     let _ = tokio::join!(c2s, s2c);
 }
+
 
 
