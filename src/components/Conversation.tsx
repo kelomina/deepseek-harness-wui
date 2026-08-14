@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { appStore, useAppState, type InteractiveItem } from "../lib/dsh/store";
 import { formatTime, shortId } from "./ui";
+import type { SessionId } from "@deepseek-ai/dsh-session/types";
 
 interface HistoryEntryLike {
   seq: number;
@@ -29,7 +30,13 @@ export function mergeItems(
 ): HistoryEntryLike[] {
   if (!sessionId) return [];
   const map = new Map<number, HistoryEntryLike>();
-  for (const h of (history.get(sessionId) ?? []) as HistoryEntryLike[]) map.set(h.seq, h);
+  // dsh HistoryEntry 结构为 { event, view? }，seq 在 event.seq（没有顶层 seq）
+  for (const raw of (history.get(sessionId) ?? []) as Array<{ event: HistoryEntryLike["event"]; view?: unknown }>) {
+    const ev = raw.event;
+    if (ev && typeof ev.seq === "number") {
+      map.set(ev.seq, { seq: ev.seq, event: ev, view: raw.view });
+    }
+  }
   for (const f of (live.get(sessionId) ?? []) as Array<{ type: string; event: HistoryEntryLike["event"]; view?: unknown }>) {
     if (f.type === "session/event") {
       map.set(f.event.seq, { seq: f.event.seq, event: f.event, view: f.view });
@@ -38,17 +45,40 @@ export function mergeItems(
   return [...map.values()].sort((a, b) => a.seq - b.seq);
 }
 
-export function EventRow({ item }: { item: HistoryEntryLike }) {
+function UserMessage({ text, time, sessionId }: { text: string; time: number; sessionId?: SessionId }) {
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  return (
+    <>
+      <div
+        className="msg-user"
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setMenu({ x: e.clientX, y: e.clientY });
+        }}
+      >
+        <div className="msg-time">{formatTime(time)}</div>
+        {text || "(空)"}
+      </div>
+      {menu && (
+        <>
+          <div style={{ position: "fixed", inset: 0, zIndex: 150 }} onClick={() => setMenu(null)} onContextMenu={(e) => { e.preventDefault(); setMenu(null); }} />
+          <div className="model-menu" style={{ left: menu.x, top: menu.y, right: "auto", bottom: "auto", minWidth: 140, zIndex: 151 }}>
+            <button className="mm-item" onClick={() => { void navigator.clipboard.writeText(text).catch(() => {}); setMenu(null); }}>复制</button>
+            <button className="mm-item" onClick={() => { if (sessionId) void appStore.sendPrompt(sessionId, text); setMenu(null); }}>重试</button>
+            <button className="mm-item" onClick={() => { appStore.set({ error: "dsh 暂不支持撤回已发送消息；可继续对话或使用会话菜单归档" }); setMenu(null); }}>撤回（暂不支持）</button>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+export function EventRow({ item, sessionId }: { item: HistoryEntryLike; sessionId?: SessionId }) {
   const ev = item.event;
   switch (ev.type) {
     case "user/message": {
       const text = contentText(ev.data?.content);
-      return (
-        <div className="msg-user">
-          <div className="msg-time">{formatTime(ev.time)}</div>
-          {text || "(空)"}
-        </div>
-      );
+      return <UserMessage text={text || "(空)"} time={ev.time} sessionId={sessionId} />;
     }
     case "assistant/message": {
       // dsh 的 assistant/message 结构为 { turn, step, message: { content: [...] } }
@@ -141,6 +171,10 @@ export function useSessionInteractives() {
 }
 
 export { shortId };
+
+
+
+
 
 
 

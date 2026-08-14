@@ -50,6 +50,7 @@ export interface AppState {
   selectedSessionId: SessionId | null;
   activeWorkspaceId: WorkspaceId | null;
   hiddenPresets: string[];
+  pinnedSessions: SessionId[];
   selectedModel: { provider: string; model: string } | null;
   selectedReasoning: string | null;
   modelGroups: ModelProviderGroup[] | null;
@@ -72,6 +73,7 @@ const initialState: AppState = {
   selectedSessionId: null,
   activeWorkspaceId: null,
   hiddenPresets: [],
+  pinnedSessions: [],
   selectedModel: null,
   selectedReasoning: null,
   modelGroups: null,
@@ -109,14 +111,17 @@ class AppStore {
     this.started = true;
     const [status, config] = await Promise.all([dsh.status(), dsh.getConfig()]);
     let hiddenPresets: string[] = [];
+    let pinnedSessions: SessionId[] = [];
     let selectedModel: { provider: string; model: string } | null = null;
     let selectedReasoning: string | null = null;
     try {
       hiddenPresets = JSON.parse(window.localStorage.getItem("hiddenPresets") ?? "[]") as string[];
+      pinnedSessions = JSON.parse(window.localStorage.getItem("pinnedSessions") ?? "[]") as SessionId[];
       selectedModel = JSON.parse(window.localStorage.getItem("selectedModel") ?? "null") as { provider: string; model: string } | null;
       selectedReasoning = window.localStorage.getItem("selectedReasoning") as string | null;
     } catch {
       hiddenPresets = [];
+      pinnedSessions = [];
       selectedModel = null;
       selectedReasoning = null;
     }
@@ -127,7 +132,7 @@ class AppStore {
     if (config.selected_reasoning) {
       selectedReasoning = config.selected_reasoning;
     }
-    this.set({ status, config, hiddenPresets, selectedModel, selectedReasoning });
+    this.set({ status, config, hiddenPresets, pinnedSessions, selectedModel, selectedReasoning });
     // 旧版本 localStorage 选择迁移到 Rust 配置
     if (selectedModel && !(config.selected_provider && config.selected_model)) {
       void invoke("dsh_set_selected_model", { provider: selectedModel.provider, model: selectedModel.model }).catch(() => {});
@@ -565,6 +570,28 @@ class AppStore {
     }, 500);
     this.historySyncTimers.set(sessionId, timer);
   }
+  togglePinned(sessionId: SessionId): void {
+    const list = this.state.pinnedSessions.includes(sessionId)
+      ? this.state.pinnedSessions.filter((id) => id !== sessionId)
+      : [...this.state.pinnedSessions, sessionId];
+    try {
+      window.localStorage.setItem("pinnedSessions", JSON.stringify(list));
+    } catch {
+      // ignore storage failures
+    }
+    this.set({ pinnedSessions: list });
+  }
+
+  async archiveSession(sessionId: SessionId): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.workspace.archiveSession({ sessionId });
+    if (!r.result.ok) {
+      this.set({ error: `归档会话失败: ${r.result.error.code}: ${r.result.error.message}` });
+      return;
+    }
+    await this.refreshSessions();
+  }
+
   selectSession(sessionId: SessionId | null): void {
     this.set({ selectedSessionId: sessionId });
     if (sessionId && this.state.api) {
@@ -583,6 +610,7 @@ export const appStore = new AppStore();
 export function useAppState(): AppState {
   return useSyncExternalStore(appStore.subscribe, appStore.get);
 }
+
 
 
 

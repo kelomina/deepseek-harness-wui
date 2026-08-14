@@ -49,7 +49,7 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
         <div className="msgs" ref={msgsRef}>
           {interactives.map((i) => (i.kind === "approval" ? <ApprovalCard key={i.rpcId} item={i} /> : <QuestionCard key={i.rpcId} item={i} />))}
           {items.length === 0 && <div className="empty-state">还没有消息</div>}
-          {items.map((it) => <EventRow key={it.seq} item={it} />)}
+          {items.map((it) => <EventRow key={it.seq} item={it} sessionId={selectedSessionId ?? undefined} />)}
         </div>
         <div className="composer-wrap">
           <div className="composer">
@@ -90,6 +90,8 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
     </section>
   );
 }
+
+
 
 
 

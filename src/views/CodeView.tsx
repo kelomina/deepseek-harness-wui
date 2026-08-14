@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { appStore, useAppState } from "../lib/dsh/store";
 import { sessionTitle } from "../lib/dsh/sessionTitle";
 import { shortId, useConversationItems } from "../components/Conversation";
@@ -17,6 +17,16 @@ interface ChangeFile {
 }
 
 type TerminalItem = { cmd: string; output?: string };
+
+function contentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((b) => (b && typeof b === "object" && (b as { type?: string }).type === "text" ? String((b as { text?: unknown }).text ?? "") : ""))
+      .join("");
+  }
+  return "";
+}
 
 function collectChanges(items: Array<{ event: { type: string }; view?: unknown }>): ChangeFile[] {
   const byPath = new Map<string, ChangeFile>();
@@ -66,10 +76,24 @@ export function CodeView() {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [decisions, setDecisions] = useState<Record<string, "accepted" | "rejected">>({});
   const [chat, setChat] = useState<Array<{ role: "user" | "ai"; text: string }>>([
-    { role: "ai", text: "选择左侧 diff 或直接提问，我会结合当前改动回答。" },
+    { role: "ai", text: "我是你的编码协作者。选择左侧 diff 或直接提问，我会结合当前改动回答；模型回复会实时显示在这里。" },
   ]);
   const [chatDraft, setChatDraft] = useState("");
   const [termTab, setTermTab] = useState<"terminal" | "problems" | "output">("terminal");
+  const seenAi = useRef(new Set<number>());
+
+  // 实时回显当前会话的 AI 回复（assistant/message）
+  useEffect(() => {
+    for (const it of items) {
+      if (it.event.type !== "assistant/message") continue;
+      const seq = it.event.seq;
+      if (seenAi.current.has(seq)) continue;
+      seenAi.current.add(seq);
+      const data = it.event.data as { message?: { content?: unknown }; content?: unknown };
+      const text = contentText(data?.message?.content ?? data?.content);
+      if (text) setChat((m) => [...m, { role: "ai", text }]);
+    }
+  }, [items]);
 
   const file = changes.find((c) => c.path === selectedPath) ?? changes[0] ?? null;
   const totalAdded = changes.reduce((n, c) => n + c.added, 0);
@@ -98,113 +122,92 @@ export function CodeView() {
           </span>
         </div>
 
-        {changes.length === 0 ? (
-          <div className="empty-state" style={{ flex: 1 }}>
-            当前会话还没有文件变更。消息内容请切换到左侧「Work」标签查看；AI 读写代码后这里会显示 diff。
-          </div>
-        ) : (
-          <div className="code-layout">
-            {/* 左：变更文件 */}
-            <div className="file-pane">
-              <div className="pane-title">变更文件</div>
-              <div className="file-list">
-                {changes.map((c) => (
-                  <div
-                    key={c.path}
-                    className={`file-item${file?.path === c.path ? " active" : ""}`}
-                    onClick={() => setSelectedPath(c.path)}
-                  >
-                    <span className="f-path">{c.path}</span>
-                    <span className="f-stat add">+{c.added}</span>
-                    {c.deleted > 0 && <span className="f-stat del">-{c.deleted}</span>}
-                  </div>
-                ))}
-              </div>
-              <div className="pane-foot">
-                {changes.length} 个文件 · +{totalAdded} −{totalDeleted} · {activeWs?.path ? `工作区 ${activeWs.path}` : "本地"}
-              </div>
+        <div className="code-layout">
+          {/* 左：变更文件 */}
+          <div className="file-pane">
+            <div className="pane-title">变更文件</div>
+            <div className="file-list">
+              {changes.length === 0 && <div className="muted" style={{ padding: 8 }}>暂无文件变更（AI 读写代码后显示）</div>}
+              {changes.map((c) => (
+                <div key={c.path} className={`file-item${file?.path === c.path ? " active" : ""}`} onClick={() => setSelectedPath(c.path)}>
+                  <span className="f-path">{c.path}</span>
+                  <span className="f-stat add">+{c.added}</span>
+                  {c.deleted > 0 && <span className="f-stat del">-{c.deleted}</span>}
+                </div>
+              ))}
             </div>
+            <div className="pane-foot">
+              {changes.length} 个文件 · +{totalAdded} −{totalDeleted} · {activeWs?.path ? `工作区 ${activeWs.path}` : "本地"}
+            </div>
+          </div>
 
-            {/* 中：diff 查看器（逐 hunk 接受/拒绝） */}
-            <div className="diff-pane">
-              {file ? (
-                <>
-                  <div className="diff-head">
-                    <span className="d-path">{file.path}</span>
-                    <span className="badge green">已修改</span>
-                    <button className="btn sm" title="开发中">打开文件</button>
-                    <button className="btn sm" title="开发中">复制 diff</button>
-                  </div>
-                  <div className="diff-body mono">
-                    {file.diffs.map((diff, idx) => {
-                      const key = `${file.path}#${idx}`;
-                      const decision = decisions[key];
-                      const oldLines = diff.oldText ? diff.oldText.split("\n") : [];
-                      const newLines = diff.newText.split("\n");
-                      return (
-                        <div key={key}>
-                          {oldLines.map((line, i) => (
-                            <div className="diff-line del" key={`o${i}`}>
-                              <span className="ln">{i + 1}</span>
-                              <span className="code">{line}</span>
-                            </div>
-                          ))}
-                          {newLines.map((line, i) => (
-                            <div className="diff-line add" key={`n${i}`}>
-                              <span className="ln">{i + 1}</span>
-                              <span className="code">{line}</span>
-                            </div>
-                          ))}
-                          <div className="hunk-bar">
-                            <span className="hunk-tip">
-                              {decision === "accepted" ? "已接受" : decision === "rejected" ? "已拒绝" : `${(oldLines[0] ?? "").trim() || "(新建)"} → ${(newLines[0] ?? "").trim() || ""}`}
-                            </span>
-                            <button
-                              className="btn sm primary"
-                              disabled={decision !== undefined}
-                              onClick={() => setDecisions((d) => ({ ...d, [key]: "accepted" }))}
-                            >
-                              接受
-                            </button>
-                            <button
-                              className="btn sm danger-o"
-                              disabled={decision !== undefined}
-                              onClick={() => setDecisions((d) => ({ ...d, [key]: "rejected" }))}
-                            >
-                              拒绝
-                            </button>
+          {/* 中：diff 查看器（逐 hunk 接受/拒绝） */}
+          <div className="diff-pane">
+            {file ? (
+              <>
+                <div className="diff-head">
+                  <span className="d-path">{file.path}</span>
+                  <span className="badge green">已修改</span>
+                  <button className="btn sm" title="开发中">打开文件</button>
+                  <button className="btn sm" title="开发中">复制 diff</button>
+                </div>
+                <div className="diff-body mono">
+                  {file.diffs.map((diff, idx) => {
+                    const key = `${file.path}#${idx}`;
+                    const decision = decisions[key];
+                    const oldLines = diff.oldText ? diff.oldText.split("\n") : [];
+                    const newLines = diff.newText.split("\n");
+                    return (
+                      <div key={key}>
+                        {oldLines.map((line, i) => (
+                          <div className="diff-line del" key={`o${i}`}>
+                            <span className="ln">{i + 1}</span>
+                            <span className="code">{line}</span>
                           </div>
+                        ))}
+                        {newLines.map((line, i) => (
+                          <div className="diff-line add" key={`n${i}`}>
+                            <span className="ln">{i + 1}</span>
+                            <span className="code">{line}</span>
+                          </div>
+                        ))}
+                        <div className="hunk-bar">
+                          <span className="hunk-tip">
+                            {decision === "accepted" ? "已接受" : decision === "rejected" ? "已拒绝" : `${(oldLines[0] ?? "").trim() || "(新建)"} → ${(newLines[0] ?? "").trim() || ""}`}
+                          </span>
+                          <button className="btn sm primary" disabled={decision !== undefined} onClick={() => setDecisions((d) => ({ ...d, [key]: "accepted" }))}>接受</button>
+                          <button className="btn sm danger-o" disabled={decision !== undefined} onClick={() => setDecisions((d) => ({ ...d, [key]: "rejected" }))}>拒绝</button>
                         </div>
-                      );
-                    })}
-                  </div>
-                </>
-              ) : (
-                <div className="empty-state">没有可显示的 diff</div>
-              )}
-            </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            ) : (
+              <div className="empty-state">在右侧与 AI 协作；有文件变更后这里实时预览 diff</div>
+            )}
+          </div>
 
-            {/* 右：AI 侧聊 */}
-            <div className="chat-pane">
-              <div className="pane-title">AI 助手 · 针对当前 diff</div>
-              <div className="chat-msgs">
-                {chat.map((m, i) => (
-                  <div key={i} className={`c-msg ${m.role}`}>{m.text}</div>
-                ))}
-              </div>
-              <div className="chat-input">
-                <input
-                  type="text"
-                  placeholder="提问当前 diff…（@ 引用文件）"
-                  value={chatDraft}
-                  onChange={(e) => setChatDraft(e.currentTarget.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") sendChat(); }}
-                />
-                <button className="send-btn mini" disabled={!chatDraft.trim()} onClick={sendChat}>↑</button>
-              </div>
+          {/* 右：AI 侧聊（始终显示，实时回显） */}
+          <div className="chat-pane">
+            <div className="pane-title">AI 助手 · 针对当前 diff</div>
+            <div className="chat-msgs">
+              {chat.map((m, i) => (
+                <div key={i} className={`c-msg ${m.role}`}>{m.text}</div>
+              ))}
+            </div>
+            <div className="chat-input">
+              <input
+                type="text"
+                placeholder="提问当前 diff…（@ 引用文件）"
+                value={chatDraft}
+                onChange={(e) => setChatDraft(e.currentTarget.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") sendChat(); }}
+              />
+              <button className="send-btn mini" disabled={!chatDraft.trim()} onClick={sendChat}>↑</button>
             </div>
           </div>
-        )}
+        </div>
 
         {/* 底部：终端 + 状态栏 */}
         <div className="term-strip">
@@ -236,4 +239,3 @@ export function CodeView() {
     </section>
   );
 }
-

@@ -31,7 +31,7 @@ export function WelcomeView({
     <section className="view active" id="view-welcome">
       <div className="col col-welcome">
         <h1 className="hero">
-          <span className="logo">{mode === "work" ? "|&gt;_" : "&lt;/&gt;"}</span>
+          <span className="logo">{mode === "work" ? "|>_" : "</>"}</span>
           {mode === "work" ? "Work with DeepSeek-Harness" : "Code with DeepSeek-Harness"}
         </h1>
         <div className="composer-wrap">
@@ -66,4 +66,5 @@ export function WelcomeView({
     </section>
   );
 }
+
 

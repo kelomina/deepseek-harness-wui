@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { SessionSummary } from "@deepseek-ai/dsh-host-apiproxy/api";
+import { useAppState, appStore } from "../lib/dsh/store";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { DshStatus } from "../lib/tauri";
 import { sessionTitle } from "../lib/dsh/sessionTitle";
@@ -28,6 +29,10 @@ export function Sidebar({
 }) {
   const [pinnedOpen, setPinnedOpen] = useState(true);
   const [tasksOpen, setTasksOpen] = useState(true);
+  const [ctx, setCtx] = useState<{ x: number; y: number; id: SessionId } | null>(null);
+  const { pinnedSessions } = useAppState();
+  const pinned = sessions.filter((s) => pinnedSessions.includes(s.sessionId));
+  const unpinned = sessions.filter((s) => !pinnedSessions.includes(s.sessionId));
   const fmtTime = (ms: number) => {
     const d = new Date(ms);
     const now = new Date();
@@ -48,18 +53,13 @@ export function Sidebar({
         <div className="side-head" onClick={() => setPinnedOpen((v) => !v)}>
           <span>置顶</span><span className="arrow">{pinnedOpen ? "▾" : "›"}</span>
         </div>
-        {pinnedOpen && <div className="empty-state" style={{ padding: "6px 4px", textAlign: "left" }}>暂无置顶任务</div>}
-      </div>
-      <div className="side-block">
-        <div className="side-head" onClick={() => setTasksOpen((v) => !v)}>
-          <span>任务列表</span><span className="arrow">{tasksOpen ? "▾" : "›"}</span>
-        </div>
-        {tasksOpen && sessions.length === 0 && <div className="empty-state" style={{ padding: "8px 4px" }}>暂无会话</div>}
-        {tasksOpen && sessions.map((s) => (
+        {pinnedOpen && pinned.length === 0 && <div className="empty-state" style={{ padding: "6px 4px", textAlign: "left" }}>暂无置顶任务</div>}
+        {pinnedOpen && pinned.map((s) => (
           <button
             key={s.sessionId}
             className={`task-item${s.sessionId === selectedSessionId && (view === "session" || view === "code") ? " active" : ""}`}
             onClick={() => onSelectSession(s.sessionId)}
+            onContextMenu={(e) => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, id: s.sessionId }); }}
           >
             <span className={`dot${s.running ? " green" : ""}`} />
             <span className="t-title">{sessionTitle(s) ?? s.sessionId.slice(0, 8)}</span>
@@ -67,6 +67,49 @@ export function Sidebar({
           </button>
         ))}
       </div>
+      <div className="side-block">
+        <div className="side-head" onClick={() => setTasksOpen((v) => !v)}>
+          <span>任务列表</span><span className="arrow">{tasksOpen ? "▾" : "›"}</span>
+        </div>
+        {tasksOpen && unpinned.length === 0 && <div className="empty-state" style={{ padding: "8px 4px" }}>暂无会话</div>}
+        {tasksOpen && unpinned.map((s) => (
+          <button
+            key={s.sessionId}
+            className={`task-item${s.sessionId === selectedSessionId && (view === "session" || view === "code") ? " active" : ""}`}
+            onClick={() => onSelectSession(s.sessionId)}
+            onContextMenu={(e) => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, id: s.sessionId }); }}
+          >
+            <span className={`dot${s.running ? " green" : ""}`} />
+            <span className="t-title">{sessionTitle(s) ?? s.sessionId.slice(0, 8)}</span>
+            <span className="t-time">{fmtTime(s.updatedAt)}</span>
+          </button>
+        ))}
+      </div>
+      {ctx && (
+        <>
+          <div style={{ position: "fixed", inset: 0, zIndex: 150 }} onClick={() => setCtx(null)} onContextMenu={(e) => { e.preventDefault(); setCtx(null); }} />
+          <div className="model-menu" style={{ left: ctx.x, top: ctx.y, right: "auto", bottom: "auto", minWidth: 140, zIndex: 151 }}>
+            <button
+              className="mm-item"
+              onClick={() => {
+                appStore.togglePinned(ctx.id);
+                setCtx(null);
+              }}
+            >
+              {pinnedSessions.includes(ctx.id) ? "取消置顶" : "置顶"}
+            </button>
+            <button
+              className="mm-item"
+              onClick={() => {
+                void appStore.archiveSession(ctx.id);
+                setCtx(null);
+              }}
+            >
+              移除（归档）
+            </button>
+          </div>
+        </>
+      )}
       <div className="side-bottom">
         <button className={`nav-item${view === "status" ? " active" : ""}`} onClick={() => onNavigate("status")}>
           <span className={`dot${status?.state === "running" ? " green" : ""}`} />
@@ -79,6 +122,7 @@ export function Sidebar({
     </aside>
   );
 }
+
 
 
 
