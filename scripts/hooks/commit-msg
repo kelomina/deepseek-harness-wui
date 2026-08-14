@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+# Git hook shim -> PowerShell (Windows)
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+powershell -NoProfile -ExecutionPolicy Bypass -File "$dir/commit-msg.ps1" "$1"
+exit $?
