@@ -215,3 +215,20 @@
   （17 顶层行，shape OK），即 dsh agent-preset 扫描不会判 broken。
 - 单测：新增 junction 创建/解链（Windows，temp）与 link-pairs 校验 2 项 → 全量 17 passed。
 - 未验证（live）：dev_* 工具在模型会话内实际可用、Router Standard 可被新建会话选择——需在 dsh 运行 + 有模型会话时实测（会消耗 token），未做。
+## 2026-08-15：dsh-routing-suite live 会话级验证（用户授权；含模型执行边界）
+
+通过官方 apiproxy（应用同款 AbstractApiClient，直连 127.0.0.1:dsh 端口、无 Origin）在真实会话验证：
+
+- [事实] `agentPreset.list`：`router-standard` 被 dsh 发现（trust=user、isDefault=false、name=Router Standard (experimental)）、**无 broken**；authorable=true。
+- [事实] `session.create({agentPreset:'router-standard'})` ok → 预设成功组装会话（组装失败会在此步报错）。
+- [事实] **路由预设行为按设计生效**：首回合 request/header 只含核心工具 `edit/pwsh/read/write`（首回合窄化）；
+  第一个持久工具调用（pwsh）后，下一请求的 request/header 展开为全量 Standard 目录（40+ 工具），
+  含**注入器全套 dev_***（dev_build_plugin/dev_clear_routes/dev_fix_patch/dev_heal_links/dev_inject_plugin/dev_injected_list/dev_install_package/dev_plugin_status/dev_release_plugin/dev_reload_package/dev_scaffold_plugin/dev_self_test/dev_stage_*/dev_uninject_plugin）与**路由预设的 dev_router_status/dev_router_mode/dev_mode_subagent**。
+  即：注入器 boot 注册、路由预设注册、目录展开三件事全部实测成立（request/header 证据）。
+- [事实] 内置 standard 预设会话同样展开 43 工具目录，含全部 17 个注入器 dev_* 工具。
+- 边界：**未观察到模型实际执行 dev_* 工具**——deepseek-v4-flash（opencode-go）在本环境多轮返回**空回合**
+  （有 turn/end 但无 tool/call、无 assistant/message；与 2026-08-14「模型空回复」记录同源，属模型/提供商行为，与套装无关）；
+  deepseek-v4-pro 首回合未产生工具调用（全量目录未展开）。注入器 boot 自检 `super-injector/self-heal.log` 正常（两次 boot 均有 purge-stale-tools 记录）。
+- 证据：`evidence/live-verify*.mjs`（探针脚本）、`evidence/live-verify*-20260815.txt`（输出）、
+  `evidence/live-suite-*.dsh.log*`（dsh 日志）、会话 `~/.dsh/sessions/.../session-*.jsonl.zstd`（持久化）。探针/输出均 gitignored。
+- 结论口径：安装/引导/预设/路由行为/工具挂载 = live 验证通过；dev_* 工具的实际模型调用 = 未验证（模型空回合，环境问题）。
