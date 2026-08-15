@@ -49,6 +49,7 @@ npm run tauri build  # release 构建 + NSIS/MSI 安装包
 
 ## 文档
 
+- [变更日志](CHANGELOG.md)
 - [架构](docs/ARCHITECTURE.md)
 - [开发指南](docs/DEVELOPMENT.md)
 - [硬限制](docs/HARD_LIMITS.md)

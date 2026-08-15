@@ -1,6 +1,6 @@
 [package]
 name = "deepseek-harness-wui"
-version = "0.1.0"
+version = "0.2.0"
 description = "DeepSeek Harness Desktop - Rust + WebView2 shell (Tauri 2) with custom frontend"
 authors = ["Saika"]
 edition = "2021"
