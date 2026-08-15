@@ -11,6 +11,8 @@ DeepSeek Harness 的 Windows 桌面前端：**Tauri 2 (Rust + WebView2) + TypeSc
   Work/Code 双模式（Work=对话式会话；Code=AIDE 三栏：变更文件 + diff 逐 hunk 接受/拒绝 + AI 侧聊 + 终端/状态栏）、
   欢迎页大输入、设置（模型提供商/API Key/运行配置）、工作区、连接状态。
 - Rust 反向代理：绕过 dsh `/api` 的浏览器 Origin 信任围栏（非 loopback Origin → 403）。
+- dsh-routing-suite 集成：内置「注入器 + Router Standard 思维模式路由预设」，设置页一键装配/卸载（可回滚，重启 dsh 生效），预设安装后出现在 Agent 模式选择器。
+
 - 协议层复用官方代码：`@deepseek-ai/dsh-host-apiproxy` 的 `AbstractApiClient` + zod schema，
   浏览器 WebSocket 传输参照官方 MIT 实现复刻。
 - 双套硬限制：工程护栏（hooks/忽略/提交规范）+ 运行时限制（看门狗/端口/日志/单实例）。
@@ -65,4 +67,3 @@ https://github.com/deepseek-ai/deepseek-harness
 ## License
 
 MIT（与 dsh 一致）。协议层复用与参考的官方代码均保持 MIT 许可。
-

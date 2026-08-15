@@ -74,6 +74,23 @@ export interface WslStatus {
   reason: string | null;
 }
 
+
+export interface RoutingSuiteStatus {
+  injector_installed: boolean;
+  injector_name: string | null;
+  preset_installed: boolean;
+  preset_dir: string;
+  vendored_found: boolean;
+  vendored_injector_ready: boolean;
+  vendored_preset_ready: boolean;
+  dsh_home: string;
+}
+
+export const routingSuite = {
+  status: () => invoke<RoutingSuiteStatus>("routing_suite_status_cmd"),
+  install: () => invoke<string>("routing_suite_install_cmd"),
+  remove: () => invoke<string>("routing_suite_remove_cmd"),
+};
 export const runtime = {
   list: () => invoke<RuntimeView[]>("runtime_list_cmd"),
   install: (version: string) => invoke<RuntimeView>("runtime_install_cmd", { version }),
@@ -106,7 +123,3 @@ export function onDshStatus(cb: (s: DshStatus) => void): Promise<() => void> {
 export function onDshLog(cb: (line: string) => void): Promise<() => void> {
   return listen<string>("dsh://log", (e) => cb(e.payload));
 }
-
-
-
-

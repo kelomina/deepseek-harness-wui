@@ -179,3 +179,19 @@
 - 注：启动时 1420 端口已被更早（11:14）遗留的 vite dev server 占用，本次 beforeDevCommand 的 vite 绑定失败，
   app 从既有 dev server 加载；不影响上述运行时路径验证。证据文件 `evidence/runtime-gate-20260815.txt`（gitignored）。
 - 代理隔离测试：`cargo test -- --ignored proxy_binds_loopback`（2026-08-15）——代理绑定 127.0.0.1、非白名单 Origin 403、无 Origin 走转发路径，通过。
+## 2026-08-15：dsh-routing-suite 集成（已实施）
+
+- 第三方套装 dsh-routing-suite（https://github.com/yjh051108/dsh-routing-suite）以固定版本 vendored 进
+  `plugins/dsh-routing-suite/`（注入器 dsh-super-injector 0.3.1 Release 构建 + router-standard 预设 0.1.0），
+  出处/版本/哈希见 `plugins/dsh-routing-suite/VENDOR.md`。许可证：注入器 BSD-3-Clause、预设 MIT。
+- [事实] 装配语义（与套装 install.ps1 一致）：注入器走 `dsh plugin --profile web add <vendored injector>`（pnpm，
+  写 profile bundles，重启后由 bundles 接管）；预设复制到 `$DSH_HOME/.agent-presets/router-standard/`
+  （dsh-agent-presets 官方用户根目录 `dshHomePath('.agent-presets')`，目录名 = preset id，符合 PRESET_ID）。
+- 应用内实现：设置 → 插件新增「路由套装」卡片（状态 / 一键安装 / 可回滚卸载）。安装前备份旧预设为 `.trash-<ts>`
+  （点前缀，dsh 预设扫描跳过）；卸载把预设目录重命名为 `.trash-<ts>` 并 `dsh plugin remove`（按 dump-config 解析出的包名）。
+  注入器由 dump-config 行 `dsh-super-injector` 探测，复用插件管理解析器。
+- 验证：cargo 单测新增 3 项（注入器行探测 / preset id 扫描安全 / copy_tree 递归复制）通过，全量 15 passed；
+  `cargo check`、`npm run build` 通过；vendored 注入器含构建产物 `lib/index.js`（Release tgz，SHA-256 见 VENDOR.md）。
+- 未验证（live）：未在真实 dsh 上执行 pnpm 装配 / 预设复制（避免未经授权改动用户 `~/.dsh` 与安装包）；
+  安装/卸载后是否在 dsh 内正常装载（dev_* 工具出现、Router Standard 可被会话选择）需用户点「一键安装」后重启 dsh 实测。
+  dsh 0.1.0-rc.6 验证日期 2026-08-15；上游为第三方社区项目，行为/质量以上游为准。

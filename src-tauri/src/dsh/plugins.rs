@@ -31,11 +31,13 @@ pub fn dsh_home(cfg: &DshConfig) -> PathBuf {
             return PathBuf::from(h);
         }
     }
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".dsh")
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".dsh")
 }
 
 /// Run `node <dsh-cli> <args>` with the given DSH_HOME; returns combined output.
-fn run_dsh_cli(args: &[&str], home: &Path) -> Result<String, String> {
+pub(crate) fn run_dsh_cli(args: &[&str], home: &Path) -> Result<String, String> {
     let bin = bundled_bin_path()?;
     let mut cmd = Command::new("node");
     cmd.arg(&bin).args(args).env("DSH_HOME", home);
@@ -44,9 +46,7 @@ fn run_dsh_cli(args: &[&str], home: &Path) -> Result<String, String> {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let out = cmd
-        .output()
-        .map_err(|e| format!("无法启动 dsh CLI: {e}"))?;
+    let out = cmd.output().map_err(|e| format!("无法启动 dsh CLI: {e}"))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(format!(
@@ -266,7 +266,6 @@ pub fn plugins_remove(cfg: &DshConfig, name: &str) -> Result<String, String> {
     run_dsh_cli(&["plugin", "--profile", "web", "remove", name], &home)
         .map(|o| format!("已移除（可能需要重启 dsh 生效）：\n{o}"))
 }
-
 
 #[cfg(test)]
 mod tests {

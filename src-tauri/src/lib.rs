@@ -1,11 +1,14 @@
 mod dsh;
 
 use dsh::config::{load, DshConfig};
-use dsh::plugins::{plugins_import, plugins_list, plugins_remove, plugins_set_enabled};
 use dsh::manager::{lock, spawn_health_watcher, DshManager, DshStatusView};
+use dsh::plugins::{plugins_import, plugins_list, plugins_remove, plugins_set_enabled};
 use dsh::proxy::{start_proxy, ProxyHandle};
-use dsh::runtime as runtime;
-use dsh::wsl as wsl;
+use dsh::routing_suite::{
+    routing_suite_install, routing_suite_remove, routing_suite_status, RoutingSuiteStatus,
+};
+use dsh::runtime;
+use dsh::wsl;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager, State};
@@ -43,7 +46,12 @@ fn clipboard_write(text: String) -> Result<(), String> {
     cb.set_text(text).map_err(|e| e.to_string())
 }
 #[tauri::command]
-fn fs_revert(root: String, path: String, expected: String, old_text: Option<String>) -> Result<String, String> {
+fn fs_revert(
+    root: String,
+    path: String,
+    expected: String,
+    old_text: Option<String>,
+) -> Result<String, String> {
     if expected.len() > 2 * 1024 * 1024 {
         return Err("expected 文本过大".to_string());
     }
@@ -69,11 +77,17 @@ fn fs_revert(root: String, path: String, expected: String, old_text: Option<Stri
     }
     match old_text {
         Some(old) => {
-            let content = std::fs::read_to_string(&target).map_err(|e| format!("读取文件失败: {e}"))?;
+            let content =
+                std::fs::read_to_string(&target).map_err(|e| format!("读取文件失败: {e}"))?;
             let idx = content
                 .find(&expected)
                 .ok_or_else(|| "文件内容已变化，无法自动回退（找不到预期文本）".to_string())?;
-            let new_content = format!("{}{}{}", &content[..idx], old, &content[idx + expected.len()..]);
+            let new_content = format!(
+                "{}{}{}",
+                &content[..idx],
+                old,
+                &content[idx + expected.len()..]
+            );
             std::fs::write(&target, new_content).map_err(|e| format!("写入失败: {e}"))?;
             Ok("reverted".to_string())
         }
@@ -90,7 +104,12 @@ fn fs_revert(root: String, path: String, expected: String, old_text: Option<Stri
 fn git_restore_deleted(root: String) -> Result<Vec<String>, String> {
     let root_abs = std::fs::canonicalize(&root).map_err(|e| format!("root 不可访问: {e}"))?;
     let out = std::process::Command::new("git")
-        .args(["-C", root_abs.to_str().ok_or("root 路径非法")?, "status", "--porcelain"])
+        .args([
+            "-C",
+            root_abs.to_str().ok_or("root 路径非法")?,
+            "status",
+            "--porcelain",
+        ])
         .output()
         .map_err(|e| format!("git 不可用: {e}"))?;
     if !out.status.success() {
@@ -112,7 +131,13 @@ fn git_restore_deleted(root: String) -> Result<Vec<String>, String> {
             continue;
         }
         if let Ok(o) = std::process::Command::new("git")
-            .args(["-C", root_abs.to_str().unwrap_or("."), "checkout", "--", path])
+            .args([
+                "-C",
+                root_abs.to_str().unwrap_or("."),
+                "checkout",
+                "--",
+                path,
+            ])
             .output()
         {
             if o.status.success() {
@@ -163,7 +188,6 @@ fn dsh_get_logs(state: State<AppState>, limit: Option<usize>) -> Vec<String> {
     lock(state.manager.lock()).logs(limit.unwrap_or(200))
 }
 
-
 #[tauri::command]
 fn plugins_list_cmd(state: State<AppState>) -> Result<Vec<dsh::plugins::PluginEntry>, String> {
     let cfg = lock(state.manager.lock()).config().clone();
@@ -171,7 +195,11 @@ fn plugins_list_cmd(state: State<AppState>) -> Result<Vec<dsh::plugins::PluginEn
 }
 
 #[tauri::command]
-fn plugins_set_enabled_cmd(state: State<AppState>, id: String, enabled: bool) -> Result<String, String> {
+fn plugins_set_enabled_cmd(
+    state: State<AppState>,
+    id: String,
+    enabled: bool,
+) -> Result<String, String> {
     let cfg = lock(state.manager.lock()).config().clone();
     plugins_set_enabled(&cfg, &id, enabled)
 }
@@ -188,10 +216,34 @@ fn plugins_remove_cmd(state: State<AppState>, name: String) -> Result<String, St
     plugins_remove(&cfg, &name)
 }
 
+#[tauri::command]
+fn routing_suite_status_cmd(app: AppHandle, state: State<AppState>) -> RoutingSuiteStatus {
+    let cfg = lock(state.manager.lock()).config().clone();
+    routing_suite_status(&app, &cfg)
+}
+
+#[tauri::command]
+fn routing_suite_install_cmd(app: AppHandle, state: State<AppState>) -> Result<String, String> {
+    let cfg = lock(state.manager.lock()).config().clone();
+    routing_suite_install(&app, &cfg)
+}
+
+#[tauri::command]
+fn routing_suite_remove_cmd(state: State<AppState>) -> Result<String, String> {
+    let cfg = lock(state.manager.lock()).config().clone();
+    routing_suite_remove(&cfg)
+}
+
 // ---- 0.2.0 条目 3：DSH 运行时下载/安装/管理 ----
 #[tauri::command]
-fn runtime_list_cmd(app: AppHandle, state: State<AppState>) -> Result<Vec<runtime::RuntimeView>, String> {
-    let active = lock(state.manager.lock()).config().managed_runtime_version.clone();
+fn runtime_list_cmd(
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<Vec<runtime::RuntimeView>, String> {
+    let active = lock(state.manager.lock())
+        .config()
+        .managed_runtime_version
+        .clone();
     runtime::list(&app, active.as_deref())
 }
 
@@ -221,7 +273,11 @@ fn runtime_remote_versions_cmd() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn runtime_set_active_cmd(app: AppHandle, state: State<AppState>, version: Option<String>) -> Result<(), String> {
+fn runtime_set_active_cmd(
+    app: AppHandle,
+    state: State<AppState>,
+    version: Option<String>,
+) -> Result<(), String> {
     {
         let mut mgr = lock(state.manager.lock());
         if mgr.config().managed_runtime_version == version {
@@ -304,6 +360,9 @@ pub fn run() {
             plugins_set_enabled_cmd,
             plugins_import_cmd,
             plugins_remove_cmd,
+            routing_suite_status_cmd,
+            routing_suite_install_cmd,
+            routing_suite_remove_cmd,
             runtime_list_cmd,
             runtime_install_cmd,
             runtime_verify_cmd,
@@ -352,11 +411,3 @@ pub fn run() {
             }
         });
 }
-
-
-
-
-
-
-
-

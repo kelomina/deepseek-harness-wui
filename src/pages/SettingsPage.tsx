@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { dsh, type DshConfig, type ExecMode } from "../lib/tauri";
+import { dsh, routingSuite, type DshConfig, type ExecMode, type RoutingSuiteStatus } from "../lib/tauri";
 import { appStore, useAppState } from "../lib/dsh/store";
 import { RuntimeManager } from "../components/RuntimeManager";
 import { DEFAULT_COT_RULES, loadCotConfig, saveCotConfig, type CotDetectConfig } from "../lib/dsh/cotDetect";
@@ -122,6 +122,12 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
   const [pluginDelete, setPluginDelete] = useState<PluginView | null>(null);
   const [pluginBusyId, setPluginBusyId] = useState<string | null>(null);
 
+  // 路由套装（dsh-routing-suite）
+  const [suite, setSuite] = useState<RoutingSuiteStatus | null>(null);
+  const [suiteBusy, setSuiteBusy] = useState(false);
+  const [suiteMsg, setSuiteMsg] = useState<string | null>(null);
+  const [suiteConfirm, setSuiteConfirm] = useState(false);
+
   const [providers, setProviders] = useState<ConfigurableProviderView[] | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [edit, setEdit] = useState<ProviderEdit | null>(null);
@@ -242,6 +248,53 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
       setPluginDelete(null);
     }
   };
+  const refreshSuite = useCallback(async () => {
+    try {
+      const s = await routingSuite.status();
+      setSuite(s);
+    } catch (e) {
+      setSuiteMsg(String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshSuite();
+  }, [refreshSuite]);
+
+  const installSuite = async () => {
+    setSuiteBusy(true);
+    setSuiteMsg(null);
+    setSuiteConfirm(false);
+    try {
+      const r = await routingSuite.install();
+      setSuiteMsg(r);
+      await refreshSuite();
+      await refreshPlugins();
+      if (connected) void appStore.loadAgentPresets();
+    } catch (e) {
+      setSuiteMsg(String(e));
+    } finally {
+      setSuiteBusy(false);
+    }
+  };
+
+  const removeSuite = async () => {
+    setSuiteBusy(true);
+    setSuiteMsg(null);
+    try {
+      const r = await routingSuite.remove();
+      setSuiteMsg(r);
+      await refreshSuite();
+      await refreshPlugins();
+      if (connected) void appStore.loadAgentPresets();
+    } catch (e) {
+      setSuiteMsg(String(e));
+    } finally {
+      setSuiteBusy(false);
+      setSuiteConfirm(false);
+    }
+  };
+
 
   useEffect(() => {
     if (config && !form) setForm(config);
@@ -619,6 +672,59 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
           <>
         <div className="card">
           <div className="card-head">
+            <span className="card-title">路由套装（dsh-routing-suite）</span>
+            {suiteBusy && <span className="badge orange">处理中…</span>}
+          </div>
+          <div className="row" style={{ marginBottom: 8 }}>
+            <span className="muted">注入器（dev_* 运行时工具）</span>
+            <span className={`badge ${suite?.injector_installed ? "active" : "off"}`}>
+              {suite?.injector_installed ? `已装${suite.injector_name ? `（${suite.injector_name}）` : ""}` : "未装"}
+            </span>
+          </div>
+          <div className="row" style={{ marginBottom: 8 }}>
+            <span className="muted">Router Standard 预设（思维模式路由）</span>
+            <span className={`badge ${suite?.preset_installed ? "active" : "off"}`}>{suite?.preset_installed ? "已装" : "未装"}</span>
+          </div>
+          <div className="hint">
+            {suite
+              ? suite.vendored_found
+                ? suite.vendored_injector_ready && suite.vendored_preset_ready
+                  ? `随应用内置（${suite.dsh_home}），可直接安装。`
+                  : "内置资源不完整（注入器缺少 lib/ 构建产物或预设缺失），请按 plugins/dsh-routing-suite/VENDOR.md 更新。"
+                : "未找到内置资源目录（打包时需包含 plugins/dsh-routing-suite）。"
+              : "读取状态中…"}
+          </div>
+          {suiteMsg && <div className="hint" style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{suiteMsg}</div>}
+          <div className="row" style={{ marginTop: 12 }}>
+            <button
+              className="btn sm primary"
+              disabled={!suite || suiteBusy || !suite.vendored_found || !suite.vendored_injector_ready || !suite.vendored_preset_ready}
+              onClick={() => void installSuite()}
+            >
+              一键安装路由套装
+            </button>
+            {suiteConfirm ? (
+              <>
+                <button className="btn sm danger-o" disabled={suiteBusy} onClick={() => void removeSuite()}>确认卸载（可回滚）</button>
+                <button className="btn sm" disabled={suiteBusy} onClick={() => setSuiteConfirm(false)}>取消</button>
+              </>
+            ) : (
+              <button
+                className="btn sm danger-o"
+                disabled={!suite || suiteBusy || (!suite.injector_installed && !suite.preset_installed)}
+                onClick={() => setSuiteConfirm(true)}
+              >
+                卸载路由套装
+              </button>
+            )}
+          </div>
+          <div className="hint">
+            安装/卸载写 dsh profile 与 $DSH_HOME/.agent-presets；旧预设目录会备份为 .trash-*（可回滚）。完成后重启 dsh，新会话即可在「Agent 模式」选择 Router Standard (experimental)。
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-head">
             <span className="card-title">插件</span>
             <button className="btn sm primary" disabled={!connected} onClick={() => setImportOpen(true)}>＋ 导入插件</button>
           </div>
@@ -823,8 +929,3 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
     </section>
   );
 }
-
-
-
-
-
