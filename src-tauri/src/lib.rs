@@ -4,6 +4,8 @@ use dsh::config::{load, DshConfig};
 use dsh::plugins::{plugins_import, plugins_list, plugins_remove, plugins_set_enabled};
 use dsh::manager::{lock, spawn_health_watcher, DshManager, DshStatusView};
 use dsh::proxy::{start_proxy, ProxyHandle};
+use dsh::runtime as runtime;
+use dsh::wsl as wsl;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager, State};
@@ -186,6 +188,95 @@ fn plugins_remove_cmd(state: State<AppState>, name: String) -> Result<String, St
     plugins_remove(&cfg, &name)
 }
 
+// ---- 0.2.0 条目 3：DSH 运行时下载/安装/管理 ----
+#[tauri::command]
+fn runtime_list_cmd(app: AppHandle, state: State<AppState>) -> Result<Vec<runtime::RuntimeView>, String> {
+    let active = lock(state.manager.lock()).config().managed_runtime_version.clone();
+    runtime::list(&app, active.as_deref())
+}
+
+#[tauri::command]
+fn runtime_install_cmd(app: AppHandle, version: String) -> Result<runtime::RuntimeView, String> {
+    runtime::install(&app, &version)
+}
+
+#[tauri::command]
+fn runtime_verify_cmd(app: AppHandle, version: String) -> Result<runtime::VerifyReport, String> {
+    runtime::verify(&app, &version)
+}
+
+#[tauri::command]
+fn runtime_remove_cmd(app: AppHandle, version: String) -> Result<String, String> {
+    runtime::remove(&app, &version)
+}
+
+#[tauri::command]
+fn runtime_rollback_cmd(app: AppHandle, version: String) -> Result<String, String> {
+    runtime::rollback(&app, &version)
+}
+
+#[tauri::command]
+fn runtime_remote_versions_cmd() -> Result<Vec<String>, String> {
+    runtime::remote_versions()
+}
+
+#[tauri::command]
+fn runtime_set_active_cmd(app: AppHandle, state: State<AppState>, version: Option<String>) -> Result<(), String> {
+    {
+        let mut mgr = lock(state.manager.lock());
+        if mgr.config().managed_runtime_version == version {
+            return Ok(());
+        }
+        if let Some(v) = &version {
+            if !runtime::list(&app, None)?.iter().any(|r| r.version == *v) {
+                return Err(format!("版本 {v} 未安装，无法设为启用"));
+            }
+        }
+        let mut cfg = mgr.config().clone();
+        cfg.managed_runtime_version = version;
+        mgr.set_config(&app, cfg)?;
+    }
+    Ok(())
+}
+
+// ---- 0.2.0 条目 2：DSH WSL 配置与连接 ----
+#[tauri::command]
+fn wsl_status_cmd() -> wsl::WslStatus {
+    wsl::wsl_status()
+}
+
+#[tauri::command]
+fn wsl_save_config_cmd(
+    app: AppHandle,
+    state: State<AppState>,
+    default_distro: Option<String>,
+    dsh_home: Option<String>,
+    workspace_dir: Option<String>,
+) -> Result<(), String> {
+    wsl::validate_wsl_config(
+        default_distro.as_deref(),
+        dsh_home.as_deref(),
+        workspace_dir.as_deref(),
+    )?;
+    let mut mgr = lock(state.manager.lock());
+    let mut cfg = mgr.config().clone();
+    cfg.wsl_default_distro = default_distro.filter(|s| !s.trim().is_empty());
+    cfg.wsl_dsh_home = dsh_home.filter(|s| !s.trim().is_empty());
+    cfg.wsl_workspace_dir = workspace_dir.filter(|s| !s.trim().is_empty());
+    // 可逆备份：保留 config.json.bak-<ts>
+    if let Ok(path) = crate::dsh::config::config_path(&app) {
+        if path.exists() {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            let bak = path.with_extension(format!("json.bak-{ts}"));
+            let _ = std::fs::copy(&path, &bak);
+        }
+    }
+    mgr.set_config(&app, cfg)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -212,7 +303,16 @@ pub fn run() {
             plugins_list_cmd,
             plugins_set_enabled_cmd,
             plugins_import_cmd,
-            plugins_remove_cmd
+            plugins_remove_cmd,
+            runtime_list_cmd,
+            runtime_install_cmd,
+            runtime_verify_cmd,
+            runtime_remove_cmd,
+            runtime_rollback_cmd,
+            runtime_remote_versions_cmd,
+            runtime_set_active_cmd,
+            wsl_status_cmd,
+            wsl_save_config_cmd
         ])
         .setup(|app| {
             let handle = app.handle();
@@ -223,6 +323,9 @@ pub fn run() {
                 let state = handle.state::<AppState>();
                 let mut mgr = lock(state.manager.lock());
                 mgr.set_proxy_port(proxy.port);
+                if let Ok(cfg_dir) = app.path().app_config_dir() {
+                    mgr.set_managed_runtime_root(cfg_dir.join("runtimes"));
+                }
                 mgr.replace_config(cfg.clone());
                 *state.proxy.lock().unwrap() = Some(proxy);
             }

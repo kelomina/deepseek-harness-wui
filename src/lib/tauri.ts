@@ -32,7 +32,63 @@ export interface DshConfig {
   selected_provider: string | null;
   selected_model: string | null;
   selected_reasoning: string | null;
+  managed_runtime_version: string | null;
+  wsl_default_distro: string | null;
+  wsl_dsh_home: string | null;
+  wsl_workspace_dir: string | null;
 }
+
+export interface RuntimeView {
+  version: string;
+  installed: boolean;
+  installed_at: number | null;
+  integrity: string | null;
+  bin_sha256: string | null;
+  active: boolean;
+}
+
+export interface VerifyReport {
+  version: string;
+  present: boolean;
+  version_match: boolean;
+  bin_exists: boolean;
+  bin_hash_match: boolean;
+  ok: boolean;
+  detail: string;
+}
+
+export interface WslDistro {
+  name: string;
+  state: string;
+  version: string;
+  is_default: boolean;
+}
+
+export interface WslStatus {
+  available: boolean;
+  windows: boolean;
+  default_distro: string | null;
+  kernel: string | null;
+  wsl_version: string | null;
+  distros: WslDistro[];
+  reason: string | null;
+}
+
+export const runtime = {
+  list: () => invoke<RuntimeView[]>("runtime_list_cmd"),
+  install: (version: string) => invoke<RuntimeView>("runtime_install_cmd", { version }),
+  verify: (version: string) => invoke<VerifyReport>("runtime_verify_cmd", { version }),
+  remove: (version: string) => invoke<string>("runtime_remove_cmd", { version }),
+  rollback: (version: string) => invoke<string>("runtime_rollback_cmd", { version }),
+  remoteVersions: () => invoke<string[]>("runtime_remote_versions_cmd"),
+  setActive: (version: string | null) => invoke<void>("runtime_set_active_cmd", { version }),
+};
+
+export const wsl = {
+  status: () => invoke<WslStatus>("wsl_status_cmd"),
+  saveConfig: (defaultDistro: string | null, dshHome: string | null, workspaceDir: string | null) =>
+    invoke<void>("wsl_save_config_cmd", { defaultDistro, dshHome, workspaceDir }),
+};
 
 export const dsh = {
   status: () => invoke<DshStatus>("dsh_status"),

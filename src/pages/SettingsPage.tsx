@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { dsh, type DshConfig, type ExecMode } from "../lib/tauri";
 import { appStore, useAppState } from "../lib/dsh/store";
+import { RuntimeManager } from "../components/RuntimeManager";
+import { WslPanel } from "../components/WslPanel";
 import type { AgentPresetEntry, ConfigurableProviderView, SettingsPathOpView } from "@deepseek-ai/dsh-host-apiproxy/api";
 
 type PluginView = { id: string; name: string; enabled: boolean; builtin: boolean; conditional?: boolean };
@@ -56,7 +58,7 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
   const [form, setForm] = useState<DshConfig | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
-  const [tab, setTab] = useState<"providers" | "agent" | "plugins" | "dsh">("providers");
+  const [tab, setTab] = useState<"providers" | "agent" | "plugins" | "dsh" | "runtime" | "wsl">("providers");
   const running = status?.state !== "stopped";
 
   // Agent 模式管理
@@ -384,6 +386,8 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
           <button className={`stab${tab === "agent" ? " on" : ""}`} onClick={() => setTab("agent")}>Agent 模式</button>
           <button className={`stab${tab === "plugins" ? " on" : ""}`} onClick={() => setTab("plugins")}>插件</button>
           <button className={`stab${tab === "dsh" ? " on" : ""}`} onClick={() => setTab("dsh")}>DSH 运行配置</button>
+          <button className={`stab${tab === "runtime" ? " on" : ""}`} onClick={() => setTab("runtime")}>DSH 运行时</button>
+          <button className={`stab${tab === "wsl" ? " on" : ""}`} onClick={() => setTab("wsl")}>WSL 连接</button>
         </div>
 
         {tab === "providers" && (
@@ -673,6 +677,8 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
         </div>
           </>
         )}
+        {tab === "runtime" && <RuntimeManager running={running} />}
+        {tab === "wsl" && <WslPanel />}
         {/* 复制 Agent 模式对话框 */}
         {copyTarget && (
           <div className="modal-mask" onClick={() => setCopyTarget(null)}>

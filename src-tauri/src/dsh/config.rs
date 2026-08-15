@@ -28,6 +28,15 @@ pub struct DshConfig {
     pub selected_provider: Option<String>,
     pub selected_model: Option<String>,
     pub selected_reasoning: Option<String>,
+    /// 0.2.0 条目 3：当前启用的受管运行时版本（runtimes/<version>）。
+    /// None + Bundled = 仓库 runtime/ 固定版本。
+    pub managed_runtime_version: Option<String>,
+    /// 0.2.0 条目 2：WSL 目标发行版（如 CodexUbuntu）。
+    pub wsl_default_distro: Option<String>,
+    /// 0.2.0 条目 2：WSL 内 DSH_HOME 路径（\\wsl$\<distro>\...）。
+    pub wsl_dsh_home: Option<String>,
+    /// 0.2.0 条目 2：WSL 工作区目录（\\wsl$\<distro>\...）。
+    pub wsl_workspace_dir: Option<String>,
 }
 
 impl Default for DshConfig {
@@ -49,6 +58,10 @@ impl Default for DshConfig {
             selected_provider: None,
             selected_model: None,
             selected_reasoning: None,
+            managed_runtime_version: None,
+            wsl_default_distro: None,
+            wsl_dsh_home: None,
+            wsl_workspace_dir: None,
         }
     }
 }

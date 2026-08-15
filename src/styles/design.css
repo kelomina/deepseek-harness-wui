@@ -417,3 +417,20 @@ input,textarea,.composer-input{user-select:text;-webkit-user-select:text}
 .web-source-title{font-size:12.5px;font-weight:600;color:var(--text)}
 .web-source-url{font-size:11.5px;color:var(--text-3);word-break:break-all;margin-top:2px}
 .web-source-snippet{font-size:12px;color:var(--text-2);margin-top:4px;line-height:1.6}
+
+/* ===== devContext 0.2.0: tool views (item 1) ===== */
+.tools-col{flex:none;margin:8px 0 0;border:1px solid var(--border);border-radius:10px;background:var(--card);overflow:hidden;display:flex;flex-direction:column;max-height:36vh}
+.tools-col:not(.open){max-height:34px}
+.tools-head{display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-bottom:1px solid var(--border);background:#f7f7fa}
+.tools-title{font-size:13px;font-weight:600;color:var(--text)}
+.tools-tabs{display:flex;gap:4px;padding:6px 8px 0;border-bottom:1px solid var(--border)}
+.tools-tabs .t-tab{padding:5px 12px;font-size:12.5px;color:var(--text-2);cursor:pointer;border-radius:8px 8px 0 0}
+.tools-tabs .t-tab.on{background:#f0f0fb;color:#3d3d9e;font-weight:600}
+.tools-body{flex:1;min-height:0;overflow:auto;padding:8px 10px;display:flex;flex-direction:column;gap:6px}
+.tv-cwd{font-size:11.5px;color:var(--text-3);font-family:ui-monospace,Consolas,monospace;padding:4px 6px;background:#fafafc;border:1px solid var(--border);border-radius:6px;word-break:break-all}
+.tv-list{display:flex;flex-direction:column;max-height:180px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:4px}
+@media (max-width:1280px){
+  .tools-col{max-height:34px}
+  .tools-col.open{max-height:36vh}
+  .tools-col:not(.open) .tools-head{border-bottom:none}
+}

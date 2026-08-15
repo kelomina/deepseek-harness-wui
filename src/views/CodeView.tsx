@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { appStore, useAppState } from "../lib/dsh/store";
 import { sessionTitle } from "../lib/dsh/sessionTitle";
 import { shortId, useConversationItems, useLiveAssistant } from "../components/Conversation";
+import { ToolViews } from "../components/ToolViews";
 
 interface FileDiff {
   path: string;
@@ -65,7 +66,7 @@ function collectTerminal(items: Array<{ event: { type: string }; view?: unknown 
 }
 
 export function CodeView() {
-  const { sessions, selectedSessionId, status, activeWorkspaceId, workspaces, connected } = useAppState();
+  const { sessions, selectedSessionId, status, activeWorkspaceId, workspaces, connected, host } = useAppState();
   const items = useConversationItems();
   const liveAssistant = useLiveAssistant();
   const selected = sessions.find((s) => s.sessionId === selectedSessionId);
@@ -212,6 +213,10 @@ export function CodeView() {
           </div>
         </div>
 
+        {/* 0.2.0 条目 1：工具视图（文件/终端/浏览器/Git，MVP；可折叠，≤1280 默认折叠） */}
+        <ToolViews items={items} workspaceRoot={activeWs?.path ?? host?.cwd ?? null} />
+
+        {/* 底部：终端 + 状态栏 */}
         {/* 底部：终端 + 状态栏 */}
         <div className="term-strip">
           <div className="term-tabs">

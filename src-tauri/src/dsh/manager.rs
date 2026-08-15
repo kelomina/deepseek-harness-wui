@@ -46,6 +46,7 @@ pub struct DshManager {
     health_failures: u32,
     proxy_port: u16,
     proxy_used: Option<String>,
+    managed_runtime_root: std::path::PathBuf,
 }
 
 impl DshManager {
@@ -62,6 +63,7 @@ impl DshManager {
             health_failures: 0,
             proxy_port,
             proxy_used: None,
+            managed_runtime_root: std::path::PathBuf::new(),
         }
     }
 
@@ -92,6 +94,11 @@ impl DshManager {
 
     pub fn set_proxy_port(&mut self, port: u16) {
         self.proxy_port = port;
+    }
+
+    /// 设置受管运行时根目录（app_config_dir/runtimes），用于 Bundled 模式解析受管版本。
+    pub fn set_managed_runtime_root(&mut self, root: std::path::PathBuf) {
+        self.managed_runtime_root = root;
     }
 
     pub fn replace_config(&mut self, cfg: DshConfig) {
@@ -204,11 +211,31 @@ impl DshManager {
         Ok(())
     }
 
+    /// Bundled 模式：若配置了受管运行时版本，则解析到 app_config_dir/runtimes/<v>/...；
+    /// 否则退回仓库 runtime/（bundled_bin_path）。
+    fn managed_runtime_bin_path(&self) -> Result<String, String> {
+        if let Some(version) = &self.config.managed_runtime_version {
+            if !self.managed_runtime_root.as_os_str().is_empty() {
+                let bin = self
+                    .managed_runtime_root
+                    .join(version)
+                    .join("node_modules/@deepseek-ai/dsh/lib/bin.js");
+                if bin.exists() {
+                    return Ok(bin.to_string_lossy().to_string());
+                }
+                return Err(format!(
+                    "受管运行时 {version} 缺失 lib/bin.js；请到设置页「DSH 运行时」复验或回滚"
+                ));
+            }
+        }
+        bundled_bin_path()
+    }
+
     fn build_command(&self) -> Result<(String, Vec<String>), String> {
         let port = self.config.port.to_string();
         match self.config.exec_mode {
             ExecMode::Bundled => {
-                let bin = bundled_bin_path()?;
+                let bin = self.managed_runtime_bin_path()?;
                 Ok(("node".to_string(), vec![bin, "web".to_string(), "--port".to_string(), port]))
             }
             ExecMode::Npx => {

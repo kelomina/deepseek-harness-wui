@@ -18,10 +18,15 @@ tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "net", "time", "io-util", "sync", "fs"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "blocking"] }
 axum = { version = "0.8", features = ["ws"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
 dirs = "6"
 arboard = "3"
+tar = "0.4"
+flate2 = "1"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
 
