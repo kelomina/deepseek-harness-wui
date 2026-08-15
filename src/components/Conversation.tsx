@@ -5,25 +5,13 @@ import { formatTime, shortId } from "./ui";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import { RetractModal, type RevertInfo } from "./RetractModal";
 import { Markdown } from "./Markdown";
+import { normalizeConversation, type RenderItem } from "../lib/dsh/render";
+import { ToolEventCard } from "./ToolCards";
 
 interface HistoryEntryLike {
   seq: number;
   event: { type: string; seq: number; time: number; data: Record<string, unknown> };
   view?: unknown;
-}
-
-function contentText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((b) =>
-        b && typeof b === "object" && (b as { type?: string }).type === "text"
-          ? String((b as { text?: unknown }).text ?? "")
-          : "",
-      )
-      .join("");
-  }
-  return "";
 }
 
 export function mergeItems(
@@ -78,8 +66,9 @@ function UserMessage({ text, time, sessionId, seq }: { text: string; time: numbe
             </button>
             <button
               className="mm-item"
+              title="重试 = 撤回该消息（回退到上一轮边界）后重新发送，避免同一消息重复进入上下文"
               onClick={() => {
-                if (sessionId) void appStore.sendPrompt(sessionId, text);
+                if (sessionId) void appStore.retryMessage(sessionId, seq, text);
                 setMenu(null);
               }}
             >
@@ -133,16 +122,20 @@ function UserMessage({ text, time, sessionId, seq }: { text: string; time: numbe
   );
 }
 
-function AssistantMessage({ ev, sessionId }: { ev: HistoryEntryLike["event"]; sessionId?: SessionId }) {
+function AssistantMessage({
+  text,
+  reasoning,
+  time,
+  sessionId,
+  seq,
+}: {
+  text: string;
+  reasoning?: string;
+  time: number;
+  sessionId?: SessionId;
+  seq: number;
+}) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
-  const data = ev.data as { message?: { content?: unknown }; content?: unknown };
-  const blocks = (data?.message?.content ?? data?.content) as Array<{ type?: string; text?: string; thinking?: string }> | undefined;
-  const list = Array.isArray(blocks) ? blocks : [];
-  const reasoning = list
-    .filter((b) => b.type === "reasoning" || b.type === "thinking")
-    .map((b) => b.text ?? b.thinking ?? "")
-    .join("\n");
-  const text = list.filter((b) => b.type === "text").map((b) => b.text ?? "").join("");
   return (
     <>
       <div
@@ -152,14 +145,14 @@ function AssistantMessage({ ev, sessionId }: { ev: HistoryEntryLike["event"]; se
           setMenu({ x: e.clientX, y: e.clientY });
         }}
       >
-        <div className="msg-time">{formatTime(ev.time)}</div>
+        <div className="msg-time">{formatTime(time)}</div>
         {reasoning && (
           <details className="reasoning-details">
             <summary>思考过程</summary>
             <div className="reasoning-body">{reasoning}</div>
           </details>
         )}
-        {text ? <Markdown text={text} /> : <span>（模型未返回文本内容）</span>}
+        {text ? <Markdown text={text} /> : null}
       </div>
       {menu && (
         <>
@@ -177,7 +170,7 @@ function AssistantMessage({ ev, sessionId }: { ev: HistoryEntryLike["event"]; se
             <button
               className="mm-item"
               onClick={() => {
-                if (sessionId) void appStore.forkAt(sessionId, ev.seq);
+                if (sessionId) void appStore.forkAt(sessionId, seq);
                 setMenu(null);
               }}
             >
@@ -190,57 +183,39 @@ function AssistantMessage({ ev, sessionId }: { ev: HistoryEntryLike["event"]; se
   );
 }
 
-export function EventRow({ item, sessionId }: { item: HistoryEntryLike; sessionId?: SessionId }) {
-  const ev = item.event;
-  switch (ev.type) {
-    case "user/message": {
-      const data = ev.data as { content?: unknown; source?: { kind?: string }; message?: { content?: unknown; source?: { kind?: string } } };
-      const sourceKind = data?.source?.kind ?? data?.message?.source?.kind;
-      // 隐藏 dsh 注入的系统上下文（系统提示词快照、skill catalog、AGENTS.md 等），只展示真实用户消息
-      if (sourceKind && sourceKind !== "user") return null;
-      const text = contentText(data?.content ?? data?.message?.content);
-      return <UserMessage text={text || "(空)"} time={ev.time} sessionId={sessionId} seq={ev.seq} />;
-    }
-    case "assistant/message": {
-      return <AssistantMessage ev={ev} sessionId={sessionId} />;
-    }
-case "assistant/chunk":
-    case "session/title":
-    case "turn/start":
-    case "step/start":
-    case "llm/retry-started":
-      return null;
-    case "tool/call":
-    case "tool/result":
+export function EventRow({ item, sessionId }: { item: RenderItem; sessionId?: SessionId }) {
+  switch (item.kind) {
+    case "user":
+      return <UserMessage text={item.userText ?? ""} time={item.time} sessionId={sessionId} seq={item.seq} />;
+    case "assistant":
+      return <AssistantMessage text={item.text ?? ""} reasoning={item.reasoning} time={item.time} sessionId={sessionId} seq={item.seq} />;
+    case "tool": {
+      const data = (item.event.data ?? {}) as unknown;
       return (
-        <div className="toolcall mono" title={ev.type}>
-          {ev.type}: {JSON.stringify(ev.data).slice(0, 500)}
-        </div>
-      );
-    case "turn/end":
-    case "step/end": {
-      const reason = (ev.data as { reason?: { kind?: string } })?.reason?.kind;
-      if (reason === "error") {
-        const raw = JSON.stringify(ev.data);
-        return <div className="toolcall toolcall-err" title={`${ev.type} @${ev.seq}`}>{ev.type} @{ev.seq}: {raw.slice(0, 600)}</div>;
-      }
-      return null;
-    }
-    default: {
-      const raw = JSON.stringify(ev.data);
-      const isError =
-        ev.type.toLowerCase().includes("error") ||
-        ev.type.toLowerCase().includes("llm/") ||
-        raw.includes("TRANSPORT") ||
-        raw.includes("Connection error") ||
-        raw.includes("MISSING_CREDENTIAL");
-      if (!isError) return null;
-      return (
-        <div className="toolcall toolcall-err" title={`${ev.type} @${ev.seq}`}>
-          {ev.type} @{ev.seq}: {raw.slice(0, 600)}
+        <div className="toolcall-wrap" title={`${item.event.type} @${item.seq}`}>
+          <ToolEventCard view={item.view} evType={item.event.type} data={data} seq={item.seq} />
+          {item.turnReasoning && (
+            <details className="reasoning-details">
+              <summary>思考过程</summary>
+              <div className="reasoning-body">{item.turnReasoning}</div>
+            </details>
+          )}
         </div>
       );
     }
+    case "error":
+      return <div className="toolcall toolcall-err" title={`${item.event.type} @${item.seq}`}>{item.errorText ?? `${item.event.type} @${item.seq}`}</div>;
+    case "info":
+      return (
+        <div className="toolcall-wrap">
+          <details className="reasoning-details" open>
+            <summary>思考过程</summary>
+            <div className="reasoning-body">{item.reasoning}</div>
+          </details>
+        </div>
+      );
+    default:
+      return null;
   }
 }
 
@@ -276,7 +251,10 @@ export function QuestionCard({ item }: { item: InteractiveItem }) {
 
 export function useConversationItems() {
   const { selectedSessionId, history, live } = useAppState();
-  return useMemo(() => mergeItems(history, live, selectedSessionId), [history, live, selectedSessionId]);
+  return useMemo(
+    () => normalizeConversation(mergeItems(history, live, selectedSessionId)),
+    [history, live, selectedSessionId],
+  );
 }
 
 export function useSessionInteractives() {
@@ -315,12 +293,3 @@ export function LiveAssistantRow() {
 }
 
 export { shortId };
-
-
-
-
-
-
-
-
-

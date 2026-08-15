@@ -34,7 +34,9 @@ export function RetractModal({
         <div className="modal-body">
           <p style={{ fontSize: 13, color: "var(--text-2)", marginBottom: 12 }}>
             将回退到该消息之前的轮次。
-            {files.length > 0 ? `同时回退 ${files.length} 个文件的修改：` : "（该轮没有文件修改；被删除的文件若在 git HEAD 中会一并恢复）"}
+            <br />
+            <b>注意（dsh 0.1.0-rc.6 协议限制）</b>：dsh 仅支持 <code>sessions.fork</code> 新建会话，不支持「当前会话内撤回」。
+            撤回会在原会话基础上创建<b>新会话</b>并切换到它；原会话保留未动。文件回退会写入磁盘，请确认后再执行。
           </p>
           {files.length > 0 && (
             <div className="list" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 4 }}>

@@ -8,7 +8,7 @@ import { AgentPresetChip } from "../components/AgentPresetChip";
 import { PermissionMenu } from "../components/PermissionMenu";
 
 export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => void }) {
-  const { connected, sessions, selectedSessionId, history } = useAppState();
+  const { connected, sessions, selectedSessionId, history, stoppingSessions } = useAppState();
   const [draft, setDraft] = useState("");
   const msgsRef = useRef<HTMLDivElement>(null);
 
@@ -32,6 +32,7 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
   const interactives = useSessionInteractives();
   const selected = sessions.find((s) => s.sessionId === selectedSessionId);
   const running = selected?.running ?? false;
+  const stopping = selectedSessionId ? (stoppingSessions[selectedSessionId] ?? null) : null;
 
 
   const send = () => {
@@ -48,13 +49,14 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
         <div className="conv-head">
           <span className="conv-title">{selected ? (sessionTitle(selected) ?? shortId(selected.sessionId)) : "未选择会话（从左侧任务列表选择）"}</span>
           <span className={`badge ${running ? "orange" : "gray"}`}>{running ? "运行中" : "已停止"}</span>
+          {stopping && <span className="badge orange">正在停止…</span>}
         </div>
         <div className="msgs" ref={msgsRef}>
           {interactives.map((i) => (i.kind === "approval" ? <ApprovalCard key={i.rpcId} item={i} /> : <QuestionCard key={i.rpcId} item={i} />))}
           {items.length === 0 && <div className="empty-state">还没有消息</div>}
           {items.map((it) => <EventRow key={it.seq} item={it} sessionId={selectedSessionId ?? undefined} />)}
           <LiveAssistantRow />
-          {running && !liveAssistant && <div className="thinking-indicator">● 模型正在思考中…</div>}
+          {stopping ? <div className="thinking-indicator">■ 正在停止生成…（2 秒内切换为已停止）</div> : running && !liveAssistant ? <div className="thinking-indicator">● 模型正在思考中…</div> : null}
         </div>
         <div className="composer-wrap">
           <div className="composer">
@@ -76,9 +78,9 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
                 <ModelMenu onOpenSettings={onOpenSettings} />
                 <button
                   className={`send-btn${running ? " stop" : ""}`}
-                  title={running ? "停止当前任务" : "发送消息"}
-                  disabled={!connected}
-                  onClick={() => (running && selectedSessionId ? void appStore.cancelSession(selectedSessionId) : send())}
+                  title={stopping ? "正在停止…" : running ? "停止当前任务" : "发送消息"}
+                  disabled={!connected || !!stopping}
+                  onClick={() => (running && selectedSessionId ? void appStore.stopSession(selectedSessionId) : send())}
                 >
                   {running ? "■" : "↑"}
                 </button>

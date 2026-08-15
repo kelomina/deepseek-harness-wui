@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { dsh, onDshLog, onDshStatus, type DshConfig, type DshStatus } from "../tauri";
 import { DshApiClient } from "./client";
+import { computeRevertInfo, type RevertInfo } from "./revert";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {
   AgentPresetEntry,
@@ -80,6 +81,14 @@ export interface AppState {
   agentPresetsMeta: AgentPresetMeta | null;
   pendingAgentPreset: string | null;
   sessionPermissions: Map<SessionId, PermissionSelect>;
+  /** 会话点击停止后进入「正在停止」的时间戳（毫秒）。 */
+  stoppingSessions: Record<SessionId, number>;
+  /** 用户点击停止后冻结该会话的流式快照（不再追加内容），直到下一轮开始。 */
+  forceFinished: SessionId[];
+  /** 停止行为的可复查证据：cancel RPC 结果与 turn/end(aborted) 时间戳。 */
+  stopEvidence: Record<SessionId, { cancelAcceptedAt?: number; cancelError?: string; turnEndAbortedAt?: number; stoppedUiAt?: number }>;
+  /** 非错误提示（例如撤回/重试的结果说明）。 */
+  notice: string | null;
   loading: boolean;
   error: string | null;
 }
@@ -109,6 +118,10 @@ const initialState: AppState = {
   agentPresetsMeta: null,
   pendingAgentPreset: null,
   sessionPermissions: new Map(),
+  stoppingSessions: {},
+  forceFinished: [],
+  stopEvidence: {},
+  notice: null,
   loading: false,
   error: null,
 };
@@ -237,6 +250,10 @@ class AppStore {
       streams: new Map(),
       archivedSessionIds: [],
       sessionPermissions: new Map(),
+      stoppingSessions: {},
+      forceFinished: [],
+      stopEvidence: {},
+      notice: null,
     });
   }
 
@@ -266,6 +283,27 @@ class AppStore {
         this.set({ live, streams });
         if (frame.event.type === "assistant/message") {
           this.scheduleHistorySync(frame.sessionId);
+        }
+        if (frame.event.type === "turn/start") {
+          // 新一轮开始：解除停止冻结，允许继续流式
+          const stopping = { ...this.state.stoppingSessions };
+          delete stopping[frame.sessionId];
+          this.set({
+            stoppingSessions: stopping,
+            forceFinished: this.state.forceFinished.filter((id) => id !== frame.sessionId),
+          });
+        }
+        if (frame.event.type === "turn/end") {
+          // 记录停止证据（dsh 可观察会话状态）：turn/end 到达，reason 为 aborted 表示后端已终止
+          const reason = (frame.event.data as { reason?: { kind?: string } })?.reason?.kind;
+          const stopping = { ...this.state.stoppingSessions };
+          delete stopping[frame.sessionId];
+          const ev0 = { ...(this.state.stopEvidence[frame.sessionId] ?? {}) };
+          if (reason === "aborted") ev0.turnEndAbortedAt = Date.now();
+          this.set({
+            stoppingSessions: stopping,
+            stopEvidence: { ...this.state.stopEvidence, [frame.sessionId]: ev0 },
+          });
         }
         break;
       }
@@ -308,6 +346,8 @@ class AppStore {
     const ev = frame.event;
     const sid = frame.sessionId;
     const cur = this.state.streams.get(sid);
+    // 用户点击停止后冻结显示：不再追加流式内容（直到下一轮 turn/start 解除）。
+    if (this.state.forceFinished.includes(sid) && ev.type !== "turn/end") return this.state.streams;
     let next: LiveStream | null = null;
     if (ev.type === "assistant/chunk") {
       const data = ev.data as { turn: number; step: number; chunk?: { type?: string; text?: string } };
@@ -343,9 +383,16 @@ class AppStore {
     switch (frame.type) {
       case "host/session-added":
       case "host/session-removed":
-      case "host/session-status":
+      case "host/session-status": {
         void this.refreshSessions();
+        const sf = frame as { type: "host/session-status"; sessionId: SessionId; running: boolean };
+        if (!sf.running) {
+          const stopping = { ...this.state.stoppingSessions };
+          delete stopping[sf.sessionId];
+          this.set({ stoppingSessions: stopping });
+        }
         break;
+      }
       case "host/archived-sessions-changed":
         this.set({ archivedSessionIds: frame.archivedSessionIds });
         void this.refreshSessions();
@@ -436,13 +483,103 @@ class AppStore {
     }, 1500);
   }
 
-  async cancelSession(sessionId: SessionId): Promise<void> {
-    const api = this.requireApi();
-    const r = await api.sessions.cancel({ sessionId });
-    if (!r.result.ok) {
-      this.set({ error: `取消失败: ${r.result.error.code}: ${r.result.error.message}` });
+  /**
+   * 停止当前生成（devContext 条目 5）。
+   * - 点击后立即进入「正在停止」状态；2s 默认时限内 UI 切换为已停止（前端止流降级，
+   *   时限调整需在 docs/RISKS.md 记录原因）。
+   * - 调用官方中断 RPC sessions.cancel；ok 时记录 cancelAcceptedAt 证据。
+   * - 冻结该会话的流式快照（不再追加内容），直到下一轮 turn/start 解除。
+   * - cancel 失败或 dsh 不支持中断时记录 cancelError，明确不把「前端停止」包装成「后端已终止」。
+   */
+  async stopSession(sessionId: SessionId): Promise<void> {
+    const now = Date.now();
+    const stopping = { ...this.state.stoppingSessions, [sessionId]: now };
+    this.set({
+      stoppingSessions: stopping,
+      forceFinished: this.state.forceFinished.includes(sessionId)
+        ? this.state.forceFinished
+        : [...this.state.forceFinished, sessionId],
+    });
+    const api = this.state.api;
+    const base = this.state.stopEvidence[sessionId] ?? {};
+    if (!api) {
+      this.set({ stopEvidence: { ...this.state.stopEvidence, [sessionId]: { ...base, stoppedUiAt: now } } });
+      return;
+    }
+    try {
+      const r = await api.sessions.cancel({ sessionId });
+      if (r.result.ok) {
+        this.set({
+          stopEvidence: { ...this.state.stopEvidence, [sessionId]: { ...base, cancelAcceptedAt: Date.now() } },
+        });
+      } else {
+        this.set({
+          error: `停止失败（已降级为前端止流）: ${r.result.error.code}: ${r.result.error.message}`,
+          stopEvidence: { ...this.state.stopEvidence, [sessionId]: { ...base, cancelError: `${r.result.error.code}: ${r.result.error.message}` } },
+        });
+      }
+    } catch (e) {
+      this.set({
+        error: `停止失败（已降级为前端止流）: ${String(e)}`,
+        stopEvidence: { ...this.state.stopEvidence, [sessionId]: { ...base, cancelError: String(e) } },
+      });
+    } finally {
+      // 默认时限 2s：无论后端是否确认，UI 都进入「已停止」状态（前端止流降级路径）。
+      window.setTimeout(() => {
+        const stopping2 = { ...this.state.stoppingSessions };
+        delete stopping2[sessionId];
+        this.set({
+          stoppingSessions: stopping2,
+          stopEvidence: { ...this.state.stopEvidence, [sessionId]: { ...(this.state.stopEvidence[sessionId] ?? {}), stoppedUiAt: Date.now() } },
+        });
+      }, 2000);
     }
   }
+
+  /** 停止当前生成（兼容旧调用名）。 */
+  cancelSession(sessionId: SessionId): Promise<void> {
+    return this.stopSession(sessionId);
+  }
+
+  /**
+   * 重试语义（devContext 条目 10）：撤回该消息 + 重发该消息。
+   * dsh 0.1.0-rc.6 协议不支持「当前会话内撤回」（仅 sessions.fork 可新建会话），
+   * 因此按协议降级：fork 到该消息之前的轮次边界（等价于撤回），在新会话中重发；
+   * 新会话上下文里该消息只出现一次，可用会话历史验证（验证边界见 docs/RISKS.md）。
+   */
+  async retryMessage(sessionId: SessionId, seq: number, text: string): Promise<void> {
+    const api = this.requireApi();
+    const info = await this.collectRevertInfo(sessionId, seq);
+    if (info.prevTurnEnd === null) {
+      this.set({ error: "这是首条消息，dsh 无法回退到更早位置；无法按「撤回+重发」语义重试" });
+      return;
+    }
+    try {
+      const r = await api.sessions.fork({ sessionId, atSeq: info.prevTurnEnd });
+      if (!r.result.ok) {
+        this.set({ error: `重试失败（撤回阶段）: ${r.result.error.code}: ${r.result.error.message}` });
+        return;
+      }
+      const newId = r.result.value.sessionId;
+      this.set({
+        selectedSessionId: newId,
+        notice: `已按「撤回+重发」重试：dsh 无同会话撤回协议，已在原会话基础上创建新会话 ${newId} 并重发消息（原会话保留）。`,
+      });
+      await this.refreshSessions();
+      await this.loadHistory(newId);
+      const p = await api.sessions.prompt({ sessionId: newId, mode: "queue", content: [{ type: "text", text }] });
+      if (!p.result.ok) {
+        this.set({ error: `重发失败: ${p.result.error.code}: ${p.result.error.message}` });
+        return;
+      }
+      window.setTimeout(() => {
+        void this.loadHistory(newId).catch(() => {});
+      }, 1500);
+    } catch (e) {
+      this.set({ error: `重试失败: ${String(e)}` });
+    }
+  }
+
 
   async loadHistory(sessionId: SessionId): Promise<void> {
     const api = this.requireApi();
@@ -663,33 +800,13 @@ class AppStore {
     }, 500);
     this.historySyncTimers.set(sessionId, timer);
   }
-  async collectRevertInfo(sessionId: SessionId, seq: number): Promise<{
-    prevTurnEnd: number | null;
-    files: Array<{ path: string; diffs: Array<{ seq: number; oldText: string | null; newText: string }> }>;
-  }> {
+  async collectRevertInfo(sessionId: SessionId, seq: number): Promise<RevertInfo> {
     const events = (this.state.history.get(sessionId) ?? []) as Array<{
-      event: { seq: number; type: string };
-      view?: { view?: { card?: string; diffs?: Array<{ path: string; oldText: string | null; newText: string }> } };
+      seq: number;
+      event: { type: string; seq: number };
+      view?: { view?: { diffs?: Array<{ path: string; oldText: string | null; newText: string }> } };
     }>;
-    let prevTurnEnd: number | null = null;
-    for (const raw of events) {
-      if (raw.event.type === "turn/end" && raw.event.seq < seq) prevTurnEnd = raw.event.seq;
-    }
-    const files = new Map<string, { path: string; diffs: Array<{ seq: number; oldText: string | null; newText: string }> }>();
-    if (prevTurnEnd !== null) {
-      for (const raw of events) {
-        if (raw.event.seq <= prevTurnEnd) continue;
-        if (raw.event.type !== "tool/result") continue;
-        const diffs = raw.view?.view?.diffs;
-        if (!diffs) continue;
-        for (const d of diffs) {
-          const f = files.get(d.path) ?? { path: d.path, diffs: [] };
-          f.diffs.push({ seq: raw.event.seq, oldText: d.oldText, newText: d.newText });
-          files.set(d.path, f);
-        }
-      }
-    }
-    return { prevTurnEnd, files: [...files.values()] };
+    return computeRevertInfo(events, seq);
   }
 
   async retractMessage(sessionId: SessionId, seq: number, revertFiles: boolean): Promise<void> {
@@ -739,6 +856,7 @@ class AppStore {
       this.set({
         selectedSessionId: newId,
         error: errors.length ? `已撤回，但 ${errors.length} 处文件回退失败：${errors.slice(0, 3).join("；")}` : null,
+        notice: `已撤回：dsh 0.1.0-rc.6 不支持「当前会话内撤回」（仅 sessions.fork 可新建会话），已在原会话基础上创建新会话 ${newId}；原会话保留未动，文件修改${revertFiles ? "已" : "未"}回退。`,
       });
       await this.refreshSessions();
       await this.loadHistory(newId);
@@ -945,6 +1063,10 @@ class AppStore {
       void this.loadHistory(sessionId).catch((e) => this.set({ error: `历史加载失败: ${String(e)}` }));
     }
     // api 未就绪时由 connect() 在连接成功后加载
+  }
+
+  setNotice(notice: string | null): void {
+    this.set({ notice });
   }
 
   setError(error: string | null): void {

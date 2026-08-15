@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { appStore, useAppState, type InteractiveItem } from "../lib/dsh/store";
 import { Badge, formatTime, shortId } from "../components/ui";
+import { normalizeConversation } from "../lib/dsh/render";
+import { ToolEventCard } from "../components/ToolCards";
 
 interface HistoryEntryLike {
   seq: number;
@@ -8,15 +10,6 @@ interface HistoryEntryLike {
   view?: unknown;
 }
 
-function contentText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((b) => (b && typeof b === "object" && (b as { type?: string }).type === "text" ? String((b as { text?: unknown }).text ?? "") : ""))
-      .join("");
-  }
-  return "";
-}
 
 function sessionTitle(s: { sessionId: string; projections?: unknown }): string | null {
   const p = s.projections as Record<string, { value?: unknown }> | undefined;
@@ -29,31 +22,40 @@ function sessionTitle(s: { sessionId: string; projections?: unknown }): string |
   return null;
 }
 
-function EventRow({ item }: { item: HistoryEntryLike }) {
-  const ev = item.event;
-  switch (ev.type) {
-    case "user/message": {
-      const text = contentText(ev.data?.content);
-      return <div className="msg user"><div className="meta">{formatTime(ev.time)}</div>{text || "(空)"}</div>;
-    }
-    case "assistant/message": {
-      const text = contentText(ev.data?.content);
-      return <div className="msg assistant"><div className="meta">{formatTime(ev.time)}</div>{text || "(空)"}</div>;
-    }
-    case "assistant/chunk":
-    case "session/title":
-    case "turn/start":
-    case "turn/end":
-      return null;
-    case "tool/call":
-    case "tool/result":
+function EventRow({ item }: { item: ReturnType<typeof normalizeConversation>[number] }) {
+  switch (item.kind) {
+    case "user":
+      return <div className="msg user"><div className="meta">{formatTime(item.time)}</div>{item.userText || "(空)"}</div>;
+    case "assistant":
       return (
-        <div className="tool-card" title={ev.type}>
-          {ev.type}: {JSON.stringify(ev.data).slice(0, 500)}
+        <div className="msg assistant">
+          <div className="meta">{formatTime(item.time)}</div>
+          {item.reasoning && (
+            <details className="reasoning-details">
+              <summary>思考过程</summary>
+              <div className="reasoning-body">{item.reasoning}</div>
+            </details>
+          )}
+          {item.text ?? ""}
         </div>
       );
+    case "tool":
+      return (
+        <div className="toolcall-wrap" title={`${item.event.type} @${item.seq}`}>
+          <ToolEventCard view={item.view} evType={item.event.type} data={item.event.data} seq={item.seq} />
+        </div>
+      );
+    case "error":
+      return <div className="toolcall toolcall-err">{item.errorText ?? `${item.event.type} @${item.seq}`}</div>;
+    case "info":
+      return (
+        <details className="reasoning-details" open>
+          <summary>思考过程</summary>
+          <div className="reasoning-body">{item.reasoning}</div>
+        </details>
+      );
     default:
-      return <div className="tool-card">{ev.type} @{ev.seq}</div>;
+      return null;
   }
 }
 
@@ -101,7 +103,7 @@ export function SessionsPage() {
         map.set(ev.seq, { seq: ev.seq, event: ev, view: f.view });
       }
     }
-    return [...map.values()].sort((a, b) => a.seq - b.seq);
+    return normalizeConversation([...map.values()].sort((a, b) => a.seq - b.seq));
   }, [selectedSessionId, history, live]);
 
   const selected = sessions.find((s) => s.sessionId === selectedSessionId);

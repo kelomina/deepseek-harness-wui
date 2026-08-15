@@ -14,7 +14,7 @@ import type { SessionId } from "@deepseek-ai/dsh-session/types";
 export default function App() {
   const [view, setView] = useState<View>("welcome");
   const [mode, setMode] = useState<Mode>("work");
-  const { sessions, selectedSessionId, status, error } = useAppState();
+  const { sessions, selectedSessionId, status, error, notice } = useAppState();
 
   useEffect(() => {
     void appStore.init();
@@ -53,6 +53,12 @@ export default function App() {
           {view === "settings" && <SettingsPage onStartSession={() => setView(mode === "code" ? "code" : "session")} />}
         </main>
       </div>
+      {notice && (
+        <div className="notice-banner" title={notice}>
+          <span>{notice}</span>
+          <button className="btn sm subtle" onClick={() => appStore.setNotice(null)}>关闭</button>
+        </div>
+      )}
       {error && <ErrorBanner message={error} onDismiss={() => appStore.setError(null)} />}
     </>
   );
