@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { dsh, type DshConfig, type ExecMode } from "../lib/tauri";
 import { appStore, useAppState } from "../lib/dsh/store";
 import { RuntimeManager } from "../components/RuntimeManager";
+import { DEFAULT_COT_RULES, loadCotConfig, saveCotConfig, type CotDetectConfig } from "../lib/dsh/cotDetect";
 import { WslPanel } from "../components/WslPanel";
 import type { AgentPresetEntry, ConfigurableProviderView, SettingsPathOpView } from "@deepseek-ai/dsh-host-apiproxy/api";
 
@@ -53,12 +54,53 @@ function buildModels(edit: ProviderEdit): Array<{ id: string; name: string; cont
   }
   return out;
 }
+function CotSettings() {
+  const [cfg, setCfg] = useState<CotDetectConfig>(() => loadCotConfig());
+  const [rulesText, setRulesText] = useState(cfg.rules.join("\n"));
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const save = () => {
+    const rules = rulesText.split("\n").map((r) => r.trim()).filter(Boolean);
+    const next: CotDetectConfig = { enabled: cfg.enabled, rules };
+    saveCotConfig(next);
+    setCfg(next);
+    setMsg("已保存（仅本机 localStorage；默认规则保守，误报/漏报不可避免）");
+  };
+
+  return (
+    <div className="card">
+      <div className="card-head"><span className="card-title">DeepSeek-V4-Pro 思维链降智检测（启发式提示）</span></div>
+      <div className="f-label">
+        <label style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+          <input type="checkbox" checked={cfg.enabled} onChange={(e) => setCfg({ ...cfg, enabled: e.currentTarget.checked })} /> 启用检测
+        </label>
+      </div>
+      <div className="f-label">正则规则（每行一条；非法正则自动跳过）</div>
+      <textarea
+        className="input"
+        style={{ minHeight: 120, fontFamily: "Consolas, monospace", fontSize: 12, whiteSpace: "pre", width: "100%" }}
+        value={rulesText}
+        onChange={(e) => setRulesText(e.currentTarget.value)}
+        placeholder={DEFAULT_COT_RULES.join("\n")}
+      />
+      <div className="hint" style={{ marginTop: 8 }}>
+        {`提示措辞：检测到当前思维链可能异常，存在被路由到低质量模型或生成质量下降的可能。该提示为启发式判断，不代表模型身份结论。\n模型可识别性（V4-Pro 出现在 llm.models / session.models.current）需按 docs/RISKS.md spike 结论；未确认前按假设处理。检测不阻断对话、不改变模型路由。`}
+      </div>
+      {msg && <div className="hint" style={{ color: "var(--green)" }}>{msg}</div>}
+      <div className="actions">
+        <button className="btn primary" onClick={save}>保存规则</button>
+        <button className="btn" onClick={() => { setRulesText(DEFAULT_COT_RULES.join("\n")); setCfg({ enabled: cfg.enabled, rules: [...DEFAULT_COT_RULES] }); }}>恢复默认</button>
+      </div>
+    </div>
+  );
+}
+
 export function SettingsPage({ onStartSession }: { onStartSession?: () => void }) {
   const { config, status, connected, hiddenPresets, agentPresets, agentPresetsMeta } = useAppState();
   const [form, setForm] = useState<DshConfig | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
-  const [tab, setTab] = useState<"providers" | "agent" | "plugins" | "dsh" | "runtime" | "wsl">("providers");
+  const [tab, setTab] = useState<"providers" | "agent" | "plugins" | "dsh" | "runtime" | "wsl" | "assist">("providers");
   const running = status?.state !== "stopped";
 
   // Agent 模式管理
@@ -388,6 +430,7 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
           <button className={`stab${tab === "dsh" ? " on" : ""}`} onClick={() => setTab("dsh")}>DSH 运行配置</button>
           <button className={`stab${tab === "runtime" ? " on" : ""}`} onClick={() => setTab("runtime")}>DSH 运行时</button>
           <button className={`stab${tab === "wsl" ? " on" : ""}`} onClick={() => setTab("wsl")}>WSL 连接</button>
+          <button className={`stab${tab === "assist" ? " on" : ""}`} onClick={() => setTab("assist")}>智能辅助</button>
         </div>
 
         {tab === "providers" && (
@@ -579,6 +622,10 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
             <span className="card-title">插件</span>
             <button className="btn sm primary" disabled={!connected} onClick={() => setImportOpen(true)}>＋ 导入插件</button>
           </div>
+          <div className="hint" style={{ margin: "8px 0" }}>
+            插件 UI 兼容（devContext 0.2.0 条目 6）已降级：spike 结论（dsh 0.1.0-rc.6）显示官方插件 UI 挂载 = cordis + React slot registry（dsh-client-ui-slots）+ 官方 shell（dsh-client-web buildRenderApp），
+            无第三方外壳可独立挂载的公开契约。本轮仅提供只读插件清单与启停（受限入口），插件 UI 挂载移出 0.2.0，见 docs/RISKS.md。
+          </div>
           {!connected && <div className="muted">dsh 未连接，无法查看插件</div>}
           {connected && plugins === null && <div className="muted">加载中…</div>}
           {connected && plugins && (
@@ -679,6 +726,8 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
         )}
         {tab === "runtime" && <RuntimeManager running={running} />}
         {tab === "wsl" && <WslPanel />}
+        {tab === "assist" && <CotSettings />}
+        {tab === "assist" && <CotSettings />}
         {/* 复制 Agent 模式对话框 */}
         {copyTarget && (
           <div className="modal-mask" onClick={() => setCopyTarget(null)}>

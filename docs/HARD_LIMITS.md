@@ -28,6 +28,7 @@
 | 日志缓冲 | 2000 行内存环形 | 不落盘（本轮）；UI 可查看 |
 | 单实例 | Tauri plugin-single-instance | 二次启动聚焦已有窗口 |
 | 凭据零存储 | — | 本项目不保存 API Key；全部交给 dsh |
+| 受管运行时 | `managed_runtime_version = null`（Bundled 用仓库 `runtime/`） | 0.2.0 条目 3：受管版本在 `app_config_dir/runtimes/<v>`，安装前强制 sha512（npm integrity）校验，移除可回滚；启用后 Bundled 模式使用受管版本 |
 | WebView 基线 | CSP 限制 connect-src 到本机代理与 dev server；无远程导航 | 生产加固见 RISKS（unsafe-inline 待收紧） |
 | 代理边界 | 仅绑定 127.0.0.1；Origin 白名单 | 非白名单 Origin 拒绝 |
 

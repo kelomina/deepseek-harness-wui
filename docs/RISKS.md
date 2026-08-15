@@ -1,6 +1,6 @@
 # 风险与已知问题
 
-最后更新：2026-08-14（dsh 0.1.0-rc.6）
+最后更新：2026-08-15（dsh 0.1.0-rc.6）
 
 ## 高风险
 
@@ -23,7 +23,7 @@
 
 ## 低风险/已记录
 
-- 会话页历史渲染为通用映射（工具事件显示 JSON 摘要），非官方 1:1 渲染。
+- 会话历史工具事件渲染已按官方 presentation 契约实现 1:1 卡片（2026-08-15，条目 8）；无 view 时回退通用 JSON 摘要。
 - 目录浏览器依赖 dsh `browse` capability；`pickDirectory`（native）未启用。
 - Windows 强制终止（taskkill /F）无优雅退出；正常关窗会触发清理（已实测无残留）。
 
@@ -107,3 +107,64 @@
 - [事实] 设置页滚动/垂直居上：`.view.active{height:100%}` 后，`.col-settings` 网格因 `align-content:normal`(stretch) 把行撑开导致内容居中；
   改为 `align-content:start` 恢复顶部对齐（Edge headless 实测 cardTop 202→125）。
 - 插件条件禁用行（`disabled: !!js ...`）标注「插件无法启用」并禁用开关。
+
+## 2026-08-15：0.2.0 P0 会话正确性（条目 5/8/9/10/11，已实施）
+
+- [事实] 停止（条目 5）：`sessions.cancel` 为官方中断 RPC（dsh 0.1.0-rc.6 类型契约：「Stops an ordinary session's active turn」）。
+  实现：点击停止后立即进入「正在停止」，调用 `sessions.cancel`（ok 记录 cancelAcceptedAt 证据），默认 2s 时限内 UI 切换为已停止
+  （前端止流降级：冻结流式快照直到下一轮 turn/start）。`turn/end(reason.kind=aborted)` 记录 turnEndAbortedAt 证据。
+  停止后不追加流式内容、UI 状态一致、可再次发送。时限 2s 为默认值，未实测调整（如后续实测需调整在 RISKS 记录原因）。
+- [事实] 工具调用渲染（条目 8）：已按官方 presentation 契约实现 1:1 卡片渲染
+  （DiffCallView/DiffResultView、TerminalCallView/TerminalResultView、ReadResultView、SearchResultView、WebResultView、GenericCallView）。
+  无 view 时回退通用 JSON 摘要。此前「会话历史工具事件为通用映射渲染」记录已更新。
+- [事实] 空消息合并（条目 9）：使用官方 `deriveEventMessage`（@deepseek-ai/dsh-session/surface）抑制空 content 的 assistant/message；
+  仅思考的 assistant/message 合并到下一条有文本消息；轮末无文本时思考挂到最后一个工具卡片（不产生空消息气泡）。
+  验证：fixture 测试 8/8 通过（scripts/test-render.ts）。
+- [事实] 重试（条目 10）：重试 = 撤回（fork 到该消息之前的轮次边界 prevTurnEnd）+ 重发。
+  dsh 0.1.0-rc.6 无「当前会话内撤回」RPC（sessions API 仅 list/search/create/history/models/selectModel/rename/fork/prompt/attachment/updateQueue/cancel），
+  因此 fork 会新建会话；新会话 seed 前缀 = 到 prevTurnEnd 的事件（消息不在其中，只出现一次）。
+  验证边界：以 dsh 可观察会话状态（新会话历史/seed 前缀）为准；无法直接检查模型上下文，已在 UI notice 与 RetractModal 明示。
+- [事实] 撤回（条目 11）：dsh 协议不支持「当前会话内撤回」，按裁剪条件记录协议限制并降级：
+  撤回 = fork@prevTurnEnd + 可选文件回退（fs_revert / git_restore_deleted），切换至新会话，原会话保留；RetractModal 明确标注协议限制与新建会话语义。
+  验证边界：会话 ID 变化、原会话保留、retract/fork 状态经 sessions.list 可查。
+
+## 2026-08-15：0.2.0 P1 运行时管理（条目 3，已实施 + live E2E 证据）
+
+- [事实] `DownloadsApi.sessionLog` 仅用于会话日志 ZIP 下载（host-only，浏览器客户端不可达），不是运行时下载。
+- 实现：自研下载管道（src-tauri/src/dsh/runtime.rs）——
+  首选 npm registry（`https://registry.npmjs.org/@deepseek-ai/dsh/<version>`），版本精确锁定（禁止范围/通配），
+  `dist.integrity`（sha512）为必须校验项；校验失败禁止安装。安装到 app_config_dir/runtimes/<version>，
+  记录 integrity + bin.js sha256 + 安装时间；移除 = 移到 .trash-*（可逆回滚）。
+- 验证：单元测试 3 项（版本校验/篡改拒绝/registry 口径）；live E2E `cargo test -- --ignored runtime_live_install_and_verify`
+  （2026-08-15，网络实测下载 @deepseek-ai/dsh@0.1.0-rc.6，integrity 校验 + 解包 + 版本核对 + bin sha256 + verify ok）通过。
+- 备选 GitHub release：官方未提供可信发布物，本轮未启用，记录为后续。
+- 异常路径覆盖：下载失败、校验失败（拒绝安装）、磁盘空间/权限（std::io 错误透出）、已存在版本（拒绝，需先移除可回滚）、回滚/恢复。
+
+## 2026-08-15：0.2.0 P1 WSL（条目 2，已实施；写操作经确认 + 备份）
+
+- [事实] 本机 WSL 可用：默认发行版 CodexUbuntu（WSL 2），另有 CentOS8-stream、docker-desktop。
+- `wsl.exe` 管道输出为 UTF-16LE：已实现 UTF-16LE 解码（含 BOM）；解析 `wsl --status` / `wsl -l -v`。
+- 写操作边界：仅写应用 config.json 的 wsl_* 字段（默认发行版 / DSH_HOME / 工作区），最小权限、前端二次确认、保存前备份 config.json.bak-<ts>（可逆）；
+  不做跨发行版系统级管理（/etc/wsl.conf、注册表等）。路径校验仅支持 `\\wsl$\<distro>\`。
+- 验证：单元测试 4 项（UTF-16LE 解码、发行版表格解析、多词发行版名）。无 WSL 时 UI 显示不可用原因，不阻塞主流程。
+- 未验证：未在真实 dsh 会话中使用 WSL 工作区（需用户确认创建 WSL 工作区会话后实测）。
+
+## 2026-08-15：0.2.0 P1 工具视图（条目 1，已实施 MVP；部分降级）
+
+- 数据源与官方类型契约一致：diff=DiffResultView/FileDiff、terminal=TerminalCallView/TerminalResultView、file=ReadResultView、web=WebSearchResultView/WebFetchResultView。
+- 文件管理器：只读目录浏览（host.listDirectory browse capability）+ 会话涉及文件清单；终端/浏览器/Git 为只读记录视图（无交互式 pty / 真实浏览器 / git 操作，已标注能力边界）。
+- 宽度 ≤1280 时工具面板默认折叠（CSS media query）。收集器纯函数测试 5/5 通过（scripts/test-toolviews.ts）。
+
+## 2026-08-15：0.2.0 P2 V4-Pro 思维链降智检测（条目 4，已实施；模型可识别性为假设）
+
+- 模型可识别性 spike：**未在真实 dsh 会话实证** V4-Pro 出现在 llm.models / session.models.current 的 id/displayName。
+  实现为启发式 `isV4ProModel`（id 精确匹配 deepseek-v4-pro 或带 -xxx 后缀）；未确认前按假设处理（docs/devContext.md 同口径）。
+- 检测：可配置正则（localStorage cotDetect，默认保守规则），命中显示非阻断提示（不阻断对话、不改变模型路由、不构成模型身份结论）。
+- 样本评估（2026-08-15，标注样本 6 条）：TP=2 TN=4 FP=0 FN=0（scripts/test-cot.ts）。样本量小，仅作记录，不构成生产准确性结论。
+
+## 2026-08-15：0.2.0 P2 插件 UI 兼容（条目 6，spike 结论：无独立挂载契约，已降级）
+
+- spike（dsh 0.1.0-rc.6）：官方插件 UI 挂载 = cordis + React slot registry（@deepseek-ai/dsh-client-ui-slots 的 register/renderSlot）
+  + 官方 shell（@deepseek-ai/dsh-client-web buildRenderApp 渲染 root slot）+ 模块加载/HMR（dsh-client-modules/dsh-client-hmr，/plugins/events SSE）。
+- 结论：插件 UI 组件是进程内 React 组件注册（cordis fiber 生命周期 + store 席位），无第三方外壳可独立挂载的公开契约。
+  按 devContext 裁剪条件降级：只读插件清单与启停（已有插件管理入口）+ 文档说明；插件 UI 挂载移出 0.2.0（后续迭代候选：官方 1:1 渲染/运行时整体嵌入）。

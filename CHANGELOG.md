@@ -4,6 +4,27 @@ All notable user-visible changes are aggregated here. / 本项目重要变更按
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-15
+
+### Added / 新增
+
+- Session stop semantics: stop button enters a stopped state within 2s, calls the official `sessions.cancel` interrupt, freezes the stream after stop, and records cancel/turn-aborted evidence; front-end-only stop as documented degradation — 停止语义：停止按钮 2s 内进入已停止，调用官方 `sessions.cancel` 中断，停止后冻结流式内容并记录 cancel/turn-aborted 证据；后端不支持时前端止流降级（已记录）。
+- Retry semantics: retry = retract (fork to the previous turn boundary) + resend, avoiding duplicate context; protocol limitation (no same-session retract in dsh 0.1.0-rc.6) recorded with validation boundary — 重试语义：重试 = 撤回（fork 到上轮边界）+ 重发，避免上下文重复；协议限制已记录。
+- Retract semantics: same-session retract unsupported by dsh; degraded to fork-new-session + optional file revert with explicit UI labeling — 撤回语义：dsh 不支持同会话撤回；降级为 fork 新会话 + 可选文件回退并明示。
+- Official tool-call card rendering per the pinned presentation contract (diff / terminal / read / search / web / generic) — 工具调用按锁定官方 presentation 契约渲染卡片（diff/terminal/read/search/web/generic）。
+- Empty-message merge: thinking-only assistant messages suppressed and merged into the next text message (official `deriveEventMessage` rule) — 空消息合并：仅思考的 assistant 消息抑制并合并到下一条文本消息。
+- Tool views (MVP): file manager (read-only browse + session files), terminal / browser / Git read-only record views, collapsible at ≤1280px — 工具视图（MVP）：文件管理器（只读浏览 + 会话涉及文件）、终端/浏览器/Git 只读记录视图，≤1280 折叠。
+- DSH WSL config & connection: read-only detection (`wsl --status` / `-l -v`), config read/write with validation + confirmation + backup, graceful degradation without WSL — DSH WSL 配置与连接：只读检测、配置读写（校验+确认+备份）、无 WSL 降级。
+- Managed dsh runtime download/install/manage: npm-registry source, exact version locking, mandatory sha512 integrity verification, reversible remove/rollback, verify on demand — 受管 dsh 运行时下载/安装/管理：npm registry 源、精确锁定、sha512 integrity 必校验、可逆移除/回滚、按需复验。
+- DeepSeek-V4-Pro chain-of-thought degradation detection (configurable regex, non-blocking warning, conservative wording; model identifiability treated as assumption) — V4-Pro 思维链降智检测（可配置正则、非阻断提示、保守措辞；模型可识别性按假设）。
+- Plugin UI compat (item 6): spike concluded there is no independently mountable contract; degraded to read-only inventory + documentation — 插件 UI 兼容：spike 结论无独立挂载契约；降级为只读清单 + 文档说明。
+
+### Internal / 内部与文档
+
+- Rust unit tests: 12 passed (runtime download/integrity, WSL decode/parse, plugins); live E2E install test (ignored) passes against the npm registry — Rust 单元测试 12 项通过（运行时下载/integrity、WSL 解码/解析、插件）；live E2E 安装测试（ignored）对 npm registry 实测通过。
+- Fixture tests: render normalization 8/8, revert boundary 5/5, tool-view collectors 5/5, CoT sample eval TP=2 TN=4 FP=0 FN=0 — fixture 测试：渲染归一 8/8、撤回边界 5/5、工具视图收集 5/5、CoT 样本评估 TP=2 TN=4 FP=0 FN=0。
+- RISKS.md updated with per-item dsh 0.1.0-rc.6 verification dates and validation boundaries — RISKS.md 记录逐条目 dsh 版本验证日期与验证边界。
+
 ## [0.1.0] - 2026-08-15
 
 ### Added / 新增

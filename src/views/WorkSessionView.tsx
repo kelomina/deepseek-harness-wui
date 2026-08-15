@@ -6,6 +6,7 @@ import { ModelMenu } from "../components/ModelMenu";
 import { WorkspaceMenu } from "../components/WorkspaceMenu";
 import { AgentPresetChip } from "../components/AgentPresetChip";
 import { PermissionMenu } from "../components/PermissionMenu";
+import { CotWarningBanner } from "../components/CotWarningBanner";
 
 export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => void }) {
   const { connected, sessions, selectedSessionId, history, stoppingSessions } = useAppState();
@@ -30,6 +31,10 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
     }
   }, [items.length, liveAssistant?.text.length, liveAssistant?.reasoning.length]);
   const interactives = useSessionInteractives();
+  const reasoningText = [
+    liveAssistant?.reasoning ?? "",
+    ...items.filter((it) => it.kind === "assistant").map((it) => it.reasoning ?? ""),
+  ].join("\n");
   const selected = sessions.find((s) => s.sessionId === selectedSessionId);
   const running = selected?.running ?? false;
   const stopping = selectedSessionId ? (stoppingSessions[selectedSessionId] ?? null) : null;
@@ -52,6 +57,7 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
           {stopping && <span className="badge orange">正在停止…</span>}
         </div>
         <div className="msgs" ref={msgsRef}>
+          {selectedSessionId && <CotWarningBanner sessionId={selectedSessionId} reasoning={reasoningText} />}
           {interactives.map((i) => (i.kind === "approval" ? <ApprovalCard key={i.rpcId} item={i} /> : <QuestionCard key={i.rpcId} item={i} />))}
           {items.length === 0 && <div className="empty-state">还没有消息</div>}
           {items.map((it) => <EventRow key={it.seq} item={it} sessionId={selectedSessionId ?? undefined} />)}

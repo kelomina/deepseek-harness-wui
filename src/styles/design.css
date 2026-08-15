@@ -434,3 +434,8 @@ input,textarea,.composer-input{user-select:text;-webkit-user-select:text}
   .tools-col.open{max-height:36vh}
   .tools-col:not(.open) .tools-head{border-bottom:none}
 }
+
+/* ===== devContext 0.2.0: CoT degradation warning (item 4) ===== */
+.cot-warning{display:flex;align-items:center;gap:8px;border:1px solid #e0b184;background:#fdf4e7;border-radius:8px;padding:6px 10px;font-size:12px;color:#7a4a12;margin-bottom:8px}
+.cot-warning-icon{flex:none}
+.cot-warning-text{flex:1;line-height:1.6}

@@ -81,6 +81,8 @@ export interface AppState {
   agentPresetsMeta: AgentPresetMeta | null;
   pendingAgentPreset: string | null;
   sessionPermissions: Map<SessionId, PermissionSelect>;
+  /** 会话当前模型 id 缓存（用于 V4-Pro 思维链检测等按会话功能）。 */
+  sessionModels: Map<SessionId, string>;
   /** 会话点击停止后进入「正在停止」的时间戳（毫秒）。 */
   stoppingSessions: Record<SessionId, number>;
   /** 用户点击停止后冻结该会话的流式快照（不再追加内容），直到下一轮开始。 */
@@ -118,6 +120,7 @@ const initialState: AppState = {
   agentPresetsMeta: null,
   pendingAgentPreset: null,
   sessionPermissions: new Map(),
+  sessionModels: new Map(),
   stoppingSessions: {},
   forceFinished: [],
   stopEvidence: {},
@@ -250,6 +253,7 @@ class AppStore {
       streams: new Map(),
       archivedSessionIds: [],
       sessionPermissions: new Map(),
+      sessionModels: new Map(),
       stoppingSessions: {},
       forceFinished: [],
       stopEvidence: {},
@@ -598,6 +602,29 @@ class AppStore {
       }
       this.set(patch);
     }
+  }
+
+  /** 会话当前模型 id（缓存；读取 session.models.current.model，失败返回 null）。 */
+  async getSessionModelId(sessionId: SessionId): Promise<string | null> {
+    const cached = this.state.sessionModels.get(sessionId);
+    if (cached) return cached;
+    const api = this.state.api;
+    if (!api) return null;
+    try {
+      const r = await api.sessions.models({ sessionId });
+      if (r.result.ok) {
+        const id = (r.result.value as { current?: { model?: string } }).current?.model ?? null;
+        if (id) {
+          const m = new Map(this.state.sessionModels);
+          m.set(sessionId, id);
+          this.set({ sessionModels: m });
+        }
+        return id;
+      }
+    } catch {
+      // 读取失败不阻断
+    }
+    return null;
   }
 
   async addWorkspace(path: string): Promise<WorkspaceId | null> {
