@@ -229,9 +229,9 @@ fn routing_suite_install_cmd(app: AppHandle, state: State<AppState>) -> Result<S
 }
 
 #[tauri::command]
-fn routing_suite_remove_cmd(state: State<AppState>) -> Result<String, String> {
+fn routing_suite_remove_cmd(app: AppHandle, state: State<AppState>) -> Result<String, String> {
     let cfg = lock(state.manager.lock()).config().clone();
-    routing_suite_remove(&cfg)
+    routing_suite_remove(&app, &cfg)
 }
 
 // ---- 0.2.0 条目 3：DSH 运行时下载/安装/管理 ----

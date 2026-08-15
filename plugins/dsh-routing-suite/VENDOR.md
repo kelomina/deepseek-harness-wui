@@ -34,6 +34,12 @@
    agent preset 列表（应用「设置 → Agent 模式」与新会话选择器）中出现为
    **Router Standard (experimental)**。
 
+> **依赖链接（live 实测 2026-08-15）**：注入器 `lib/index.js` 裸导入 `schemastery` 等包，
+> 而 pnpm `link:` junction 指向项目目录后 Node 无法从 profile/runtime 解析这些依赖（dsh 启动即失败）。
+> 应用安装流程会在 pnpm add 后把**当前生效 runtime** 的对应包 junction 进
+> `injector/node_modules/`（与上游 build.sh 同机制；该目录被 .gitignore 忽略，不入库）。
+> 卸载时只解链、不动 runtime。
+
 卸载（可逆）：`dsh plugin --profile web remove <dump-config 中解析出的包名>` +
 把 `.agent-presets/router-standard` 重命名为 `.trash-<ts>`（点前缀，dsh 扫描跳过）。
 

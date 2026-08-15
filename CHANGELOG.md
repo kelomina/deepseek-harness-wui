@@ -6,7 +6,7 @@ All notable user-visible changes are aggregated here. / 本项目重要变更按
 
 ### Added / 新增
 
-- dsh-routing-suite integration: vendored injector (dsh-super-injector 0.3.1) + Router Standard preset (0.1.0), one-click install/remove/status in Settings → 插件, reversible (preset backup `.trash-*`), restart required — 集成 dsh-routing-suite（注入器 + Router Standard 思维模式路由预设）：设置 → 插件一键安装/卸载/状态，可回滚，重启 dsh 生效。
+- dsh-routing-suite integration: vendored injector (dsh-super-injector 0.3.1) + Router Standard preset (0.1.0), one-click install/remove/status in Settings → 插件, reversible (preset backup `.trash-*`), restart required — 集成 dsh-routing-suite（注入器 + Router Standard 思维模式路由预设）：设置 → 插件一键安装/卸载/状态，可回滚，重启 dsh 生效。；live 安装实测发现注入器依赖解析问题并已修复（安装时自动把 runtime 依赖 junction 进 injector/node_modules，卸载解链）
 
 ## [0.2.0] - 2026-08-15
 

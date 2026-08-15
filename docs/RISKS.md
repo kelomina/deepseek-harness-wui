@@ -195,3 +195,23 @@
 - 未验证（live）：未在真实 dsh 上执行 pnpm 装配 / 预设复制（避免未经授权改动用户 `~/.dsh` 与安装包）；
   安装/卸载后是否在 dsh 内正常装载（dev_* 工具出现、Router Standard 可被会话选择）需用户点「一键安装」后重启 dsh 实测。
   dsh 0.1.0-rc.6 验证日期 2026-08-15；上游为第三方社区项目，行为/质量以上游为准。
+## 2026-08-15：dsh-routing-suite live 安装测试（用户授权；发现并修复注入器依赖解析）
+
+- 按应用同款命令 live 安装（DSH_HOME=`C:\Users\Saika\.dsh`，bundled dsh 0.1.0-rc.6）：
+  - 注入器：`dsh plugin --profile web add <vendored injector>` → pnpm 记录
+    `@dsh-external/dsh-super-injector link:...`，写入 profile `dsh.profile.bundles`，profile node_modules 建 junction；
+    `dsh web --dump-config` 出现 `- id: dsh-super-injector` 行。
+  - 预设：复制到 `~/.dsh/.agent-presets/router-standard/`（6 文件，agent.cordis.yml 14248B）。
+- **boot 门禁首次失败**：`dsh web --port 36000` 报
+  `Cannot find package 'schemastery' imported from ...injector\lib\index.js`（ERR_MODULE_NOT_FOUND）。
+  根因：pnpm `link:` 在 profile node_modules 建的是指向项目目录的 junction，Node ESM 按**文件真实路径**向上解析裸导入，
+  看不到 profile/runtime 的 node_modules；注入器 lib 裸导入 `schemastery`（+ type-only `cordis`、`@deepseek-ai/dsh-tools`、`dsh-llm`、`dsh-client-ui-slots`），
+  而 runtime 只有 scoped 的 `@deepseek-ai/schemastery`。
+- 修复：应用安装流程在 pnpm add 后，把**当前生效 runtime**（bundled `runtime/node_modules` 或受管 `runtimes/<v>/node_modules`）的
+  上述包 junction 进 `injector/node_modules/`（与上游 build.sh 同机制；目录被 .gitignore 的 `node_modules` 忽略）；卸载时只解链、不动 runtime。
+- **修复后 boot 通过**：`dsh web --port 36000` 2.6s 内监听 127.0.0.1，无 stderr 错误；taskkill /T 清理进程树后端口释放。
+  证据：`evidence/live-suite-boot-20260815-*.txt`（gitignored）。
+- 预设静态校验：`~/.dsh/.agent-presets/router-standard/agent.cordis.yml` 用 dsh 官方 `entryListSchema`（cordis-plugin-include）解析通过
+  （17 顶层行，shape OK），即 dsh agent-preset 扫描不会判 broken。
+- 单测：新增 junction 创建/解链（Windows，temp）与 link-pairs 校验 2 项 → 全量 17 passed。
+- 未验证（live）：dev_* 工具在模型会话内实际可用、Router Standard 可被新建会话选择——需在 dsh 运行 + 有模型会话时实测（会消耗 token），未做。

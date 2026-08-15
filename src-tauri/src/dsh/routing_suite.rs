@@ -23,6 +23,24 @@ pub const INJECTOR_ID: &str = "dsh-super-injector";
 /// Preset id = directory name under `$DSH_HOME/.agent-presets/`.
 pub const PRESET_ID: &str = "router-standard";
 
+/// First-level bare/scoped imports of the injector's lib that must resolve
+/// from the injector directory itself (Node ESM resolves bare specifiers
+/// relative to the importing file's real path — a pnpm `link:` junction to an
+/// external directory cannot see the profile's node_modules). Mirrors what the
+/// upstream build script does: junction the runtime's packages into the
+/// injector's own node_modules at install time. Pairs are (link path under
+/// injector/node_modules, target path under the runtime's node_modules).
+const INJECTOR_LINK_PAIRS: &[(&str, &str)] = &[
+    ("schemastery", "@deepseek-ai/schemastery"),
+    ("cordis", "@deepseek-ai/cordis"),
+    ("@deepseek-ai/dsh-tools", "@deepseek-ai/dsh-tools"),
+    ("@deepseek-ai/dsh-llm", "@deepseek-ai/dsh-llm"),
+    (
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-slots",
+    ),
+];
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RoutingSuiteStatus {
     /// Injector row present in `dsh web --dump-config`.
@@ -131,6 +149,110 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<(), String> {
 }
 
 /// Install injector (pnpm) + preset (copy, reversible backup of existing).
+/// Resolve the node_modules root of the ACTIVE runtime (managed or bundled).
+fn runtime_node_modules_root(app: &tauri::AppHandle, cfg: &DshConfig) -> Result<PathBuf, String> {
+    if let Some(v) = &cfg.managed_runtime_version {
+        let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+        let p = dir.join("runtimes").join(v).join("node_modules");
+        if p.is_dir() {
+            return Ok(p);
+        }
+        return Err(format!(
+            "受管运行时 {v} 的 node_modules 缺失：{}（请先在「DSH 运行时」复验或回滚）",
+            p.display()
+        ));
+    }
+    let bin = PathBuf::from(crate::dsh::manager::bundled_bin_path()?);
+    let nm = bin
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+        .ok_or_else(|| "无法解析 bundled runtime/node_modules".to_string())?;
+    if nm.is_dir() {
+        return Ok(nm.to_path_buf());
+    }
+    Err(format!(
+        "bundled runtime node_modules 缺失：{}",
+        nm.display()
+    ))
+}
+
+/// Create a Windows junction (no admin needed). Junctions are removed with
+/// `std::fs::remove_dir` (unlinks the junction, never the target).
+#[cfg(windows)]
+fn make_junction(link: &Path, target: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let out = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        .output()
+        .map_err(|e| format!("创建 junction 失败: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let msg = if msg.is_empty() {
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        } else {
+            msg
+        };
+        Err(format!(
+            "mklink /J {} → {} 失败: {msg}",
+            link.display(),
+            target.display()
+        ))
+    }
+}
+
+#[cfg(not(windows))]
+fn make_junction(_link: &Path, _target: &Path) -> Result<(), String> {
+    Err("当前仅支持 Windows junction".to_string())
+}
+
+/// Ensure the injector's own node_modules carries junctions to the active
+/// runtime's packages, so dsh's loader can resolve the injector's bare imports.
+/// Returns human-readable lines (created / skipped / missing).
+fn ensure_injector_links(runtime_nm: &Path, injector_dir: &Path) -> Result<Vec<String>, String> {
+    let nm = injector_dir.join("node_modules");
+    let mut lines: Vec<String> = Vec::new();
+    for (link, target_rel) in INJECTOR_LINK_PAIRS {
+        let target = runtime_nm.join(target_rel);
+        let link_path = nm.join(link);
+        if link_path.exists() {
+            lines.push(format!("  - {link} 已存在（跳过）"));
+            continue;
+        }
+        if !target.exists() {
+            lines.push(format!(
+                "  - {link}：runtime 缺少目标 {}（跳过）",
+                target.display()
+            ));
+            continue;
+        }
+        if let Some(parent) = link_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("创建 {} 失败: {e}", parent.display()))?;
+        }
+        make_junction(&link_path, &target)?;
+        lines.push(format!("  - {link} → {}（junction）", target.display()));
+    }
+    Ok(lines)
+}
+
+/// Best-effort cleanup of the injector junctions (unlink only, never the target).
+fn remove_injector_links(injector_dir: &Path) {
+    let nm = injector_dir.join("node_modules");
+    for (link, _) in INJECTOR_LINK_PAIRS {
+        let link_path = nm.join(link);
+        if link_path.exists() {
+            let _ = std::fs::remove_dir(&link_path);
+        }
+    }
+    let _ = std::fs::remove_dir(nm.join("@deepseek-ai"));
+    let _ = std::fs::remove_dir(nm);
+}
 pub fn routing_suite_install(app: &tauri::AppHandle, cfg: &DshConfig) -> Result<String, String> {
     let root = resolve_suite_root(app)?;
     let home = dsh_home(cfg);
@@ -149,6 +271,12 @@ pub fn routing_suite_install(app: &tauri::AppHandle, cfg: &DshConfig) -> Result<
         .ok_or_else(|| "注入器路径非法".to_string())?;
     let out = run_dsh_cli(&["plugin", "--profile", "web", "add", inj], &home)?;
     msgs.push(format!("✓ 注入器已装配（重启后由 bundles 接管）：\n{out}"));
+
+    // 注入器 lib 的裸依赖需从注入器目录自身可解析：把当前 runtime 的包 junction 进
+    // injector/node_modules（与上游 build.sh 同机制；node_modules 被 .gitignore 忽略）。
+    let runtime_nm = runtime_node_modules_root(app, cfg)?;
+    let links = ensure_injector_links(&runtime_nm, &injector_dir)?;
+    msgs.push(format!("✓ 注入器依赖链接：\n{}", links.join("\n")));
 
     // 2) Preset — copy to the official user preset root, keeping the previous
     //    copy recoverable under a dot-prefixed `.trash-<ts>` name.
@@ -179,7 +307,7 @@ pub fn routing_suite_install(app: &tauri::AppHandle, cfg: &DshConfig) -> Result<
 }
 
 /// Remove injector (by discovered package name) + preset (reversible rename).
-pub fn routing_suite_remove(cfg: &DshConfig) -> Result<String, String> {
+pub fn routing_suite_remove(app: &tauri::AppHandle, cfg: &DshConfig) -> Result<String, String> {
     let home = dsh_home(cfg);
     let mut msgs: Vec<String> = Vec::new();
 
@@ -207,6 +335,11 @@ pub fn routing_suite_remove(cfg: &DshConfig) -> Result<String, String> {
         ));
     } else {
         msgs.push("预设未安装，跳过。".to_string());
+    }
+
+    // 清理注入器依赖 junction（只解链，不动 runtime）
+    if let Ok(root) = resolve_suite_root(app) {
+        remove_injector_links(&root.join("injector"));
     }
 
     msgs.push("\n重启 dsh 后生效。".to_string());
@@ -267,6 +400,39 @@ mod tests {
             "b"
         );
         // cleanup (best-effort, within temp dir)
+        let _ = std::fs::remove_dir_all(&base);
+    }
+    #[test]
+    fn link_pairs_are_sane() {
+        // 裸包映射到 runtime 的 @deepseek-ai 作用域；其余必须是 scoped 包
+        assert!(INJECTOR_LINK_PAIRS
+            .iter()
+            .all(|(l, t)| !l.is_empty() && !t.is_empty()));
+        assert!(INJECTOR_LINK_PAIRS
+            .iter()
+            .all(|(l, _)| *l == "schemastery" || *l == "cordis" || l.starts_with("@deepseek-ai/")));
+        assert!(INJECTOR_LINK_PAIRS
+            .iter()
+            .all(|(_, t)| t.starts_with("@deepseek-ai/")));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn junction_creation_and_unlink_keeps_target() {
+        let base = std::env::temp_dir().join(format!("dsh-routing-suite-junc-{}", timestamp_ms()));
+        let target = base.join("target");
+        let link = base.join("link");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("f.txt"), "x").unwrap();
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        make_junction(&link, &target).unwrap();
+        assert!(
+            link.join("f.txt").is_file(),
+            "junction should expose target content"
+        );
+        // remove_dir unlinks the junction only; the target must survive
+        std::fs::remove_dir(&link).unwrap();
+        assert!(target.join("f.txt").is_file(), "target must survive unlink");
         let _ = std::fs::remove_dir_all(&base);
     }
 }
