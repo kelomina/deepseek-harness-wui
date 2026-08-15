@@ -3,7 +3,7 @@ import type { SessionSummary } from "@deepseek-ai/dsh-host-apiproxy/api";
 import { useAppState, appStore } from "../lib/dsh/store";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { DshStatus } from "../lib/tauri";
-import { sessionTitle } from "../lib/dsh/sessionTitle";
+import { displayTitle } from "../lib/dsh/sessionTitle";
 
 export type View = "welcome" | "session" | "code" | "status" | "workspaces" | "settings";
 export type Mode = "work" | "code";
@@ -32,7 +32,7 @@ export function Sidebar({
   const [ctx, setCtx] = useState<{ x: number; y: number; id: SessionId } | null>(null);
   const [renameCtx, setRenameCtx] = useState<{ id: SessionId; title: string } | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
-  const { pinnedSessions, workspaces, archivedSessionIds } = useAppState();
+  const { pinnedSessions, workspaces, archivedSessionIds, sessionTitles } = useAppState();
   // 归档（移除）的会话不再显示在左侧列表；dsh 的 sessions.list 会返回全部会话，需用归档集合过滤
   const visible = sessions.filter((s) => !archivedSessionIds.includes(s.sessionId));
   const pinned = visible.filter((s) => pinnedSessions.includes(s.sessionId));
@@ -50,9 +50,14 @@ export function Sidebar({
       className={`task-item${s.sessionId === selectedSessionId && (view === "session" || view === "code") ? " active" : ""}`}
       onClick={() => onSelectSession(s.sessionId)}
       onContextMenu={(e) => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, id: s.sessionId }); }}
+      onDoubleClick={() => {
+        const cur = displayTitle(s, sessionTitles) ?? s.sessionId;
+        setRenameCtx({ id: s.sessionId, title: cur });
+        setRenameDraft(cur);
+      }}
     >
       <span className={`dot${s.running ? " green" : ""}`} />
-      <span className="t-title">{sessionTitle(s) ?? s.sessionId.slice(0, 8)}</span>
+      <span className="t-title">{displayTitle(s, sessionTitles) ?? s.sessionId.slice(0, 8)}</span>
       <span className="t-time">{fmtTime(s.updatedAt)}</span>
     </button>
   );
@@ -127,7 +132,7 @@ export function Sidebar({
               className="mm-item"
               onClick={() => {
                 const s = sessions.find((x) => x.sessionId === ctx.id);
-                const cur = s ? (sessionTitle(s) ?? s.sessionId) : ctx.id;
+                const cur = s ? (displayTitle(s, sessionTitles) ?? s.sessionId) : ctx.id;
                 setRenameCtx({ id: ctx.id, title: cur });
                 setRenameDraft(cur);
                 setCtx(null);

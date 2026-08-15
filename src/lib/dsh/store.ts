@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { dsh, onDshLog, onDshStatus, type DshConfig, type DshStatus } from "../tauri";
 import { DshApiClient } from "./client";
 import { computeRevertInfo, type RevertInfo } from "./revert";
+import { sessionTitle } from "./sessionTitle";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {
   AgentPresetEntry,
@@ -65,6 +66,7 @@ export interface AppState {
   host: HostDescription | null;
   workspaces: WorkspaceView[];
   sessions: SessionSummary[];
+  sessionTitles: Record<string, string>;
   interactives: InteractiveItem[];
   live: Map<SessionId, MuxFrame[]>;
   selectedSessionId: SessionId | null;
@@ -104,6 +106,7 @@ const initialState: AppState = {
   host: null,
   workspaces: [],
   sessions: [],
+  sessionTitles: {},
   interactives: [],
   live: new Map(),
   selectedSessionId: null,
@@ -226,7 +229,9 @@ class AppStore {
       const ws = await api.workspace.list({});
       if (ws.result.ok) this.set({ workspaces: ws.result.value.items, archivedSessionIds: ws.result.value.archivedSessionIds });
       const sess = await api.sessions.list({});
-      if (sess.result.ok) this.set({ sessions: sess.result.value.items });
+      if (sess.result.ok) {
+        this.set({ sessions: sess.result.value.items, sessionTitles: this.seedSessionTitles(sess.result.value.items) });
+      }
       void this.loadAgentPresets();
       this.set({ connected: true });
       void this.loadModels();
@@ -287,6 +292,13 @@ class AppStore {
         this.set({ live, streams });
         if (frame.event.type === "assistant/message") {
           this.scheduleHistorySync(frame.sessionId);
+        }
+        const rawEvent = frame.event as { type?: string; data?: { title?: string } };
+        if (rawEvent.type === "session/title") {
+          const title = rawEvent.data?.title;
+          if (title) {
+            this.set({ sessionTitles: { ...this.state.sessionTitles, [frame.sessionId]: title } });
+          }
         }
         if (frame.event.type === "turn/start") {
           // 新一轮开始：解除停止冻结，允许继续流式
@@ -414,6 +426,16 @@ class AppStore {
     }
   }
 
+  /** 从会话列表投影播种本地标题表（保留本地已设置标题，投影缺失不覆盖）。 */
+  private seedSessionTitles(items: SessionSummary[]): Record<string, string> {
+    const next: Record<string, string> = { ...this.state.sessionTitles };
+    for (const s of items) {
+      const t = sessionTitle(s);
+      if (t) next[s.sessionId] = t;
+    }
+    return next;
+  }
+
   private requireApi(): DshApiClient {
     if (!this.state.api) throw new Error("dsh 未连接");
     return this.state.api;
@@ -422,7 +444,9 @@ class AppStore {
   async refreshSessions(): Promise<void> {
     if (!this.state.api) return;
     const r = await this.state.api.sessions.list({});
-    if (r.result.ok) this.set({ sessions: r.result.value.items });
+    if (r.result.ok) {
+      this.set({ sessions: r.result.value.items, sessionTitles: this.seedSessionTitles(r.result.value.items) });
+    }
   }
 
   async refreshWorkspaces(): Promise<void> {
@@ -970,12 +994,16 @@ class AppStore {
   /** 手动重命名会话（dsh 追加 user 源 session/title，固定标题不被自动重命名覆盖）。 */
   async renameSession(sessionId: SessionId, title: string): Promise<void> {
     const api = this.requireApi();
+    const trimmed = title.trim();
+    if (!trimmed) return;
     try {
-      const r = await api.sessions.rename({ sessionId, title: title.trim() });
+      const r = await api.sessions.rename({ sessionId, title: trimmed });
       if (!r.result.ok) {
         this.set({ error: `重命名失败: ${r.result.error.code}: ${r.result.error.message}` });
         return;
       }
+      // 本地标题立即生效（冷会话 list 无投影时也能显示），再刷新列表投影
+      this.set({ sessionTitles: { ...this.state.sessionTitles, [sessionId]: trimmed } });
       await this.refreshSessions();
     } catch (e) {
       this.set({ error: `重命名失败: ${String(e)}` });

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { appStore, useAppState } from "../lib/dsh/store";
-import { sessionTitle } from "../lib/dsh/sessionTitle";
+import { displayTitle } from "../lib/dsh/sessionTitle";
 import { ApprovalCard, EventRow, LiveAssistantRow, QuestionCard, shortId, useConversationItems, useLiveAssistant, useSessionInteractives } from "../components/Conversation";
 import { ModelMenu } from "../components/ModelMenu";
 import { WorkspaceMenu } from "../components/WorkspaceMenu";
@@ -9,7 +9,7 @@ import { PermissionMenu } from "../components/PermissionMenu";
 import { CotWarningBanner } from "../components/CotWarningBanner";
 
 export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => void }) {
-  const { connected, sessions, selectedSessionId, history, stoppingSessions } = useAppState();
+  const { connected, sessions, selectedSessionId, history, stoppingSessions, sessionTitles } = useAppState();
   const [draft, setDraft] = useState("");
   const msgsRef = useRef<HTMLDivElement>(null);
 
@@ -39,6 +39,28 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
   const running = selected?.running ?? false;
   const stopping = selectedSessionId ? (stoppingSessions[selectedSessionId] ?? null) : null;
 
+  // 会话重命名（内联）：铅笔 → 输入框；Enter/失焦保存，Esc 取消
+  const [renaming, setRenaming] = useState(false);
+  const [renameDraft, setRenameDraft] = useState("");
+  const renameCommittedRef = useRef(false);
+  const startRename = () => {
+    if (!selected) return;
+    renameCommittedRef.current = false;
+    setRenameDraft(displayTitle(selected, sessionTitles) ?? shortId(selected.sessionId));
+    setRenaming(true);
+  };
+  const cancelRename = () => {
+    renameCommittedRef.current = true;
+    setRenaming(false);
+  };
+  const commitRename = () => {
+    if (renameCommittedRef.current) return;
+    renameCommittedRef.current = true;
+    const t = renameDraft.trim();
+    setRenaming(false);
+    if (t && selected) void appStore.renameSession(selected.sessionId, t);
+  };
+
 
   const send = () => {
     const text = draft.trim();
@@ -52,7 +74,28 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
       <div className="col col-conv">
         <div className="view-cap">会话</div>
         <div className="conv-head">
-          <span className="conv-title">{selected ? (sessionTitle(selected) ?? shortId(selected.sessionId)) : "未选择会话（从左侧任务列表选择）"}</span>
+          <div className="conv-title-wrap">
+            {renaming && selected ? (
+              <input
+                className="conv-rename-input"
+                value={renameDraft}
+                autoFocus
+                onChange={(e) => setRenameDraft(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { e.preventDefault(); commitRename(); }
+                  if (e.key === "Escape") cancelRename();
+                }}
+                onBlur={commitRename}
+              />
+            ) : (
+              <>
+                <span className="conv-title">{selected ? (displayTitle(selected, sessionTitles) ?? shortId(selected.sessionId)) : "未选择会话（从左侧任务列表选择）"}</span>
+                {selected && (
+                  <button className="conv-rename-btn" title="重命名会话" disabled={!connected} onClick={startRename}>✎</button>
+                )}
+              </>
+            )}
+          </div>
           <span className={`badge ${running ? "orange" : "gray"}`}>{running ? "运行中" : "已停止"}</span>
           {stopping && <span className="badge orange">正在停止…</span>}
         </div>

@@ -4,6 +4,7 @@ All notable user-visible changes are aggregated here. / 本项目重要变更按
 
 ## [Unreleased]
 
+- Session rename completed & fixed: inline rename in the session header (pencil → input, Enter/blur save, Esc cancel), sidebar double-click rename, and fixed the title display helper that never showed titles (now reads `projections.values.title`); a local title cache makes renamed titles appear immediately, including cold sessions — 会话重命名补全与修复：会话视图头部内联重命名（铅笔→输入框，Enter/失焦保存，Esc 取消）、侧栏双击重命名；修复标题显示（读 `projections.values.title`，原实现读错结构导致标题从不显示）；本地标题缓存让重命名（含冷会话）立即生效。
 ### Added / 新增
 
 - dsh-routing-suite integration: vendored injector (dsh-super-injector 0.3.1) + Router Standard preset (0.1.0), one-click install/remove/status in Settings → 插件, reversible (preset backup `.trash-*`), restart required — 集成 dsh-routing-suite（注入器 + Router Standard 思维模式路由预设）：设置 → 插件一键安装/卸载/状态，可回滚，重启 dsh 生效。；live 安装实测发现注入器依赖解析问题并已修复（安装时自动把 runtime 依赖 junction 进 injector/node_modules，卸载解链）

@@ -232,3 +232,19 @@
 - 证据：`evidence/live-verify*.mjs`（探针脚本）、`evidence/live-verify*-20260815.txt`（输出）、
   `evidence/live-suite-*.dsh.log*`（dsh 日志）、会话 `~/.dsh/sessions/.../session-*.jsonl.zstd`（持久化）。探针/输出均 gitignored。
 - 结论口径：安装/引导/预设/路由行为/工具挂载 = live 验证通过；dev_* 工具的实际模型调用 = 未验证（模型空回合，环境问题）。
+## 2026-08-15：会话重命名补全与标题显示修复（已实施，live 取证）
+
+- [事实] 会话标题投影位置：`sessions.list` / `session.history` 的 `projections.values.title`（插件注册投影，值类型 string；
+  `SessionProjectionMap` 类型仅声明 sessionListMetadata/imageLimits，title 为插件扩展键）。user 源手动重命名优先于自动标题。
+- [事实] 旧实现 bug：`sessionTitle()` 把 `projections` 当 `{key:{value}}` 读，而真实结构是 `{asOfSeq, values:{key:value}}`，
+  导致标题**从不显示**（侧栏/会话视图一直回退到会话 id 前缀），重命名 RPC 成功但 UI 无感知。
+- [事实] 冷会话（blank、未 attach）`sessions.list` 行无 projections（投影缓存无行），重命名后标题只出现在 history 投影；
+  已用本地标题缓存（rename 成功即写入 + 订阅 `session/title` mux 事件 + list 投影播种）覆盖。
+- 实施：修复 `sessionTitle()` → `projections.values.title`；新增 `displayTitle()`（本地缓存优先）；store 增加
+  `sessionTitles` 表并在 connect/refreshSessions/renameSession/mux 四路维护；会话视图头部内联重命名（铅笔→输入框，
+  Enter/失焦保存、Esc 取消）；侧栏双击重命名（保留右键菜单）。
+- 验证：`npm run build` 通过；用 Node 25 类型剥离直接导入 `sessionTitle.ts` 以真实投影数据验证
+  （attached 有 title / cold 无投影回退 / displayTitle 本地表兜底 / 无标题返回 null）；
+  wire 级 live：`sessions.rename` ok（返回 title+seq）、`session/title`(user) 事件持久化、history 投影 `title` 正确。
+  证据：`evidence/test-sessiontitle.mjs`、`evidence/rename-verify-*.txt`、`evidence/title-probe.mjs`（gitignored）。
+

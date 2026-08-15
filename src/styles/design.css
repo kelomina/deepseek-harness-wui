@@ -100,6 +100,11 @@
   /* 会话 */
   .conv-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-bottom:10px;border-bottom:1px solid var(--border)}
   .conv-title{font-size:16px;font-weight:600}
+  .conv-title-wrap{display:flex;align-items:center;gap:8px;min-width:0;flex:1}
+  .conv-rename-btn{flex:none;border:none;background:none;color:var(--text-3);font-size:14px;line-height:1;padding:4px 6px;border-radius:6px;cursor:pointer}
+  .conv-rename-btn:hover{background:#f1f1f4;color:var(--text)}
+  .conv-rename-btn:disabled{opacity:.4;cursor:default}
+  .conv-rename-input{flex:1;min-width:0;max-width:60%;font:inherit;font-size:15px;font-weight:600;border:1px solid var(--accent);border-radius:8px;padding:4px 10px}
   .badge{padding:3px 12px;border-radius:999px;font-size:12px;border:1px solid}
   .badge.orange{color:var(--orange);border-color:#e0b184;background:#fdf4e7}
   .badge.green{color:var(--green);border-color:#9cc8a9;background:#eef7f0}
