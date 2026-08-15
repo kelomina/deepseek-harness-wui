@@ -78,3 +78,32 @@
   修复：store 记录归档集合，左侧列表按归档过滤。
 - [事实] 系统提示词：dsh 会把系统提示词快照（`@deepseek-ai/dsh-system-prompt`，source.kind=plugin）、skill catalog（source.kind=skill-catalog）、
   注入指令（source.kind=agent-instructions）作为 `user/message` 事件投影。UI 现仅渲染 source.kind === 'user' 的真实用户消息（7 个会话 23 条真实消息全部保留）。
+
+## 2026-08-15：Agent 模式选择 + 插件管理（已实施，含桥接边界实证）
+
+- [事实] Agent 模式：dsh apiproxy 暴露 `agentPreset.list/select/read/copy/openDocument/remove`；
+  `agent-presets` settings 命名空间在配置客户端白名单内（`PRODUCT_SETTINGS_NAMESPACES`），
+  「设为默认」经 `settings.mutate` 写 `default` 字段。四种内置预设来自安装内
+  `config/agent-presets/{standard,code,minimal,cordis}`：标准 / PTC / 极简 / 创造模式（以安装内 preset.yml 的 name 为准）。
+  `select` 仅允许空白会话（已跑过对话会返回 `agent-preset-locked`）。新建任务页 chip 为暂存选择，创建会话时应用后清除。
+- [事实] 插件管理：dsh apiproxy **不暴露** 插件启停 / 导入 / 删除 RPC（宿主侧 `pluginInventory` 为 Typert 只读服务，浏览器不可达）。
+  实施为 Rust 桥接：`plugins_list` 跑 `dsh web --dump-config`（composed profile 树，只读）并按行解析；
+  `plugins_set_enabled` 保守编辑 `cordis.patch.yml`（备份后写 `disabled: true` 覆盖，复杂 patch 拒绝改写）；
+  `plugins_import/remove` 转发 `dsh plugin --profile web add/remove`（pnpm，需本机 pnpm + 网络，可能需重启 dsh 生效）。
+  条件禁用（`disabled: !!js ...`）仅标记为「条件」，不提供手动开关；「内置」按 `@deepseek-ai/` 前缀启发式判定。
+- 验证：cargo 单测 5 项（解析 / 空列表启停 / 已有条目启停 / 复杂 patch 拒改 / id 校验）全部通过；
+  真实 `--dump-config` 解析出 129 条（启用 102 / 禁用 25 / 条件 2）；`npm run build` 与 `cargo check` 通过。
+- 未验证：未在真实 dsh 上做 live 交互（未创建会话 / 未实际执行 pnpm 导入导出，避免未经授权改动用户 dsh 状态与安装包）。
+
+## 2026-08-15：UI 六项调整（已实施）
+
+- [事实] 会话重命名：dsh `sessions.rename` 追加 `user` 源 `session/title`，固定标题不被自动重命名覆盖；自动重命名由
+  `dsh-session-title-first-prompt-llm` 基于首个 prompt 生成（会话日志含 `session/title-llm-request`）。右侧列表右键新增「重命名」。
+- [事实] 会话内 Agent 模式：`agentPreset.select` 仅对空白会话生效（已开始会话返回 `agent-preset-locked`）。
+  会话视图 env-bar 新增 Agent 模式 chip（空白会话可立即更换；已开始会话列表置灰并提示固定），新建任务页 chip 仍为暂存选择。
+- [事实] 会话权限配置：dsh 对浏览器（apiproxy）暴露的权限接口是 `permission` settings 命名空间（默认权限，新会话生效，schema 枚举 read-only / workspace-write / danger-full-access，
+  实测 `settings.describe` 可读、`settings.mutate` 可写）。切换「当前会话」权限是宿主侧 `/permission` 命令（Typert `commands.execute`，经官方客户端进程内调用，外部浏览器经 apiproxy 不可达；
+  实测经 `session.prompt` 发送 `/permission <preset>` 会被当作普通消息触发模型回合——已回滚该实现）。env-bar「权限」菜单：会话视图显示当前会话权限（`permissions` 投影），选择写入默认权限；欢迎页直接设置默认。
+- [事实] 设置页滚动/垂直居上：`.view.active{height:100%}` 后，`.col-settings` 网格因 `align-content:normal`(stretch) 把行撑开导致内容居中；
+  改为 `align-content:start` 恢复顶部对齐（Edge headless 实测 cardTop 202→125）。
+- 插件条件禁用行（`disabled: !!js ...`）标注「插件无法启用」并禁用开关。

@@ -1,7 +1,20 @@
 import { useCallback, useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { dsh, type DshConfig, type ExecMode } from "../lib/tauri";
 import { appStore, useAppState } from "../lib/dsh/store";
-import type { ConfigurableProviderView, SettingsPathOpView } from "@deepseek-ai/dsh-host-apiproxy/api";
+import type { AgentPresetEntry, ConfigurableProviderView, SettingsPathOpView } from "@deepseek-ai/dsh-host-apiproxy/api";
+
+type PluginView = { id: string; name: string; enabled: boolean; builtin: boolean; conditional?: boolean };
+type PluginTab = "all" | "on" | "off";
+
+function presetInitial(p: { id: string; name?: string }): string {
+  const n = (p.name ?? p.id).trim();
+  return n ? n[0].toUpperCase() : "?";
+}
+function plugInitial(p: PluginView): string {
+  const n = (p.name || p.id).trim();
+  return n ? n[0].toUpperCase() : "?";
+}
 
 type ModelRow = { id: string; name: string; context: string };
 
@@ -38,12 +51,32 @@ function buildModels(edit: ProviderEdit): Array<{ id: string; name: string; cont
   }
   return out;
 }
-export function SettingsPage() {
-  const { config, status, connected, hiddenPresets } = useAppState();
+export function SettingsPage({ onStartSession }: { onStartSession?: () => void }) {
+  const { config, status, connected, hiddenPresets, agentPresets, agentPresetsMeta } = useAppState();
   const [form, setForm] = useState<DshConfig | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
+  const [tab, setTab] = useState<"providers" | "agent" | "plugins" | "dsh">("providers");
   const running = status?.state !== "stopped";
+
+  // Agent 模式管理
+  const [agentMsg, setAgentMsg] = useState<string | null>(null);
+  const [copyTarget, setCopyTarget] = useState<AgentPresetEntry | null>(null);
+  const [copyId, setCopyId] = useState("");
+  const [copyName, setCopyName] = useState("");
+  const [copyErr, setCopyErr] = useState<string | null>(null);
+  const [viewTarget, setViewTarget] = useState<{ id: string; name: string; content: string } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<AgentPresetEntry | null>(null);
+
+  // 插件管理
+  const [plugins, setPlugins] = useState<PluginView[] | null>(null);
+  const [pluginTab, setPluginTab] = useState<PluginTab>("all");
+  const [pluginMsg, setPluginMsg] = useState<string | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importSpec, setImportSpec] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
+  const [pluginDelete, setPluginDelete] = useState<PluginView | null>(null);
+  const [pluginBusyId, setPluginBusyId] = useState<string | null>(null);
 
   const [providers, setProviders] = useState<ConfigurableProviderView[] | null>(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -62,6 +95,109 @@ export function SettingsPage() {
       setProviderMsg(String(e));
     }
   }, [connected]);
+
+  const refreshPlugins = useCallback(async () => {
+    if (!connected) return;
+    try {
+      const list = await invoke<PluginView[]>("plugins_list_cmd");
+      setPlugins(list);
+    } catch (e) {
+      setPluginMsg(String(e));
+    }
+  }, [connected]);
+
+  useEffect(() => {
+    if (connected) void appStore.loadAgentPresets();
+  }, [connected]);
+
+  useEffect(() => {
+    void refreshPlugins();
+  }, [refreshPlugins]);
+
+  const openCopy = (p: AgentPresetEntry) => {
+    setCopyTarget(p);
+    setCopyId("");
+    setCopyName("");
+    setCopyErr(null);
+  };
+
+  const doCopy = async () => {
+    if (!copyTarget) return;
+    const id = copyId.trim();
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) {
+      setCopyErr("标识符需以小写字母或数字开头，仅含小写字母/数字/连字符");
+      return;
+    }
+    if ((agentPresets ?? []).some((p) => p.id === id)) {
+      setCopyErr("该标识符已被占用，请换一个");
+      return;
+    }
+    try {
+      await appStore.copyAgentPreset(copyTarget.id, id, copyName);
+      setAgentMsg(`已复制「${copyTarget.name ?? copyTarget.id}」→ ${id}`);
+      setCopyTarget(null);
+    } catch (e) {
+      setCopyErr(String(e));
+    }
+  };
+
+  const openView = async (p: AgentPresetEntry) => {
+    const r = await appStore.readAgentPreset(p.id);
+    if (r) setViewTarget({ id: p.id, name: r.name ?? p.id, content: r.content });
+  };
+
+  const setDefault = async (p: AgentPresetEntry) => {
+    await appStore.setDefaultAgentPreset(p.id);
+    setAgentMsg(`已设为默认：${p.name ?? p.id}`);
+  };
+
+  const startCreator = async () => {
+    const id = await appStore.createSessionWithAgentPreset("cordis");
+    if (id) onStartSession?.();
+  };
+
+  const togglePlugin = async (p: PluginView) => {
+    setPluginBusyId(p.id);
+    setPluginMsg(null);
+    try {
+      const r = await invoke<string>("plugins_set_enabled_cmd", { id: p.id, enabled: !p.enabled });
+      setPluginMsg(r);
+      await refreshPlugins();
+    } catch (e) {
+      setPluginMsg(String(e));
+    } finally {
+      setPluginBusyId(null);
+    }
+  };
+
+  const doImport = async () => {
+    if (!importSpec.trim()) return;
+    setImportBusy(true);
+    setPluginMsg(null);
+    try {
+      const r = await invoke<string>("plugins_import_cmd", { spec: importSpec.trim() });
+      setPluginMsg(r);
+      setImportOpen(false);
+      setImportSpec("");
+      await refreshPlugins();
+    } catch (e) {
+      setPluginMsg(String(e));
+    } finally {
+      setImportBusy(false);
+    }
+  };
+
+  const deletePlugin = async (p: PluginView) => {
+    try {
+      const r = await invoke<string>("plugins_remove_cmd", { name: p.name || p.id });
+      setPluginMsg(r);
+      setPluginDelete(null);
+      await refreshPlugins();
+    } catch (e) {
+      setPluginMsg(String(e));
+      setPluginDelete(null);
+    }
+  };
 
   useEffect(() => {
     if (config && !form) setForm(config);
@@ -243,8 +379,15 @@ export function SettingsPage() {
   return (
     <section className="view active" id="view-settings">
       <div className="col col-settings">
-        <div className="view-cap">设置 · API Key</div>
+        <div className="settings-tabs">
+          <button className={`stab${tab === "providers" ? " on" : ""}`} onClick={() => setTab("providers")}>模型提供商</button>
+          <button className={`stab${tab === "agent" ? " on" : ""}`} onClick={() => setTab("agent")}>Agent 模式</button>
+          <button className={`stab${tab === "plugins" ? " on" : ""}`} onClick={() => setTab("plugins")}>插件</button>
+          <button className={`stab${tab === "dsh" ? " on" : ""}`} onClick={() => setTab("dsh")}>DSH 运行配置</button>
+        </div>
 
+        {tab === "providers" && (
+          <>
         <div className="card wide">
           <div className="card-head">
             <span className="card-title">模型提供商</span>
@@ -365,7 +508,120 @@ export function SettingsPage() {
             </div>
           )}
         </div>
+          </>
+        )}
 
+        {tab === "agent" && (
+          <>
+        <div className="card">
+          <div className="card-head">
+            <span className="card-title">Agent 模式</span>
+            {agentMsg && <span className="hint" style={{ color: "var(--text-2)" }}>{agentMsg}</span>}
+          </div>
+          {!connected && <div className="muted">dsh 未连接，无法查看 Agent 模式</div>}
+          {connected && agentPresets === null && <div className="muted">加载中…</div>}
+          {connected && agentPresets && (
+            <>
+              <div className="preset-grid">
+                {(agentPresets as AgentPresetEntry[]).map((p) => (
+                  <div key={p.id} className={`p-card ${p.trust === "user" ? "user" : "builtin"}${p.broken ? " broken-card" : ""}`}>
+                    <div className="p-card-top">
+                      <span className="p-ico">{presetInitial(p)}</span>
+                      <span className="p-nm">{p.name ?? p.id}</span>
+                      {p.trust === "user" ? <span className="badge user">自定义</span> : <span className="badge builtin">内置</span>}
+                      {p.isDefault && <span className="badge def">默认</span>}
+                    </div>
+                    {p.broken ? (
+                      <div className="p-broken">加载失败：{p.broken}</div>
+                    ) : (
+                      <div className="p-ds">{p.description ?? "（无描述）"}</div>
+                    )}
+                    <div className="p-ops">
+                      {!p.broken && <button className="btn sm" onClick={() => void openView(p)}>查看组装</button>}
+                      {!p.broken && (
+                        <button
+                          className="btn sm"
+                          disabled={!agentPresetsMeta?.authorable}
+                          title={agentPresetsMeta?.authorable ? "" : "当前部署没有可写预设目录"}
+                          onClick={() => openCopy(p)}
+                        >
+                          复制
+                        </button>
+                      )}
+                      {p.trust === "user" && <button className="btn sm" onClick={() => void appStore.openAgentPresetDocument(p.id)}>打开文件</button>}
+                      {!p.broken && !p.isDefault && <button className="btn sm primary" onClick={() => void setDefault(p)}>设为默认</button>}
+                      {p.trust === "user" && <button className="btn sm danger-o" onClick={() => setConfirmDelete(p)}>删除</button>}
+                    </div>
+                  </div>
+                ))}
+                <div className="dashed-add" onClick={() => void startCreator()}>
+                  <span className="da-t">＋ 用「创造模式」创建你自己的 Agent 模式</span>
+                  <span className="da-d">让 Agent 在新会话中帮你起草组装文件（plugins / prompt / 能力组合），边做边改。</span>
+                </div>
+              </div>
+              <div className="hint" style={{ marginTop: 10 }}>
+                内置模式随 dsh 安装提供（可查看组装 / 复制 / 设为默认，不可删除）；自定义模式可打开文件、复制或删除。复制后描述与组装在预设文件里编辑。
+              </div>
+            </>
+          )}
+        </div>
+          </>
+        )}
+
+        {tab === "plugins" && (
+          <>
+        <div className="card">
+          <div className="card-head">
+            <span className="card-title">插件</span>
+            <button className="btn sm primary" disabled={!connected} onClick={() => setImportOpen(true)}>＋ 导入插件</button>
+          </div>
+          {!connected && <div className="muted">dsh 未连接，无法查看插件</div>}
+          {connected && plugins === null && <div className="muted">加载中…</div>}
+          {connected && plugins && (
+            <>
+              <div className="tabs-row">
+                <button className={`tabp${pluginTab === "all" ? " on" : ""}`} onClick={() => setPluginTab("all")}>全部 {plugins.length}</button>
+                <button className={`tabp${pluginTab === "on" ? " on" : ""}`} onClick={() => setPluginTab("on")}>已启用 {plugins.filter((p) => p.enabled).length}</button>
+                <button className={`tabp${pluginTab === "off" ? " on" : ""}`} onClick={() => setPluginTab("off")}>已禁用 {plugins.filter((p) => !p.enabled).length}</button>
+              </div>
+              <div className="plugin-list">
+                {plugins.filter((p) => pluginTab === "all" || (pluginTab === "on" ? p.enabled : !p.enabled)).map((p) => (
+                  <div key={p.id} className={`plug${p.enabled ? "" : " off"}`}>
+                    <span className="plug-ico">{plugInitial(p)}</span>
+                    <span className="plug-meta">
+                      <span className="plug-nm">
+                        {p.id}
+                        <span className="plug-mod">{p.name}</span>
+                        {p.builtin ? <span className="badge builtin">内置</span> : <span className="badge imported">已导入</span>}
+                      </span>
+                    </span>
+                    <span className={`badge ${p.enabled ? "active" : "off"}`}>{p.enabled ? "已启用" : "已禁用"}</span>
+                    {p.conditional ? (
+                      <span className="badge cond" title="该插件由 dsh 按平台条件禁用，无法手动启用">插件无法启用</span>
+                    ) : (
+                      <span
+                        className={`switch${p.enabled ? " on" : ""}${pluginBusyId === p.id ? " busy" : ""}`}
+                        title={p.builtin ? "内置插件可启用/禁用" : "启用/禁用"}
+                        onClick={() => void togglePlugin(p)}
+                      />
+                    )}
+                    {!p.builtin && !p.conditional && <button className="btn sm danger-o" disabled={pluginBusyId === p.id} onClick={() => setPluginDelete(p)}>删除</button>}
+                  </div>
+                ))}
+                {plugins.length === 0 && <div className="muted">暂无插件</div>}
+              </div>
+              {pluginMsg && <div className="hint" style={{ marginTop: 10 }}>{pluginMsg}</div>}
+              <div className="hint" style={{ marginTop: 8 }}>
+                启用 / 禁用写入 profile 的 cordis.patch.yml（dsh 热重载）；导入 / 删除调用 pnpm（dsh plugin add/remove），可能需要数分钟，且需要本机安装 pnpm 与网络；删除仅对已导入插件可用。
+              </div>
+            </>
+          )}
+        </div>
+          </>
+        )}
+
+        {tab === "dsh" && (
+          <>
         <div className="card">
           <div className="card-head"><span className="card-title">dsh 运行配置</span></div>
           {running && <div className="error-banner">请先停止 dsh 再修改配置</div>}
@@ -415,6 +671,99 @@ export function SettingsPage() {
             </>
           )}
         </div>
+          </>
+        )}
+        {/* 复制 Agent 模式对话框 */}
+        {copyTarget && (
+          <div className="modal-mask" onClick={() => setCopyTarget(null)}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
+              <h4>复制预设</h4>
+              <div className="hint">在本地完整复制「{copyTarget.name ?? copyTarget.id}」。标识符会成为预设目录名，事后无法更改；描述、组装、技能都在预设文件里编辑。</div>
+              <div className="field">
+                <label>标识符（目录名）</label>
+                <input type="text" value={copyId} onChange={(e) => { setCopyId(e.currentTarget.value); setCopyErr(null); }} placeholder="my-agent" autoFocus />
+              </div>
+              <div className="field">
+                <label>显示名称（可选）</label>
+                <input type="text" value={copyName} onChange={(e) => setCopyName(e.currentTarget.value)} placeholder="留空则用标识符" />
+              </div>
+              {copyErr && <div className="field-err">{copyErr}</div>}
+              <div className="modal-row">
+                <button className="btn" onClick={() => setCopyTarget(null)}>取消</button>
+                <button className="btn primary" onClick={() => void doCopy()}>复制</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 查看组装（只读） */}
+        {viewTarget && (
+          <div className="modal-mask" onClick={() => setViewTarget(null)}>
+            <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
+              <h4>{viewTarget.name} · 组装（只读）</h4>
+              <div className="hint">内置预设随 dsh 安装提供，组装只读；如想修改，请复制一份。</div>
+              <pre className="viewer">{viewTarget.content}</pre>
+              <div className="modal-row">
+                <button className="btn primary" onClick={() => setViewTarget(null)}>关闭</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 确认删除 Agent 模式 */}
+        {confirmDelete && (
+          <div className="modal-mask" onClick={() => setConfirmDelete(null)}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
+              <h4>删除自定义模式</h4>
+              <div className="hint">将删除整个预设目录「{confirmDelete.name ?? confirmDelete.id}」。已按此模式创建的会话会继续运行，但该模式将不再出现在列表中。</div>
+              <div className="modal-row">
+                <button className="btn" onClick={() => setConfirmDelete(null)}>取消</button>
+                <button
+                  className="btn danger-o"
+                  onClick={() => {
+                    const id = confirmDelete.id;
+                    setConfirmDelete(null);
+                    void appStore.removeAgentPreset(id).then(() => setAgentMsg(`已删除：${id}`));
+                  }}
+                >
+                  删除
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 导入插件对话框 */}
+        {importOpen && (
+          <div className="modal-mask" onClick={() => { if (!importBusy) setImportOpen(false); }}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
+              <h4>导入插件</h4>
+              <div className="hint">安装到当前 dsh profile（pnpm，dsh plugin add）。支持 npm 包名、本地目录或 Git 仓库；安装型插件如被 pnpm 拦截，请按提示将 allowBuilds 加入 pnpm-workspace.yaml。</div>
+              <div className="field">
+                <label>包名 / 本地路径 / Git 仓库</label>
+                <input type="text" value={importSpec} onChange={(e) => setImportSpec(e.currentTarget.value)} placeholder="@scope/my-plugin 或 C:\dev\my-plugin 或 https://github.com/user/repo.git" disabled={importBusy} />
+              </div>
+              <div className="modal-row">
+                <button className="btn" disabled={importBusy} onClick={() => setImportOpen(false)}>取消</button>
+                <button className="btn primary" disabled={importBusy || !importSpec.trim()} onClick={() => void doImport()}>{importBusy ? "导入中…" : "导入"}</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 确认删除插件 */}
+        {pluginDelete && (
+          <div className="modal-mask" onClick={() => setPluginDelete(null)}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
+              <h4>删除插件</h4>
+              <div className="hint">将执行 dsh plugin remove {pluginDelete.name || pluginDelete.id}（pnpm 卸载）。可能需要重启 dsh 后生效。</div>
+              <div className="modal-row">
+                <button className="btn" onClick={() => setPluginDelete(null)}>取消</button>
+                <button className="btn danger-o" onClick={() => void deletePlugin(pluginDelete)}>删除</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </section>
   );

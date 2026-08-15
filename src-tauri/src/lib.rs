@@ -1,6 +1,7 @@
 mod dsh;
 
 use dsh::config::{load, DshConfig};
+use dsh::plugins::{plugins_import, plugins_list, plugins_remove, plugins_set_enabled};
 use dsh::manager::{lock, spawn_health_watcher, DshManager, DshStatusView};
 use dsh::proxy::{start_proxy, ProxyHandle};
 use std::sync::atomic::Ordering;
@@ -160,6 +161,31 @@ fn dsh_get_logs(state: State<AppState>, limit: Option<usize>) -> Vec<String> {
     lock(state.manager.lock()).logs(limit.unwrap_or(200))
 }
 
+
+#[tauri::command]
+fn plugins_list_cmd(state: State<AppState>) -> Result<Vec<dsh::plugins::PluginEntry>, String> {
+    let cfg = lock(state.manager.lock()).config().clone();
+    plugins_list(&cfg)
+}
+
+#[tauri::command]
+fn plugins_set_enabled_cmd(state: State<AppState>, id: String, enabled: bool) -> Result<String, String> {
+    let cfg = lock(state.manager.lock()).config().clone();
+    plugins_set_enabled(&cfg, &id, enabled)
+}
+
+#[tauri::command]
+fn plugins_import_cmd(state: State<AppState>, spec: String) -> Result<String, String> {
+    let cfg = lock(state.manager.lock()).config().clone();
+    plugins_import(&cfg, &spec)
+}
+
+#[tauri::command]
+fn plugins_remove_cmd(state: State<AppState>, name: String) -> Result<String, String> {
+    let cfg = lock(state.manager.lock()).config().clone();
+    plugins_remove(&cfg, &name)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -182,7 +208,11 @@ pub fn run() {
             dsh_stop,
             dsh_get_config,
             dsh_set_config,
-            dsh_get_logs
+            dsh_get_logs,
+            plugins_list_cmd,
+            plugins_set_enabled_cmd,
+            plugins_import_cmd,
+            plugins_remove_cmd
         ])
         .setup(|app| {
             let handle = app.handle();

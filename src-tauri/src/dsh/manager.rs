@@ -414,7 +414,7 @@ fn kill_tree(pid: u32) {
     }
 }
 
-fn bundled_bin_path() -> Result<String, String> {
+pub(crate) fn bundled_bin_path() -> Result<String, String> {
     let rel = "runtime/node_modules/@deepseek-ai/dsh/lib/bin.js";
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(env_dir) = std::env::var("DSH_WUI_RUNTIME_DIR") {

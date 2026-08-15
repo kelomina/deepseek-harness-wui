@@ -4,6 +4,7 @@ import { dsh, onDshLog, onDshStatus, type DshConfig, type DshStatus } from "../t
 import { DshApiClient } from "./client";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {
+  AgentPresetEntry,
   ApprovalResponsePayload,
   ConfigurableProviderView,
   CredentialView,
@@ -44,6 +45,16 @@ export interface LiveStream {
   finished: boolean;
 }
 
+export interface AgentPresetMeta {
+  authorable: boolean;
+  hasDocument: boolean;
+}
+
+export interface PermissionSelect {
+  options: Array<{ value: string; name: string; description?: string }>;
+  currentValue: string;
+}
+
 export interface AppState {
   status: DshStatus | null;
   config: DshConfig | null;
@@ -65,6 +76,10 @@ export interface AppState {
   history: Map<SessionId, unknown[]>;
   streams: Map<SessionId, LiveStream>;
   archivedSessionIds: SessionId[];
+  agentPresets: AgentPresetEntry[] | null;
+  agentPresetsMeta: AgentPresetMeta | null;
+  pendingAgentPreset: string | null;
+  sessionPermissions: Map<SessionId, PermissionSelect>;
   loading: boolean;
   error: string | null;
 }
@@ -90,6 +105,10 @@ const initialState: AppState = {
   history: new Map(),
   streams: new Map(),
   archivedSessionIds: [],
+  agentPresets: null,
+  agentPresetsMeta: null,
+  pendingAgentPreset: null,
+  sessionPermissions: new Map(),
   loading: false,
   error: null,
 };
@@ -192,6 +211,7 @@ class AppStore {
       if (ws.result.ok) this.set({ workspaces: ws.result.value.items, archivedSessionIds: ws.result.value.archivedSessionIds });
       const sess = await api.sessions.list({});
       if (sess.result.ok) this.set({ sessions: sess.result.value.items });
+      void this.loadAgentPresets();
       this.set({ connected: true });
       void this.loadModels();
       if (this.state.selectedSessionId) {
@@ -216,6 +236,7 @@ class AppStore {
       interactives: [],
       streams: new Map(),
       archivedSessionIds: [],
+      sessionPermissions: new Map(),
     });
   }
 
@@ -383,6 +404,15 @@ class AppStore {
           // 模型选择失败不阻断会话创建
         }
       }
+      const preset = this.state.pendingAgentPreset;
+      if (preset) {
+        try {
+          await api.agentPresets.select({ sessionId: id, agentPreset: preset });
+        } catch (e) {
+          this.set({ error: `Agent 模式应用失败: ${String(e)}` });
+        }
+        this.set({ pendingAgentPreset: null });
+      }
       await this.refreshSessions();
       return id;
     }
@@ -420,7 +450,16 @@ class AppStore {
     if (r.result.ok) {
       const history = new Map(this.state.history);
       history.set(sessionId, r.result.value.events);
-      this.set({ history });
+      const patch: Partial<AppState> = { history };
+      // 会话权限投影（tail 页 projections.values.permissions）
+      const proj = r.result.value.projections as { values?: Record<string, unknown> } | undefined;
+      const perm = proj?.values?.permissions as PermissionSelect | undefined;
+      if (perm) {
+        const m = new Map(this.state.sessionPermissions);
+        m.set(sessionId, perm);
+        patch.sessionPermissions = m;
+      }
+      this.set(patch);
     }
   }
 
@@ -726,6 +765,154 @@ class AppStore {
     }
   }
 
+  async loadAgentPresets(): Promise<void> {
+    const api = this.requireApi();
+    try {
+      const r = await api.agentPresets.list({});
+      if (r.result.ok) {
+        this.set({
+          agentPresets: r.result.value.presets as AgentPresetEntry[],
+          agentPresetsMeta: { authorable: r.result.value.authorable, hasDocument: r.result.value.hasDocument },
+        });
+      } else {
+        this.set({ error: `读取 Agent 模式失败: ${r.result.error.code}: ${r.result.error.message}` });
+      }
+    } catch (e) {
+      this.set({ error: `读取 Agent 模式失败: ${String(e)}` });
+    }
+  }
+
+  setPendingAgentPreset(id: string | null): void {
+    this.set({ pendingAgentPreset: id });
+  }
+
+  /** 立即以指定 Agent 预设创建一个新会话（用于「创造模式」引导卡）。 */
+  async createSessionWithAgentPreset(agentPreset: string): Promise<SessionId | null> {
+    const api = this.requireApi();
+    const wid = this.state.activeWorkspaceId;
+    const r = await api.sessions.create({ workspaceId: wid ?? undefined });
+    if (!r.result.ok) {
+      this.set({ error: `创建会话失败: ${r.result.error.code}: ${r.result.error.message}` });
+      return null;
+    }
+    const id = r.result.value.sessionId;
+    this.set({ selectedSessionId: id });
+    try {
+      await api.agentPresets.select({ sessionId: id, agentPreset });
+    } catch (e) {
+      this.set({ error: `Agent 模式应用失败: ${String(e)}` });
+    }
+    await this.refreshSessions();
+    await this.loadHistory(id);
+    return id;
+  }
+
+  /** 对指定会话应用 Agent 模式（仅空白会话可改，dsh 会拒绝已开始会话）。 */
+  async applyAgentPresetToSession(sessionId: SessionId, agentPreset: string): Promise<void> {
+    const api = this.requireApi();
+    try {
+      const r = await api.agentPresets.select({ sessionId, agentPreset });
+      if (!r.result.ok) {
+        this.set({ error: `更换 Agent 模式失败: ${r.result.error.code}: ${r.result.error.message}` });
+        return;
+      }
+      await this.refreshSessions();
+    } catch (e) {
+      this.set({ error: `更换 Agent 模式失败: ${String(e)}` });
+    }
+  }
+
+  /** 手动重命名会话（dsh 追加 user 源 session/title，固定标题不被自动重命名覆盖）。 */
+  async renameSession(sessionId: SessionId, title: string): Promise<void> {
+    const api = this.requireApi();
+    try {
+      const r = await api.sessions.rename({ sessionId, title: title.trim() });
+      if (!r.result.ok) {
+        this.set({ error: `重命名失败: ${r.result.error.code}: ${r.result.error.message}` });
+        return;
+      }
+      await this.refreshSessions();
+    } catch (e) {
+      this.set({ error: `重命名失败: ${String(e)}` });
+    }
+  }
+
+  /**
+   * 设置「未来新会话」的默认权限预设（permission settings 命名空间，live 生效）。
+   * 注：切换「当前会话」权限是 dsh 宿主侧 `/permission` 命令（Typert commands.execute，
+   * 外部浏览器客户端经 apiproxy 无法调用，且经 session.prompt 发送会被当作普通消息触发模型回合）。
+   */
+  async setDefaultPermissionPreset(preset: string): Promise<void> {
+    try {
+      await this.mutateSettings("permission", [{ op: "set", path: ["defaultPreset"], value: preset }]);
+    } catch (e) {
+      this.set({ error: `设置默认权限失败: ${String(e)}` });
+    }
+  }
+
+  /** 读取 permission 设置命名空间（含 schema 枚举），返回默认权限选项与当前值。 */
+  async getPermissionOptions(): Promise<{ options: Array<{ value: string; name: string }>; current: string | null }> {
+    const ns = await this.getSettingsNamespace("permission");
+    const value = (ns?.value ?? {}) as { defaultPreset?: string };
+    const options = permissionSchemaEnums(ns?.schema).map((v) => ({ value: v, name: v }));
+    return { options, current: value.defaultPreset ?? null };
+  }
+
+  async setDefaultAgentPreset(id: string): Promise<void> {
+    try {
+      await this.mutateSettings("agent-presets", [{ op: "set", path: ["default"], value: id }]);
+      await this.loadAgentPresets();
+    } catch (e) {
+      this.set({ error: `设置默认 Agent 模式失败: ${String(e)}` });
+    }
+  }
+
+  async copyAgentPreset(from: string, id: string, name?: string): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.agentPresets.copy({ from, agentPreset: id, name: name?.trim() || undefined });
+    if (!r.result.ok) {
+      this.set({ error: `复制 Agent 模式失败: ${r.result.error.code}: ${r.result.error.message}` });
+      return;
+    }
+    await this.loadAgentPresets();
+  }
+
+  async removeAgentPreset(id: string): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.agentPresets.remove({ agentPreset: id });
+    if (!r.result.ok) {
+      this.set({ error: `删除 Agent 模式失败: ${r.result.error.code}: ${r.result.error.message}` });
+      return;
+    }
+    await this.loadAgentPresets();
+  }
+
+  async readAgentPreset(id: string): Promise<{ content: string; name?: string; description?: string } | null> {
+    const api = this.requireApi();
+    const r = await api.agentPresets.read({ agentPreset: id });
+    if (!r.result.ok) {
+      this.set({ error: `读取组装失败: ${r.result.error.code}: ${r.result.error.message}` });
+      return null;
+    }
+    return { content: r.result.value.content, name: r.result.value.name, description: r.result.value.description };
+  }
+
+  async openAgentPresetDocument(id: string): Promise<void> {
+    const api = this.requireApi();
+    try {
+      const r = await api.agentPresets.openDocument({ agentPreset: id });
+      if (r.result.ok) {
+        if (!r.result.value.opened) {
+          this.set({ error: `已打开预设目录（路径见设置页提示）: ${r.result.value.path}` });
+        }
+      } else {
+        this.set({ error: `打开预设文件失败: ${r.result.error.code}: ${r.result.error.message}` });
+      }
+    } catch (e) {
+      this.set({ error: `打开预设文件失败: ${String(e)}` });
+    }
+  }
+
   togglePinned(sessionId: SessionId): void {
     const list = this.state.pinnedSessions.includes(sessionId)
       ? this.state.pinnedSessions.filter((id) => id !== sessionId)
@@ -772,19 +959,21 @@ export function useAppState(): AppState {
 }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+/** 从 schemastery schema JSON 中提取 `permission` 命名空间 defaultPreset 的枚举值。 */
+function permissionSchemaEnums(schema: unknown): string[] {
+  const s = schema as { uid?: number; refs?: Record<string, { type?: string; value?: string; list?: number[]; dict?: Record<string, number> }> } | undefined;
+  if (!s || typeof s.uid !== "number" || !s.refs) return [];
+  const refs = s.refs;
+  const root = refs[String(s.uid)];
+  const fieldRef = root?.dict?.defaultPreset;
+  if (fieldRef === undefined) return [];
+  const field = refs[String(fieldRef)];
+  if (field?.type === "union") {
+    return (field.list ?? [])
+      .map((r) => refs[String(r)]?.value)
+      .filter((v): v is string => typeof v === "string");
+  }
+  if (field?.type === "const" && typeof field.value === "string") return [field.value];
+  return [];
+}
 

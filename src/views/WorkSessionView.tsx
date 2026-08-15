@@ -4,6 +4,8 @@ import { sessionTitle } from "../lib/dsh/sessionTitle";
 import { ApprovalCard, EventRow, LiveAssistantRow, QuestionCard, shortId, useConversationItems, useLiveAssistant, useSessionInteractives } from "../components/Conversation";
 import { ModelMenu } from "../components/ModelMenu";
 import { WorkspaceMenu } from "../components/WorkspaceMenu";
+import { AgentPresetChip } from "../components/AgentPresetChip";
+import { PermissionMenu } from "../components/PermissionMenu";
 
 export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => void }) {
   const { connected, sessions, selectedSessionId, history } = useAppState();
@@ -84,9 +86,10 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
             </div>
           </div>
           <div className="env-bar">
+            {selectedSessionId ? <PermissionMenu sessionId={selectedSessionId} /> : null}
             <button className="env-btn" title="执行环境（开发中）">本地 <span className="caret">▾</span></button>
             <WorkspaceMenu />
-
+            {selectedSessionId ? <AgentPresetChip sessionId={selectedSessionId} /> : null}
           </div>
         </div>
       </div>

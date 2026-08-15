@@ -50,7 +50,7 @@ export default function App() {
           {view === "code" && <CodeView />}
           {view === "status" && <StatusPage />}
           {view === "workspaces" && <WorkspacesPage />}
-          {view === "settings" && <SettingsPage />}
+          {view === "settings" && <SettingsPage onStartSession={() => setView(mode === "code" ? "code" : "session")} />}
         </main>
       </div>
       {error && <ErrorBanner message={error} onDismiss={() => appStore.setError(null)} />}

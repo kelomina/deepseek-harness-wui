@@ -30,6 +30,8 @@ export function Sidebar({
   const [pinnedOpen, setPinnedOpen] = useState(true);
   const [tasksOpen, setTasksOpen] = useState(true);
   const [ctx, setCtx] = useState<{ x: number; y: number; id: SessionId } | null>(null);
+  const [renameCtx, setRenameCtx] = useState<{ id: SessionId; title: string } | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
   const { pinnedSessions, workspaces, archivedSessionIds } = useAppState();
   // 归档（移除）的会话不再显示在左侧列表；dsh 的 sessions.list 会返回全部会话，需用归档集合过滤
   const visible = sessions.filter((s) => !archivedSessionIds.includes(s.sessionId));
@@ -124,6 +126,18 @@ export function Sidebar({
             <button
               className="mm-item"
               onClick={() => {
+                const s = sessions.find((x) => x.sessionId === ctx.id);
+                const cur = s ? (sessionTitle(s) ?? s.sessionId) : ctx.id;
+                setRenameCtx({ id: ctx.id, title: cur });
+                setRenameDraft(cur);
+                setCtx(null);
+              }}
+            >
+              重命名
+            </button>
+            <button
+              className="mm-item"
+              onClick={() => {
                 void appStore.archiveSession(ctx.id);
                 setCtx(null);
               }}
@@ -132,6 +146,31 @@ export function Sidebar({
             </button>
           </div>
         </>
+      )}
+      {renameCtx && (
+        <div className="modal-mask" onClick={() => setRenameCtx(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h4>重命名会话</h4>
+            <div className="hint">手动命名会固定标题，dsh 将不再按会话内容自动重命名。</div>
+            <div className="field">
+              <label>标题</label>
+              <input type="text" value={renameDraft} onChange={(e) => setRenameDraft(e.currentTarget.value)} autoFocus />
+            </div>
+            <div className="modal-row">
+              <button className="btn" onClick={() => setRenameCtx(null)}>取消</button>
+              <button
+                className="btn primary"
+                disabled={!renameDraft.trim()}
+                onClick={() => {
+                  void appStore.renameSession(renameCtx.id, renameDraft);
+                  setRenameCtx(null);
+                }}
+              >
+                保存
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       <div className="side-bottom">
         <button className={`nav-item${view === "status" ? " active" : ""}`} onClick={() => onNavigate("status")}>

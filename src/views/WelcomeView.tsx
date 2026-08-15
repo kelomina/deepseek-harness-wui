@@ -2,6 +2,8 @@ import { useState } from "react";
 import { appStore, useAppState } from "../lib/dsh/store";
 import { ModelMenu } from "../components/ModelMenu";
 import { WorkspaceMenu } from "../components/WorkspaceMenu";
+import { AgentPresetChip } from "../components/AgentPresetChip";
+import { PermissionMenu } from "../components/PermissionMenu";
 
 export function WelcomeView({
   mode,
@@ -14,7 +16,6 @@ export function WelcomeView({
 }) {
   const { connected } = useAppState();
   const [draft, setDraft] = useState("");
-
 
   const send = async () => {
     const text = draft.trim();
@@ -57,14 +58,14 @@ export function WelcomeView({
             </div>
           </div>
           <div className="env-bar">
+            <PermissionMenu />
             <button className="env-btn" title="执行环境（开发中）">本地 <span className="caret">▾</span></button>
             <WorkspaceMenu />
-
+            <AgentPresetChip onOpenSettings={onOpenSettings} />
+            <span className="chip-note">模式在会话创建时固定，运行中的会话保持其初始模式</span>
           </div>
         </div>
       </div>
     </section>
   );
 }
-
-
