@@ -4,7 +4,7 @@ All notable user-visible changes are aggregated here. / 本项目重要变更按
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-08-15
+## [0.1.0] - 2026-08-15
 
 ### Added / 新增
 

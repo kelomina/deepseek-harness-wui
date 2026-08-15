@@ -1,7 +1,7 @@
 {
   "name": "dsh-runtime",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "Pinned DeepSeek Harness (dsh) runtime used by the desktop shell in bundled mode.",
   "dependencies": {
     "@deepseek-ai/dsh": "0.1.0-rc.6"
