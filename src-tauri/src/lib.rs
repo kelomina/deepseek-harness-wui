@@ -72,7 +72,7 @@ fn fs_revert(root: String, path: String, expected: String, old_text: Option<Stri
             let content = std::fs::read_to_string(&target).map_err(|e| format!("读取文件失败: {e}"))?;
             let idx = content
                 .find(&expected)
-                .ok_or_else(|| format!("文件内容已变化，无法自动回退（找不到预期文本）"))?;
+                .ok_or_else(|| "文件内容已变化，无法自动回退（找不到预期文本）".to_string())?;
             let new_content = format!("{}{}{}", &content[..idx], old, &content[idx + expected.len()..]);
             std::fs::write(&target, new_content).map_err(|e| format!("写入失败: {e}"))?;
             Ok("reverted".to_string())

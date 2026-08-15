@@ -168,3 +168,14 @@
   + 官方 shell（@deepseek-ai/dsh-client-web buildRenderApp 渲染 root slot）+ 模块加载/HMR（dsh-client-modules/dsh-client-hmr，/plugins/events SSE）。
 - 结论：插件 UI 组件是进程内 React 组件注册（cordis fiber 生命周期 + store 席位），无第三方外壳可独立挂载的公开契约。
   按 devContext 裁剪条件降级：只读插件清单与启停（已有插件管理入口）+ 文档说明；插件 UI 挂载移出 0.2.0（后续迭代候选：官方 1:1 渲染/运行时整体嵌入）。
+
+## 2026-08-15：运行时门禁实测（npm run tauri dev）
+
+- [事实] 2026-08-15 12:46-12:47 实测 `npm run tauri dev`（dsh 0.1.0-rc.6 bundled）：
+  - 主窗口出现，标题 `DeepSeek Harness Desktop`（deepseek-harness-wui PID 19100）；
+  - dsh 端口 3080 被 node 进程监听（`runtime/node_modules/@deepseek-ai/dsh/lib/bin.js web --port 3080`）；
+  - 代理在 127.0.0.1 监听（app 进程代理端口 62154）；
+  - 优雅关闭（CloseMainWindow）后 app 退出、3080 释放、无残留 dsh 进程。
+- 注：启动时 1420 端口已被更早（11:14）遗留的 vite dev server 占用，本次 beforeDevCommand 的 vite 绑定失败，
+  app 从既有 dev server 加载；不影响上述运行时路径验证。证据文件 `evidence/runtime-gate-20260815.txt`（gitignored）。
+- 代理隔离测试：`cargo test -- --ignored proxy_binds_loopback`（2026-08-15）——代理绑定 127.0.0.1、非白名单 Origin 403、无 Origin 走转发路径，通过。

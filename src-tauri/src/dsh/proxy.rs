@@ -214,3 +214,38 @@ async fn tunnel(ctx: Arc<ProxyContext>, mut client: WebSocket, path: String) {
 
 
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "live: 需要本地网络栈，手动运行 cargo test -- --ignored proxy_binds_loopback"]
+    async fn proxy_binds_loopback_and_forwards() {
+        let handle = start_proxy(3080).await.expect("start proxy");
+        assert!(
+            handle.addr.starts_with("127.0.0.1:"),
+            "proxy 必须绑定 loopback，实际: {}",
+            handle.addr
+        );
+        // 通过代理请求任意 /api 路径：dsh 未运行时应得到网关错误（说明代理在转发），
+        // 且带非白名单 Origin 的请求必须被 403 拒绝。
+        let client = reqwest::Client::new();
+        let bad_origin = client
+            .get(format!("http://{}/api/host.describe", handle.addr))
+            .header("Origin", "http://evil.example")
+            .send()
+            .await
+            .expect("proxy responds");
+        assert_eq!(bad_origin.status().as_u16(), 403, "非白名单 Origin 必须 403");
+        // 无 Origin（loopback 同源语义）应进入转发路径：dsh 未监听 → 5xx（不是 403）
+        let no_origin = client
+            .get(format!("http://{}/api/host.describe", handle.addr))
+            .send()
+            .await
+            .expect("proxy responds");
+        assert_ne!(no_origin.status().as_u16(), 403);
+        // 显式关闭服务任务
+        handle._task.abort();
+    }
+}
