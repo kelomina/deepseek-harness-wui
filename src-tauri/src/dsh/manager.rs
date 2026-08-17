@@ -1,4 +1,5 @@
 use crate::dsh::config::{DshConfig, ExecMode};
+use crate::dsh::event::{EventSink, TauriSink};
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -7,7 +8,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, LockResult, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Runtime};
 
 pub fn lock<T>(r: LockResult<T>) -> T {
     r.unwrap_or_else(|e| e.into_inner())
@@ -105,18 +106,19 @@ impl DshManager {
         self.config = cfg;
     }
 
-    pub fn set_config(&mut self, app: &AppHandle, cfg: DshConfig) -> Result<(), String> {
+    pub fn set_config<R: Runtime>(&mut self, app: &AppHandle<R>, cfg: DshConfig) -> Result<(), String> {
         cfg.validate()?;
         if self.child.is_some() {
             return Err("stop dsh before changing configuration".to_string());
         }
         crate::dsh::config::save(app, &cfg)?;
         self.config = cfg;
-        self.emit(app);
+        let sink = TauriSink::new(app.clone());
+        self.emit(&sink);
         Ok(())
     }
 
-    pub fn start(&mut self, shared: Arc<Mutex<DshManager>>, app: &AppHandle) -> Result<(), String> {
+    pub fn start<S: EventSink>(&mut self, shared: Arc<Mutex<DshManager>>, sink: S) -> Result<(), String> {
         if self.child.is_some() {
             return Ok(());
         }
@@ -128,13 +130,35 @@ impl DshManager {
                 }
                 self.push_log(
                     format!("[dsh] 端口 {} 被残留 dsh 进程占用，已自动清理: {:?}", self.config.port, stale),
-                    app,
+                    &sink,
                 );
                 for _ in 0..15 {
                     if !port_in_use(self.config.port) {
                         break;
                     }
                     std::thread::sleep(Duration::from_millis(200));
+                }
+            }
+            // WSL 模式：dsh 跑在 WSL 内，宿主 node.exe 探测不到；单独清理 WSL 内残留 dsh。
+            if self.config.exec_mode == ExecMode::Wsl && port_in_use(self.config.port) {
+                if let Some(distro) = self.config.wsl_default_distro.clone() {
+                    let user = wsl_launch_user(self.config.wsl_dsh_home.as_deref(), &distro);
+                    match wsl_kill_stale_dsh(&distro, &user, self.config.port) {
+                        Ok(killed) if !killed.is_empty() => {
+                            self.push_log(
+                                format!("[dsh] 已清理 WSL 内残留 dsh 进程: {killed:?}"),
+                                &sink,
+                            );
+                            for _ in 0..15 {
+                                if !port_in_use(self.config.port) {
+                                    break;
+                                }
+                                std::thread::sleep(Duration::from_millis(200));
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => self.push_log(format!("[dsh] WSL 残留清理失败: {e}"), &sink),
+                    }
                 }
             }
             if port_in_use(self.config.port) {
@@ -191,10 +215,10 @@ impl DshManager {
         self.message = format!("starting (pid {pid})");
         self.started_at = Some(Instant::now());
         self.health_failures = 0;
-        self.emit(app);
-        spawn_log_reader(stdout, "out", shared.clone(), app.clone());
-        spawn_log_reader(stderr, "err", shared.clone(), app.clone());
-        spawn_exit_watcher(shared, app.clone(), pid);
+        self.emit(&sink);
+        spawn_log_reader(stdout, "out", shared.clone(), sink.clone());
+        spawn_log_reader(stderr, "err", shared.clone(), sink.clone());
+        spawn_exit_watcher(shared, sink.clone(), pid);
         Ok(())
     }
 
@@ -260,6 +284,49 @@ impl DshManager {
                     Ok((p, vec!["web".to_string(), "--port".to_string(), port]))
                 }
             }
+            ExecMode::Wsl => {
+                let distro =
+                    self.config.wsl_default_distro.clone().ok_or("wsl_default_distro is not set")?;
+                let user = wsl_launch_user(self.config.wsl_dsh_home.as_deref(), &distro);
+                // 前台运行（exec）保持 wsl.exe 会话活跃，避免 dsh 子进程被 WSL 会话清理。
+                // node 由 wsl.rs 一键创建安装在 ~/.dsh-node/<version>/bin；DSH_HOME 由脚本覆盖。
+                //
+                // 脚本经 base64 传入并在 WSL 内解码，规避 wsl.exe 参数转发对多行脚本
+                // 引号/换行/`$()` 的破坏（否则首行变 `""`、NODE_BIN 为空、dsh 以 exit 1 退出）。
+                let script = format!(
+                    r#"exec 2>&1
+NODE_BIN=$(ls -d "$HOME"/.dsh-node/*/bin/node 2>/dev/null | head -n1)
+if [ -z "$NODE_BIN" ]; then
+  echo "error: dsh node runtime not found under ~/.dsh-node; run WSL 一键创建 first" >&2
+  exit 1
+fi
+export PATH="$(dirname "$NODE_BIN"):$PATH"
+export DSH_HOME="$HOME/.dsh"
+if [ -f "$HOME/.dsh-node/host-ca.crt" ]; then
+  export CURL_CA_BUNDLE="$HOME/.dsh-node/host-ca.crt"
+  export NODE_EXTRA_CA_CERTS="$HOME/.dsh-node/host-ca.crt"
+fi
+echo "dsh in WSL: distro={distro} user=$USER node=$("$NODE_BIN" -v)"
+exec dsh --profile web --port {port}"#,
+                    distro = distro,
+                    port = port,
+                );
+                use base64::Engine as _;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(script);
+                Ok((
+                    "wsl.exe".to_string(),
+                    vec![
+                        "-d".to_string(),
+                        distro,
+                        "-u".to_string(),
+                        user,
+                        "--".to_string(),
+                        "bash".to_string(),
+                        "-c".to_string(),
+                        format!("echo {b64} | base64 -d | bash"),
+                    ],
+                ))
+            }
         }
     }
 
@@ -277,31 +344,36 @@ impl DshManager {
         self.restart_attempts.push(Instant::now());
     }
 
-    fn push_log(&mut self, line: String, app: &AppHandle) {
+    fn push_log<S: EventSink>(&mut self, line: String, sink: &S) {
         while self.logs.len() >= self.config.log_max_lines {
             self.logs.pop_front();
         }
         self.logs.push_back(line.clone());
-        let _ = app.emit("dsh://log", line);
+        sink.emit("dsh://log", &line);
     }
 
-    fn emit(&self, app: &AppHandle) {
-        let _ = app.emit("dsh://status", self.status_view());
+    fn emit<S: EventSink>(&self, sink: &S) {
+        sink.emit("dsh://status", &self.status_view());
     }
 }
 
-fn spawn_log_reader<R: Read + Send + 'static>(reader: R, tag: &'static str, shared: Arc<Mutex<DshManager>>, app: AppHandle) {
+fn spawn_log_reader<T: Read + Send + 'static, S: EventSink>(
+    reader: T,
+    tag: &'static str,
+    shared: Arc<Mutex<DshManager>>,
+    sink: S,
+) {
     thread::spawn(move || {
         let br = BufReader::new(reader);
         for line in br.lines() {
             let Ok(line) = line else { break };
             let mut mgr = lock(shared.lock());
-            mgr.push_log(format!("[{tag}] {line}"), &app);
+            mgr.push_log(format!("[{tag}] {line}"), &sink);
         }
     });
 }
 
-pub fn spawn_health_watcher(shared: Arc<Mutex<DshManager>>, app: AppHandle) {
+pub fn spawn_health_watcher<S: EventSink>(shared: Arc<Mutex<DshManager>>, sink: S) {
     thread::spawn(move || loop {
         let (interval, port) = {
             let mgr = lock(shared.lock());
@@ -319,7 +391,7 @@ pub fn spawn_health_watcher(shared: Arc<Mutex<DshManager>>, app: AppHandle) {
                 mgr.state = DshState::Running;
                 mgr.message = "running".to_string();
                 mgr.health_failures = 0;
-                mgr.emit(&app);
+                mgr.emit(&sink);
             }
             (true, _) => {
                 mgr.health_failures = 0;
@@ -334,7 +406,7 @@ pub fn spawn_health_watcher(shared: Arc<Mutex<DshManager>>, app: AppHandle) {
                         mgr.note_restart();
                         mgr.message = format!("restarting (attempt {})", mgr.restart_attempts.len());
                     }
-                    mgr.emit(&app);
+                    mgr.emit(&sink);
                 }
             }
             (false, DshState::Starting) => {
@@ -347,7 +419,7 @@ pub fn spawn_health_watcher(shared: Arc<Mutex<DshManager>>, app: AppHandle) {
                             mgr.note_restart();
                             mgr.message = format!("restarting (attempt {})", mgr.restart_attempts.len());
                         }
-                        mgr.emit(&app);
+                        mgr.emit(&sink);
                     }
                 }
             }
@@ -361,12 +433,12 @@ pub fn spawn_health_watcher(shared: Arc<Mutex<DshManager>>, app: AppHandle) {
             }
             thread::sleep(Duration::from_secs(2));
             let mut mgr = lock(shared.lock());
-            let _ = mgr.start(shared.clone(), &app);
+            let _ = mgr.start(shared.clone(), sink.clone());
         }
     });
 }
 
-fn spawn_exit_watcher(shared: Arc<Mutex<DshManager>>, app: AppHandle, watch_pid: u32) {
+fn spawn_exit_watcher<S: EventSink>(shared: Arc<Mutex<DshManager>>, sink: S, watch_pid: u32) {
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(1));
         let mut mgr = lock(shared.lock());
@@ -393,12 +465,12 @@ fn spawn_exit_watcher(shared: Arc<Mutex<DshManager>>, app: AppHandle, watch_pid:
                     mgr.message = format!("restarting (attempt {})", mgr.restart_attempts.len());
                 }
             }
-            mgr.emit(&app);
+            mgr.emit(&sink);
             drop(mgr);
             if restart {
                 thread::sleep(Duration::from_secs(2));
                 let mut mgr = lock(shared.lock());
-                let _ = mgr.start(shared.clone(), &app);
+                let _ = mgr.start(shared.clone(), sink.clone());
             }
             break;
         }
@@ -470,6 +542,65 @@ pub(crate) fn bundled_bin_path() -> Result<String, String> {
     ))
 }
 
+/// 从 `\\wsl$\<distro>\...` 的 DSH_HOME UNC 路径推导 WSL 启动用户。
+/// - `\\wsl$\<distro>\root\...` → root
+/// - `\\wsl$\<distro>\home\<user>\...` → user
+/// - 解析失败或未配置 → 默认 root
+fn wsl_launch_user(dsh_home_unc: Option<&str>, distro: &str) -> String {
+    let Some(unc) = dsh_home_unc else {
+        return "root".to_string();
+    };
+    let prefix = format!(r"\\wsl$\{}\", distro.to_ascii_lowercase());
+    let lower = unc.to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix(&prefix) else {
+        return "root".to_string();
+    };
+    let mut parts = rest.split(['\\', '/']);
+    match parts.next() {
+        Some("root") => "root".to_string(),
+        Some("home") => parts.next().filter(|u| !u.is_empty()).unwrap_or("root").to_string(),
+        _ => "root".to_string(),
+    }
+}
+
+/// 清理 WSL 内绑定指定端口的残留 dsh（node）进程，返回被终结的 WSL 内 PID 列表。
+/// 依赖 `ss`（iproute2，Ubuntu 基础自带）；缺失时返回 Err（不静默跳过，便于日志提示手工清理）。
+fn wsl_kill_stale_dsh(distro: &str, user: &str, port: u16) -> Result<Vec<u32>, String> {
+    let script = format!(
+        r#"exec 2>&1
+if ! command -v ss >/dev/null 2>&1; then
+  echo "SS_MISSING"
+  exit 0
+fi
+PIDS=$(ss -ltnpH "sport = :{port}" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | sort -u)
+[ -z "$PIDS" ] && exit 0
+killtree() {{ local p=$1; for c in $(pgrep -P "$p" 2>/dev/null); do killtree "$c"; done; kill -9 "$p" 2>/dev/null; }}
+for p in $PIDS; do killtree "$p"; done
+echo "KILLED $PIDS"
+"#,
+        port = port
+    );
+    let out = Command::new("wsl.exe")
+        .args(["-d", distro, "-u", user, "--", "bash", "-c", &script])
+        .output()
+        .map_err(|e| format!("wsl.exe 不可用: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    if text.contains("SS_MISSING") {
+        return Err(
+            "WSL 内缺少 ss（iproute2），无法自动清理残留 dsh；请在发行版内手动停止 dsh 或重启发行版".to_string(),
+        );
+    }
+    let mut pids = Vec::new();
+    if let Some(line) = text.lines().find(|l| l.trim_start().starts_with("KILLED")) {
+        for tok in line.split_whitespace().skip(1) {
+            if let Ok(p) = tok.parse::<u32>() {
+                pids.push(p);
+            }
+        }
+    }
+    Ok(pids)
+}
+
 fn resolve_npx_cli() -> Result<String, String> {
     let probe = "console.log(require('path').join(require('path').dirname(process.execPath),'node_modules','npm','bin','npx-cli.js'))";
     if let Ok(out) = Command::new("node").args(["-e", probe]).output() {
@@ -529,6 +660,39 @@ fn find_dsh_pids(port: u16) -> Vec<u32> {
 fn is_dsh_cmdline(cmd: &str, port: u16) -> bool {
     (cmd.contains("bin.js") && cmd.contains("web") && cmd.contains(&format!("--port {port}")))
         || cmd.contains("@deepseek-ai/dsh")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wsl_launch_user_parses_root_and_home() {
+        assert_eq!(wsl_launch_user(Some(r"\\wsl$\DshUbuntu\root\.dsh"), "DshUbuntu"), "root");
+        assert_eq!(
+            wsl_launch_user(Some(r"\\wsl$\DshUbuntu\home\alice\.dsh"), "DshUbuntu"),
+            "alice"
+        );
+        // 发行版大小写不敏感
+        assert_eq!(
+            wsl_launch_user(Some(r"\\wsl$\DshUbuntu\home\alice\.dsh"), "dshubuntu"),
+            "alice"
+        );
+    }
+
+    #[test]
+    fn wsl_launch_user_falls_back_to_root() {
+        // 未配置 / 发行版不匹配 / 结构未知 → root
+        assert_eq!(wsl_launch_user(None, "DshUbuntu"), "root");
+        assert_eq!(
+            wsl_launch_user(Some(r"\\wsl$\Other\root\.dsh"), "DshUbuntu"),
+            "root"
+        );
+        assert_eq!(
+            wsl_launch_user(Some(r"\\wsl$\DshUbuntu\weird"), "DshUbuntu"),
+            "root"
+        );
+    }
 }
 
 

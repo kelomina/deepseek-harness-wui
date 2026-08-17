@@ -1,6 +1,7 @@
 mod dsh;
 
 use dsh::config::{load, DshConfig};
+use dsh::event::TauriSink;
 use dsh::manager::{lock, spawn_health_watcher, DshManager, DshStatusView};
 use dsh::plugins::{plugins_import, plugins_list, plugins_remove, plugins_set_enabled};
 use dsh::proxy::{start_proxy, ProxyHandle};
@@ -156,7 +157,7 @@ fn dsh_status(state: State<AppState>) -> DshStatusView {
 fn dsh_start(app: AppHandle, state: State<AppState>) -> Result<(), String> {
     let shared = state.manager.clone();
     let mut mgr = lock(shared.lock());
-    mgr.start(shared.clone(), &app)
+    mgr.start(shared.clone(), TauriSink::new(app.clone()))
 }
 
 #[tauri::command]
@@ -333,6 +334,51 @@ fn wsl_save_config_cmd(
     mgr.set_config(&app, cfg)
 }
 
+/// 一键创建/初始化 WSL 并安装 DSH。异步执行，进度经 `wsl://provision` 事件推送；
+/// 成功后把发行版 / DSH_HOME / 工作区写入应用 config（保存前备份）。
+#[tauri::command]
+async fn wsl_provision_cmd(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    distro: Option<String>,
+    exact_version: Option<String>,
+) -> Result<wsl::WslProvisionReport, String> {
+    let manager = state.manager.clone();
+    let configured = {
+        let mgr = lock(manager.lock());
+        mgr.config().wsl_default_distro.clone()
+    };
+    let app_for_task = app.clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        wsl::provision(TauriSink::new(app_for_task), configured.as_deref(), distro.as_deref(), exact_version.as_deref())
+    })
+    .await
+    .map_err(|e| format!("provision task failed: {e}"))?;
+    if report.ok {
+        let mut mgr = lock(manager.lock());
+        let mut cfg = mgr.config().clone();
+        cfg.wsl_default_distro = report.distro.clone();
+        cfg.wsl_dsh_home = report.dsh_home.clone();
+        cfg.wsl_workspace_dir = report.workspace_dir.clone();
+        if let Ok(path) = crate::dsh::config::config_path(&app) {
+            if path.exists() {
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0);
+                let bak = path.with_extension(format!("json.bak-{ts}"));
+                let _ = std::fs::copy(&path, &bak);
+            }
+        }
+        let _ = mgr.set_config(&app, cfg);
+    }
+    Ok(report)
+}
+
+/// 生产/开发入口：构建并运行 Wry 桌面应用。
+/// 在 `e2e` feature 下被 cfg 排除，避免测试二进制链接 WebView2 导致
+/// `STATUS_ENTRYPOINT_NOT_FOUND`（0xc0000139）；e2e 测试走 `tauri::test::mock_app()`。
+#[cfg(not(feature = "e2e"))]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -371,7 +417,8 @@ pub fn run() {
             runtime_remote_versions_cmd,
             runtime_set_active_cmd,
             wsl_status_cmd,
-            wsl_save_config_cmd
+            wsl_save_config_cmd,
+            wsl_provision_cmd
         ])
         .setup(|app| {
             let handle = app.handle();
@@ -388,14 +435,14 @@ pub fn run() {
                 mgr.replace_config(cfg.clone());
                 *state.proxy.lock().unwrap() = Some(proxy);
             }
-            spawn_health_watcher(handle.state::<AppState>().manager.clone(), handle.clone());
+            spawn_health_watcher(handle.state::<AppState>().manager.clone(), TauriSink::new(handle.clone()));
             if cfg.auto_start {
                 let app2 = handle.clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     let state = app2.state::<AppState>();
                     let shared = state.manager.clone();
                     let mut mgr = lock(shared.lock());
-                    let _ = mgr.start(shared.clone(), &app2);
+                    let _ = mgr.start(shared.clone(), TauriSink::new(app2));
                 });
             }
             Ok(())
@@ -410,4 +457,11 @@ pub fn run() {
                 };
             }
         });
+}
+
+/// `e2e` feature 下的入口桩：仅用于满足 bin（main.rs）在 `cargo test --features e2e` 下的链接，
+/// 不启动 Wry 应用。真正的 e2e 验证在 `dsh::e2e_wsl::wsl_provision_and_start_dsh_e2e`。
+#[cfg(feature = "e2e")]
+pub fn run() {
+    // no-op：e2e 构建不运行桌面应用入口。
 }

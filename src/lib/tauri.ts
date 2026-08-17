@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-export type ExecMode = "bundled" | "npx" | "path";
+export type ExecMode = "bundled" | "npx" | "path" | "wsl";
 export type DshState = "stopped" | "starting" | "running" | "error";
 
 export interface DshStatus {
@@ -74,6 +74,24 @@ export interface WslStatus {
   reason: string | null;
 }
 
+export interface WslProvisionStep {
+  phase: string;
+  status: "running" | "ok" | "warn" | "error" | "log";
+  message: string;
+}
+
+export interface WslProvisionReport {
+  ok: boolean;
+  distro: string | null;
+  user: string | null;
+  node_version: string | null;
+  dsh_version: string | null;
+  dsh_home: string | null;
+  workspace_dir: string | null;
+  steps: WslProvisionStep[];
+  error: string | null;
+}
+
 
 export interface RoutingSuiteStatus {
   injector_installed: boolean;
@@ -105,7 +123,13 @@ export const wsl = {
   status: () => invoke<WslStatus>("wsl_status_cmd"),
   saveConfig: (defaultDistro: string | null, dshHome: string | null, workspaceDir: string | null) =>
     invoke<void>("wsl_save_config_cmd", { defaultDistro, dshHome, workspaceDir }),
+  provision: (distro?: string | null, exactVersion?: string | null) =>
+    invoke<WslProvisionReport>("wsl_provision_cmd", { distro, exactVersion }),
 };
+
+export function onWslProvision(cb: (s: WslProvisionStep) => void): Promise<() => void> {
+  return listen<WslProvisionStep>("wsl://provision", (e) => cb(e.payload));
+}
 
 export const dsh = {
   status: () => invoke<DshStatus>("dsh_status"),

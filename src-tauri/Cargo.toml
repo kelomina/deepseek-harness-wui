@@ -9,6 +9,9 @@ edition = "2021"
 name = "deepseek_harness_wui_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+e2e = ["tauri/test"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

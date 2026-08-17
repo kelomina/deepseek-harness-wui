@@ -787,12 +787,18 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
             <option value="bundled">Bundled（仓库 runtime/ 固定版本，推荐）</option>
             <option value="npx">npx（每次按固定版本拉取）</option>
             <option value="path">自定义路径</option>
+            <option value="wsl">WSL（在 WSL 发行版内运行 dsh）</option>
           </select>
           {form?.exec_mode === "path" && (
             <>
               <div className="f-label">dsh 可执行文件路径</div>
               <input type="text" value={form.exec_path ?? ""} disabled={running} onChange={(e) => set("exec_path", e.currentTarget.value || null)} placeholder="例如 C:\tools\dsh\lib\bin.js" />
             </>
+          )}
+          {form?.exec_mode === "wsl" && (
+            <div className="hint" style={{ marginTop: 8 }}>
+              在 WSL 发行版内用 dsh 启动 DSH。目标发行版、DSH_HOME 与工作区在下方「WSL 管理」配置；若未安装，先进「一键创建/初始化」。
+            </div>
           )}
           <div className="f-label">Web 端口</div>
           <input type="text" value={form?.port ?? 3080} disabled={running} onChange={(e) => set("port", Number(e.currentTarget.value) || 0)} />

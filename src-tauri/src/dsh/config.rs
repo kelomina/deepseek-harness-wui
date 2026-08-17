@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
+use tauri::{Manager, Runtime};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -8,6 +8,7 @@ pub enum ExecMode {
     Bundled,
     Npx,
     Path,
+    Wsl,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,17 +92,23 @@ impl DshConfig {
                 return Err(format!("exec_path not found: {p}"));
             }
         }
+        if self.exec_mode == ExecMode::Wsl {
+            let d = self.wsl_default_distro.as_deref().ok_or("wsl_default_distro is required in WSL mode")?;
+            if d.trim().is_empty() {
+                return Err("wsl_default_distro is required in WSL mode".to_string());
+            }
+        }
         Ok(())
     }
 }
 
-pub fn config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub fn config_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join("config.json"))
 }
 
-pub fn load(app: &tauri::AppHandle) -> DshConfig {
+pub fn load<R: Runtime>(app: &tauri::AppHandle<R>) -> DshConfig {
     match config_path(app) {
         Ok(path) => match std::fs::read_to_string(&path) {
             Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
@@ -111,7 +118,7 @@ pub fn load(app: &tauri::AppHandle) -> DshConfig {
     }
 }
 
-pub fn save(app: &tauri::AppHandle, cfg: &DshConfig) -> Result<(), String> {
+pub fn save<R: Runtime>(app: &tauri::AppHandle<R>, cfg: &DshConfig) -> Result<(), String> {
     let path = config_path(app)?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?)

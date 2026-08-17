@@ -1,6 +1,6 @@
 # 风险与已知问题
 
-最后更新：2026-08-15（dsh 0.1.0-rc.6）
+最后更新：2026-08-16（dsh 0.1.0-rc.6）
 
 ## 高风险
 
@@ -179,6 +179,42 @@
 - 注：启动时 1420 端口已被更早（11:14）遗留的 vite dev server 占用，本次 beforeDevCommand 的 vite 绑定失败，
   app 从既有 dev server 加载；不影响上述运行时路径验证。证据文件 `evidence/runtime-gate-20260815.txt`（gitignored）。
 - 代理隔离测试：`cargo test -- --ignored proxy_binds_loopback`（2026-08-15）——代理绑定 127.0.0.1、非白名单 Origin 403、无 Origin 走转发路径，通过。
+## 2026-08-16：WSL 联网端到端验证（条目 2/3 闭环）+ WSL 执行模式落地
+
+- 目标：宿主机应用内「连接 WSL 用 dsh 启动 DSH」完整闭环 —— 在 WSL 发行版内安装 Node + dsh，
+  经 `wsl.exe` 前台启动 dsh，宿主机经 WSL2 localhost 转发访问其 Web 服务。
+- [事实] 锁定版本：dsh **0.1.0-rc.6**、Node **v22.19.0**（满足 dsh 运行依赖 pi-ai 的 node>=22.19.0，EBADENGINE 前置）。
+- [事实] WSL2 网络转发：WSL 内绑定 127.0.0.1 的端口会被宿主机 `localhost` 转发访问；
+  实测 `curl http://127.0.0.1:4001` 从宿主机返回 HTTP 200 与完整 HTML。dsh 只允许绑定 127.0.0.1 / 0.0.0.0，
+  且拒绝 0.0.0.0（安全约束），故依赖该转发机制，无需改 dsh 绑定。
+- [事实] 进程存活策略：WSL 内后台运行 dsh，`wsl.exe` 会话结束后子进程会被清理；
+  必须**前台运行**（`exec dsh --profile web --port N`）保持 `wsl.exe` 会话活跃。已实现于 manager.rs `build_command` 的 `ExecMode::Wsl`。
+- [事实] 跨环境文件传输：经 UNC 路径（`\\wsl$\<distro>\...`）在宿主机与 WSL 间传文件，避免 PowerShell 管道引入 CR 导致参数解析错误
+  （`--port must be a number, got "4001\r"`）。
+- [事实] MITM 环境：宿主受信任根 CA 导出为 PEM 注入 WSL（`~/.dsh-node/host-ca.crt`），缓解 SSL 校验失败；
+  非 MITM 环境自动降级系统 CA。
+- [事实] 残留清理：WSL 内 dsh 占用端口时，宿主 `find_dsh_pids` 只查宿主 node.exe 探测不到；
+  新增 `wsl_kill_stale_dsh`（依赖 `ss`，iproute2）在 `start()` 前清理 WSL 内残留进程。
+- 验证：`cargo check`、`cargo test --lib`（22 passed）、`npm run build` 通过；WSL 单测 7 项与 wsl_launch_user 2 项通过。
+- 未验证：宿主机应用 UI 内点「启动」的完整链路（需 WSL 发行版内已装 dsh + 应用界面操作），本次为命令行级 curl 验证。
+
+## 2026-08-16：WSL 完整闭环 e2e（创建 + 连接 + 启动 DSH，应用真实代码路径）+ base64 启动修复
+
+- 目标：宿主机应用「一键创建 WSL → 安装 Node/dsh → 应用内连接 WSL 用 dsh 启动 DSH」完整闭环，
+  经应用真实代码路径验证（`wsl::provision` + `DshManager::start` 的 `ExecMode::Wsl`）。
+- [事实] 锁定版本：dsh **0.1.0-rc.6**、Node **v22.19.0**（满足 pi-ai 运行依赖 node>=22.19.0，EBADENGINE 前置），全程实测可装可启。
+- [事实] 全量 e2e（首次跑）：`cargo test --features e2e -- --ignored --nocapture wsl_provision_and_start_dsh_e2e`
+  —— 创建全新发行版（web-download 通道）→ 装 build 工具 + Node v22.19.0 + `@deepseek-ai/dsh@0.1.0-rc.6` → 应用内启动 dsh →
+  宿主机经 WSL2 localhost 转发访问其 Web 服务 **HTTP 200**。
+- **发现并修复**：WSL 启动脚本若用 `bash -c "<多行脚本>"` 直接传参，`wsl.exe` 参数转发破坏引号/换行/`$()`，
+  首行变 `""`、`NODE_BIN` 为空，dsh 以 exit 1 退出（`/bin/bash: line 1: "": command not found`）。
+  **修复**：`build_command` 的 WSL 分支把脚本 **base64 编码**，经 `bash -c "echo <b64> | base64 -d | bash"` 在 WSL 内解码执行
+  （base64 仅含 `A-Za-z0-9+/=`，不受转发破坏）。
+- [事实] 复验（复用已装好 Node+dsh 的发行版 `DSH_E2E_REUSE_DISTRO=<name>`，只重验 start 路径）：
+  state=Running 且宿主机 http_ok=true；`stop()` 后端口 4199 释放。`cargo test --lib` 23 passed。
+- 测试发行版已清理（`wsl --unregister` 全部 `DshE2E*`/`DshLoopbackTest`），仅保留本机原有 CodexUbuntu/CentOS8-stream/docker-desktop。
+- 测试运行方式：`DSH_E2E_CLEANUP=1` 自动 unregister；`DSH_E2E_REUSE_DISTRO=<name>` 复用已就绪发行版跳过 create/install。
+
 ## 2026-08-15：dsh-routing-suite 集成（已实施）
 
 - 第三方套装 dsh-routing-suite（https://github.com/yjh051108/dsh-routing-suite）以固定版本 vendored 进

@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import { dsh, wsl, type WslStatus } from "../lib/tauri";
+import {
+  dsh,
+  wsl,
+  onWslProvision,
+  type WslProvisionStep,
+  type WslStatus,
+} from "../lib/tauri";
 import { appStore, useAppState } from "../lib/dsh/store";
 
 export function WslPanel() {
@@ -12,6 +18,10 @@ export function WslPanel() {
   const [distro, setDistro] = useState("");
   const [dshHome, setDshHome] = useState("");
   const [workspaceDir, setWorkspaceDir] = useState("");
+  const [provisioning, setProvisioning] = useState(false);
+  const [provisionConfirm, setProvisionConfirm] = useState(false);
+  const [provisionSteps, setProvisionSteps] = useState<WslProvisionStep[]>([]);
+  const [provisionError, setProvisionError] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -37,6 +47,40 @@ export function WslPanel() {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config?.wsl_default_distro, config?.wsl_dsh_home, config?.wsl_workspace_dir]);
+
+  useEffect(() => {
+    const un = onWslProvision((s) =>
+      setProvisionSteps((prev) => [...prev, s]),
+    ).catch(() => undefined);
+    return () => {
+      void un.then((fn) => fn?.());
+    };
+  }, []);
+
+  const provision = async () => {
+    setProvisionConfirm(false);
+    setProvisioning(true);
+    setProvisionError(null);
+    setProvisionSteps([]);
+    try {
+      const report = await wsl.provision(distro || null, null);
+      if (report.ok) {
+        setDistro(report.distro ?? "");
+        setDshHome(report.dsh_home ?? "");
+        setWorkspaceDir(report.workspace_dir ?? "");
+        const cfg = await dsh.getConfig();
+        appStore.set({ config: cfg });
+        setMsg("一键创建/初始化完成");
+        await load();
+      } else {
+        setProvisionError(report.error ?? "创建失败");
+      }
+    } catch (e) {
+      setProvisionError(String(e));
+    } finally {
+      setProvisioning(false);
+    }
+  };
 
   const save = async () => {
     setSaving(true);
@@ -92,6 +136,50 @@ export function WslPanel() {
             </div>
           ) : (
             <>
+              <div className="section-divider" style={{ margin: "12px 0 8px" }}>
+                <span className="title">一键创建 / 初始化</span>
+              </div>
+              <div className="hint" style={{ marginBottom: 8 }}>
+                目标发行版不存在时自动创建（Ubuntu 基础，跳过首次用户向导），并在其内安装 Node{" "}
+                ≥20 与 dsh（精确锁定版本）。已存在则复用并在其中安装/更新 dsh。
+              </div>
+              <div className="actions">
+                <button
+                  className="btn primary"
+                  disabled={provisioning}
+                  onClick={() => setProvisionConfirm(true)}
+                >
+                  {provisioning ? "创建中…（见下方日志）" : "一键创建并安装 DSH"}
+                </button>
+              </div>
+              {provisionError && (
+                <div className="error-banner" style={{ margin: "8px 0" }}>{provisionError}</div>
+              )}
+              {provisionSteps.length > 0 && (
+                <div
+                  className="list"
+                  style={{
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    padding: 6,
+                    margin: "8px 0",
+                    maxHeight: 220,
+                    overflowY: "auto",
+                    fontFamily: "var(--mono)",
+                    fontSize: 12,
+                  }}
+                >
+                  {provisionSteps.map((s, i) => (
+                    <div key={i} className="provision-line">
+                      <span className={`badge ${s.status === "error" ? "red" : s.status === "ok" ? "green" : "gray"}`}>
+                        {s.status}
+                      </span>
+                      <span className="sub">{s.message}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               <div className="f-label">目标发行版</div>
               <select value={distro} onChange={(e) => setDistro(e.currentTarget.value)}>
                 <option value="">（默认发行版）</option>
@@ -125,6 +213,24 @@ export function WslPanel() {
             <div className="modal-row">
               <button className="btn" onClick={() => setConfirm(false)}>取消</button>
               <button className="btn primary" disabled={saving} onClick={() => void save()}>{saving ? "保存中…" : "确认保存"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {provisionConfirm && (
+        <div className="modal-mask" onClick={() => setProvisionConfirm(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h4>确认一键创建并安装 DSH？</h4>
+            <div className="hint">
+              {"目标发行版 = " + (distro || (status?.default_distro ? `（默认：${status.default_distro}）` : "（自动创建 DshUbuntu）"))}
+              。若不存在将创建新发行版并在其中安装 Node ≥20 与 dsh（精确锁定版本）；全程可观察（实时日志），完成后自动写入应用配置（保存前备份 config.json）。
+            </div>
+            <div className="modal-row">
+              <button className="btn" onClick={() => setProvisionConfirm(false)}>取消</button>
+              <button className="btn primary" disabled={provisioning} onClick={() => void provision()}>
+                {provisioning ? "创建中…" : "确认创建并安装"}
+              </button>
             </div>
           </div>
         </div>
