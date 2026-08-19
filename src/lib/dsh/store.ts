@@ -11,14 +11,22 @@ import type {
   ConfigurableProviderView,
   CredentialView,
   DiscoveredModelView,
+  GoalRef,
+  HistoryEntry,
   HostFrame,
+  JobView,
   ModelProviderGroup,
   MuxFrame,
+  PromptContentPart,
+  QueuedInboxItem,
   QuestionResponsePayload,
   RpcId,
+  SessionSearchItem,
   SessionSummary,
   SettingsNamespaceView,
   SettingsPathOpView,
+  SkillEntry,
+  SubagentCatalog,
   WorkspaceId,
   WorkspaceView,
 } from "@deepseek-ai/dsh-host-apiproxy/api";
@@ -93,6 +101,25 @@ export interface AppState {
   stopEvidence: Record<SessionId, { cancelAcceptedAt?: number; cancelError?: string; turnEndAbortedAt?: number; stoppedUiAt?: number }>;
   /** 非错误提示（例如撤回/重试的结果说明）。 */
   notice: string | null;
+  /** 会话内容搜索结果（session.search；null 表示无搜索）。 */
+  searchResults: { items: SessionSearchItem[]; hasMore: boolean } | null;
+  searching: boolean;
+  /** 每会话待处理消息队列快照（session/queue 帧 + updateQueue 配对）。 */
+  sessionQueues: Map<SessionId, QueuedInboxItem[]>;
+  /** 每会话后台任务快照（session/jobs 帧）。 */
+  sessionJobs: Map<SessionId, JobView[]>;
+  /** 每会话投影值存储（higher-seq-wins；goal/title/permissions/imageLimits 等）。 */
+  projections: Map<SessionId, Record<string, { seq: number; value: unknown }>>;
+  /** mux 订阅基线 lastSeq（用于丢弃早于基线的投影帧）。 */
+  subscribedSeqs: Record<SessionId, number>;
+  /** 子代理目录（subagent.list；key=父会话）。 */
+  subagentCatalogs: Map<SessionId, SubagentCatalog>;
+  /** 子代理历史（subagent.history；key=子会话）。 */
+  subagentHistories: Map<SessionId, HistoryEntry[]>;
+  /** 技能目录（skill.list；随会话项目变化）。 */
+  skills: SkillEntry[] | null;
+  /** 待插入输入框的技能名（会话功能坞「技能」子tab 点击技能后置位；消费后置 null）。 */
+  pendingSkillInsert: string | null;
   loading: boolean;
   error: string | null;
 }
@@ -128,6 +155,16 @@ const initialState: AppState = {
   forceFinished: [],
   stopEvidence: {},
   notice: null,
+  searchResults: null,
+  searching: false,
+  sessionQueues: new Map(),
+  sessionJobs: new Map(),
+  projections: new Map(),
+  subscribedSeqs: {},
+  subagentCatalogs: new Map(),
+  subagentHistories: new Map(),
+  skills: null,
+  pendingSkillInsert: null,
   loading: false,
   error: null,
 };
@@ -263,6 +300,16 @@ class AppStore {
       forceFinished: [],
       stopEvidence: {},
       notice: null,
+      searchResults: null,
+      searching: false,
+      sessionQueues: new Map(),
+      sessionJobs: new Map(),
+      projections: new Map(),
+      subscribedSeqs: {},
+      subagentCatalogs: new Map(),
+      subagentHistories: new Map(),
+      skills: null,
+      pendingSkillInsert: null,
     });
   }
 
@@ -351,8 +398,46 @@ class AppStore {
       case "question/resolved":
         this.set({ interactives: this.state.interactives.filter((i) => i.kind !== "question") });
         break;
+      case "session/queue": {
+        // 队列全量快照：覆盖式更新（帧本身即权威信号）
+        const q = new Map(this.state.sessionQueues);
+        q.set(frame.sessionId, frame.items);
+        this.set({ sessionQueues: q });
+        break;
+      }
+      case "session/jobs": {
+        const j = new Map(this.state.sessionJobs);
+        j.set(frame.sessionId, frame.jobs);
+        this.set({ sessionJobs: j });
+        break;
+      }
+      case "session/projection":
+        this.applyProjection(frame.sessionId, frame.key, frame.value, frame.seq);
+        break;
+      case "session/subscribed": {
+        // 订阅基线：记录 lastSeq，用于丢弃早于基线的投影帧
+        this.set({ subscribedSeqs: { ...this.state.subscribedSeqs, [frame.sessionId]: frame.lastSeq } });
+        break;
+      }
+      case "stream/error":
+        this.set({ error: `事件流错误: ${frame.error.code}: ${frame.error.message}` });
+        break;
       default:
         break;
+    }
+  }
+
+  /** 投影存储（higher-seq-wins）：同 key 仅接受更高 seq 的值；title 投影同步本地标题表。 */
+  private applyProjection(sessionId: SessionId, key: string, value: unknown, seq: number): void {
+    const perSession = this.state.projections.get(sessionId) ?? {};
+    const cur = perSession[key];
+    if (cur && cur.seq > seq) return;
+    const next = { ...perSession, [key]: { seq, value } };
+    const m = new Map(this.state.projections);
+    m.set(sessionId, next);
+    this.set({ projections: m });
+    if (key === "title" && typeof value === "string" && value) {
+      this.set({ sessionTitles: { ...this.state.sessionTitles, [sessionId]: value } });
     }
   }
 
@@ -420,6 +505,13 @@ class AppStore {
         break;
       case "host/agent-error":
         this.set({ error: `agent 错误: ${frame.message}` });
+        break;
+      case "host/remote-event":
+        // 宿主转发的 allowlist cordis 事件：进日志留痕（无 UI 语义）
+        this.set({ logs: [...this.state.logs.slice(-499), `[host-event] ${frame.event}`] });
+        break;
+      case "stream/error":
+        this.set({ error: `宿主事件流错误: ${frame.error.code}: ${frame.error.message}` });
         break;
       default:
         break;
@@ -495,12 +587,19 @@ class AppStore {
     return null;
   }
 
-  async sendPrompt(sessionId: SessionId, text: string): Promise<void> {
+  /** 发送消息（可携带图片附件；text 与 images 至少其一非空）。 */
+  async sendPrompt(sessionId: SessionId, text: string, images: Array<{ mediaType: string; data: string; name?: string }> = []): Promise<void> {
     const api = this.requireApi();
+    const content: PromptContentPart[] = [];
+    if (text.trim()) content.push({ type: "text", text });
+    for (const img of images) {
+      content.push({ type: "image", mediaType: img.mediaType as never, data: img.data, name: img.name });
+    }
+    if (content.length === 0) return;
     const r = await api.sessions.prompt({
       sessionId,
       mode: "queue",
-      content: [{ type: "text", text }],
+      content,
     });
     if (!r.result.ok) {
       this.set({ error: `发送失败: ${r.result.error.code}: ${r.result.error.message}` });
@@ -509,6 +608,66 @@ class AppStore {
     window.setTimeout(() => {
       void this.loadHistory(sessionId).catch(() => {});
     }, 1500);
+  }
+
+  /** 读取会话引用的持久化图片（session.attachment）。 */
+  async getAttachment(sessionId: SessionId, attachmentId: string): Promise<{ mediaType: string; data: string } | null> {
+    const api = this.requireApi();
+    const r = await api.sessions.attachment({ sessionId, attachmentId: attachmentId as never });
+    if (!r.result.ok) {
+      this.set({ error: `读取附件失败: ${r.result.error.code}: ${r.result.error.message}` });
+      return null;
+    }
+    const v = r.result.value as { attachment: { mediaType: string }; data: string };
+    return { mediaType: v.attachment.mediaType, data: v.data };
+  }
+
+  /** 会话内容搜索（session.search；结果无游标，hasMore 提示细化查询）。 */
+  async searchSessions(query: string): Promise<void> {
+    const q = query.trim();
+    if (!q) {
+      this.set({ searchResults: null });
+      return;
+    }
+    const api = this.requireApi();
+    this.set({ searching: true });
+    try {
+      const r = await api.sessions.search({ query: q }, new AbortController().signal);
+      if (r.result.ok) {
+        this.set({ searchResults: { items: r.result.value.items, hasMore: r.result.value.hasMore } });
+      } else {
+        this.set({ searchResults: null, error: `搜索失败: ${r.result.error.code}: ${r.result.error.message}` });
+      }
+    } catch (e) {
+      this.set({ error: `搜索失败: ${String(e)}` });
+    } finally {
+      this.set({ searching: false });
+    }
+  }
+
+  clearSearch(): void {
+    this.set({ searchResults: null });
+  }
+
+  /** 编辑/移除/插队一条待处理消息（session.updateQueue）。 */
+  async queueAction(
+    sessionId: SessionId,
+    itemId: QueuedInboxItem["id"],
+    action:
+      | { kind: "edit"; text: string }
+      | { kind: "remove" }
+      | { kind: "steer" },
+  ): Promise<void> {
+    const api = this.requireApi();
+    const wire =
+      action.kind === "edit"
+        ? { kind: "edit", content: [{ type: "text", text: action.text }] as never }
+        : { kind: action.kind };
+    const r = await api.sessions.updateQueue({ sessionId, itemId, action: wire as never });
+    if (!r.result.ok) {
+      this.set({ error: `队列操作失败: ${r.result.error.code}: ${r.result.error.message}` });
+    }
+    // 成功后由 session/queue 全量快照帧驱动 UI 更新
   }
 
   /**
@@ -617,7 +776,7 @@ class AppStore {
       history.set(sessionId, r.result.value.events);
       const patch: Partial<AppState> = { history };
       // 会话权限投影（tail 页 projections.values.permissions）
-      const proj = r.result.value.projections as { values?: Record<string, unknown> } | undefined;
+      const proj = r.result.value.projections as { asOfSeq?: number; values?: Record<string, unknown> } | undefined;
       const perm = proj?.values?.permissions as PermissionSelect | undefined;
       if (perm) {
         const m = new Map(this.state.sessionPermissions);
@@ -625,6 +784,12 @@ class AppStore {
         patch.sessionPermissions = m;
       }
       this.set(patch);
+      // 投影基线播种：tail 页 asOfSeq 之下全量入投影存储（higher-seq-wins 防回退）
+      if (proj && typeof proj.asOfSeq === "number") {
+        for (const [key, value] of Object.entries(proj.values ?? {})) {
+          this.applyProjection(sessionId, key, value, proj.asOfSeq);
+        }
+      }
     }
   }
 
@@ -1112,6 +1277,214 @@ class AppStore {
     await this.refreshSessions();
   }
 
+  // ---- settings 域补全：describe-all / update / replace / openDocument ----
+
+  /** 读取全部设置命名空间（settings.describe 原始视图）。 */
+  async describeSettings(): Promise<{ writable: boolean; hasDocument: boolean; namespaces: SettingsNamespaceView[] } | null> {
+    const api = this.requireApi();
+    const r = await api.settings.describe({});
+    if (!r.result.ok) {
+      this.set({ error: `读取设置失败: ${r.result.error.code}: ${r.result.error.message}` });
+      return null;
+    }
+    return r.result.value;
+  }
+
+  /** 合并补丁到命名空间用户层（settings.update；secret 字段仅写不读）。 */
+  async updateSettings(ns: string, patch: object, expectedRevision?: number): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.settings.update({ ns, patch, expectedRevision });
+    if (!r.result.ok) {
+      throw new Error(`设置更新被拒绝: ${r.result.error.message || r.result.error.code}`);
+    }
+  }
+
+  /** 整体替换命名空间用户层（settings.replace；section={} 即恢复默认）。 */
+  async replaceSettings(ns: string, section: object, expectedRevision?: number): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.settings.replace({ ns, section, expectedRevision });
+    if (!r.result.ok) {
+      throw new Error(`设置重置被拒绝: ${r.result.error.message || r.result.error.code}`);
+    }
+  }
+
+  /** 用系统编辑器打开设置文档（settings.openDocument）。 */
+  async openSettingsDocument(): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.settings.openDocument({}, new AbortController().signal);
+    if (!r.result.ok) {
+      throw new Error(`打开设置文档失败: ${r.result.error.message || r.result.error.code}`);
+    }
+  }
+
+  // ---- workspace 域补全：排序 ----
+
+  /** 工作区显示顺序调整（workspace.insertBefore；anchor 省略=移到末尾）。 */
+  async moveWorkspace(workspaceId: WorkspaceId, beforeWorkspaceId?: WorkspaceId): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.workspace.insertBefore({ workspaceId, beforeWorkspaceId });
+    if (!r.result.ok) {
+      this.set({ error: `工作区排序失败: ${r.result.error.code}: ${r.result.error.message}` });
+      return;
+    }
+    await this.refreshWorkspaces();
+  }
+
+  /** 会话在工作区内手动排序（workspace.insertSessionBefore）。 */
+  async moveSessionInWorkspace(workspaceId: WorkspaceId, sessionId: SessionId, beforeSessionId?: SessionId): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.workspace.insertSessionBefore({ workspaceId, sessionId, beforeSessionId });
+    if (!r.result.ok) {
+      this.set({ error: `会话排序失败: ${r.result.error.code}: ${r.result.error.message}` });
+      return;
+    }
+    await this.refreshWorkspaces();
+    await this.refreshSessions();
+  }
+
+  // ---- host 域补全：openPath ----
+
+  /** 用系统默认程序打开路径（host.openPath，资源管理器/编辑器）。 */
+  async openPath(path: string): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.host.openPath({ path }, new AbortController().signal);
+    if (!r.result.ok) {
+      throw new Error(`打开路径失败: ${r.result.error.message || r.result.error.code}`);
+    }
+  }
+
+  // ---- subagent 域：list / history / prompt / interrupt ----
+
+  /** 加载父会话的直接子代理目录（subagent.list）。 */
+  async loadSubagents(parentSessionId: SessionId): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.subagents.list({ parentSessionId });
+    if (!r.result.ok) {
+      this.set({ error: `读取子代理失败: ${r.result.error.code}: ${r.result.error.message}` });
+      return;
+    }
+    const m = new Map(this.state.subagentCatalogs);
+    m.set(parentSessionId, r.result.value);
+    this.set({ subagentCatalogs: m });
+  }
+
+  /** 读取子代理历史（subagent.history；mode 取自目录行）。 */
+  async loadSubagentHistory(parentSessionId: SessionId, childSessionId: SessionId, mode: "one-shot" | "continuable"): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.subagents.history({
+      parentSessionId,
+      childSessionId,
+      mode,
+      maxMessages: 100,
+    });
+    if (!r.result.ok) {
+      this.set({ error: `读取子代理记录失败: ${r.result.error.code}: ${r.result.error.message}` });
+      return;
+    }
+    const m = new Map(this.state.subagentHistories);
+    m.set(childSessionId, r.result.value.events);
+    this.set({ subagentHistories: m });
+  }
+
+  /** 向可继续子代理发送人类消息（subagent.prompt；仅 continuable）。 */
+  async promptSubagent(parentSessionId: SessionId, childSessionId: SessionId, text: string): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.subagents.prompt(
+      {
+        parentSessionId,
+        childSessionId,
+        mode: "continuable",
+        content: [{ type: "text", text }] as never,
+      },
+      new AbortController().signal,
+    );
+    if (!r.result.ok) {
+      this.set({ error: `子代理消息失败: ${r.result.error.code}: ${r.result.error.message}` });
+    }
+  }
+
+  /** 中断运行中的可继续子代理当前回合（subagent.interrupt；仅 continuable）。 */
+  async interruptSubagent(parentSessionId: SessionId, childSessionId: SessionId): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.subagents.interrupt({ parentSessionId, childSessionId, mode: "continuable" });
+    if (!r.result.ok) {
+      this.set({ error: `中断子代理失败: ${r.result.error.code}: ${r.result.error.message}` });
+    }
+  }
+
+  // ---- skill 域：list ----
+
+  /** 加载会话项目的技能目录（skill.list；调用即 /name 触发）。 */
+  async loadSkills(sessionId: SessionId): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.skills.list({ sessionId });
+    if (!r.result.ok) {
+      this.set({ skills: null, error: `读取技能失败: ${r.result.error.code}: ${r.result.error.message}` });
+      return;
+    }
+    this.set({ skills: [...r.result.value.skills] });
+  }
+
+  // ---- goal 域：create / edit / pause / resume / complete / clear ----
+  // 读侧走 goal 投影（projections.goal），变更经 mux 的 session/projection 帧回推 UI。
+
+  /** 当前会话目标视图（投影存储读取；null=无目标）。 */
+  currentGoal(sessionId: SessionId): { goal: { id: string; revision: number; objective: string; phase: string; maxGoalRounds: number }; roundsStarted: number } | null {
+    const v = this.state.projections.get(sessionId)?.["goal"]?.value as
+      | { goal: { id: string; revision: number; objective: string; phase: string; maxGoalRounds: number }; roundsStarted: number }
+      | null
+      | undefined;
+    return v && v.goal ? v : null;
+  }
+
+  async goalCreate(sessionId: SessionId, objective: string, maxGoalRounds?: number): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.goals.create({ sessionId, objective, maxGoalRounds });
+    if (!r.result.ok) {
+      this.set({ error: `创建目标失败: ${r.result.error.code}: ${r.result.error.message}` });
+    }
+  }
+
+  async goalEdit(sessionId: SessionId, ref: GoalRef, objective?: string, maxGoalRounds?: number): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.goals.edit({ sessionId, ref, objective, maxGoalRounds });
+    if (!r.result.ok) {
+      this.set({ error: `编辑目标失败: ${r.result.error.code}: ${r.result.error.message}` });
+    }
+  }
+
+  async goalPause(sessionId: SessionId, ref: GoalRef): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.goals.pause({ sessionId, ref });
+    if (!r.result.ok) {
+      this.set({ error: `暂停目标失败: ${r.result.error.code}: ${r.result.error.message}` });
+    }
+  }
+
+  async goalResume(sessionId: SessionId, ref: GoalRef): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.goals.resume({ sessionId, ref });
+    if (!r.result.ok) {
+      this.set({ error: `恢复目标失败: ${r.result.error.code}: ${r.result.error.message}` });
+    }
+  }
+
+  async goalComplete(sessionId: SessionId, ref: GoalRef): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.goals.complete({ sessionId, ref });
+    if (!r.result.ok) {
+      this.set({ error: `完成目标失败: ${r.result.error.code}: ${r.result.error.message}` });
+    }
+  }
+
+  async goalClear(sessionId: SessionId, ref: GoalRef): Promise<void> {
+    const api = this.requireApi();
+    const r = await api.goals.clear({ sessionId, ref });
+    if (!r.result.ok) {
+      this.set({ error: `清除目标失败: ${r.result.error.code}: ${r.result.error.message}` });
+    }
+  }
+
   selectSession(sessionId: SessionId | null): void {
     this.set({ selectedSessionId: sessionId });
     if (sessionId && this.state.api) {
@@ -1122,6 +1495,11 @@ class AppStore {
 
   setNotice(notice: string | null): void {
     this.set({ notice });
+  }
+
+  /** 置位待插入输入框的技能名（会话功能坞「技能」子tab 点击技能时调用；WorkSessionView 消费后调用 setSkillInsert(null) 清空）。 */
+  setSkillInsert(name: string | null): void {
+    this.set({ pendingSkillInsert: name });
   }
 
   setError(error: string | null): void {

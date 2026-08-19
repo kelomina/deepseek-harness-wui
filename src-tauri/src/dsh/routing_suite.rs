@@ -182,10 +182,12 @@ fn runtime_node_modules_root(app: &tauri::AppHandle, cfg: &DshConfig) -> Result<
 #[cfg(windows)]
 fn make_junction(link: &Path, target: &Path) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
+    // mklink 是 cmd 内置命令，不接受正斜杠路径（如 `@deepseek-ai/pkg` join 后
+    // 保留 `/`），统一规范为反斜杠，否则报「无效目录」导致链接静默建不成
+    let link_s = link.to_string_lossy().replace('/', "\\");
+    let target_s = target.to_string_lossy().replace('/', "\\");
     let out = std::process::Command::new("cmd")
-        .args(["/C", "mklink", "/J"])
-        .arg(link)
-        .arg(target)
+        .args(["/C", "mklink", "/J", &link_s, &target_s])
         .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
         .output()
         .map_err(|e| format!("创建 junction 失败: {e}"))?;
@@ -239,6 +241,52 @@ fn ensure_injector_links(runtime_nm: &Path, injector_dir: &Path) -> Result<Vec<S
         lines.push(format!("  - {link} → {}（junction）", target.display()));
     }
     Ok(lines)
+}
+
+/// 修复缺失的注入器依赖 junction：全部存在时返回 Ok(None)（无事可做），
+/// 有缺失时重建并返回 Ok(Some(说明行))。仅做文件系统检查，不跑 dsh CLI。
+pub(crate) fn repair_injector_links(
+    runtime_nm: &Path,
+    injector_dir: &Path,
+) -> Result<Option<Vec<String>>, String> {
+    let nm = injector_dir.join("node_modules");
+    let any_missing = INJECTOR_LINK_PAIRS
+        .iter()
+        .any(|(link, _)| !nm.join(link).exists());
+    if !any_missing {
+        return Ok(None);
+    }
+    ensure_injector_links(runtime_nm, injector_dir).map(Some)
+}
+
+/// dsh 启动前自愈：套装已安装但注入器依赖 junction 缺失时重建。
+/// 背景：pnpm `link:` 装配只登记 profile，注入器裸导入（schemastery 等）依赖
+/// injector/node_modules 里的 junction；链接被清（git clean / 手动删除 /
+/// 安装中途失败）会导致 dsh 启动即失败且报错晦涩（ERR_MODULE_NOT_FOUND）。
+/// 轻量信号：`$DSH_HOME/.agent-presets/<PRESET_ID>` 存在 ≈ 套装已安装
+/// （安装同时写入注入器与预设、卸载同时移除两者；信号误报只会多建几个
+/// 不被使用的 junction，无功能影响）。
+pub fn heal_injector_links_if_needed(
+    app: &tauri::AppHandle,
+    cfg: &DshConfig,
+) -> Result<Option<Vec<String>>, String> {
+    let root = match resolve_suite_root(app) {
+        Ok(r) => r,
+        Err(_) => return Ok(None), // vendored 套装不存在：无套装可自愈
+    };
+    let injector_dir = root.join("injector");
+    if !injector_dir.join("lib").join("index.js").is_file() {
+        return Ok(None);
+    }
+    let preset_installed = crate::dsh::plugins::dsh_home(cfg)
+        .join(".agent-presets")
+        .join(PRESET_ID)
+        .exists();
+    if !preset_installed {
+        return Ok(None);
+    }
+    let runtime_nm = runtime_node_modules_root(app, cfg)?;
+    repair_injector_links(&runtime_nm, &injector_dir)
 }
 
 /// Best-effort cleanup of the injector junctions (unlink only, never the target).
@@ -433,6 +481,44 @@ mod tests {
         // remove_dir unlinks the junction only; the target must survive
         std::fs::remove_dir(&link).unwrap();
         assert!(target.join("f.txt").is_file(), "target must survive unlink");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn repair_recreates_missing_junctions_and_is_idempotent() {
+        let base = std::env::temp_dir().join(format!("dsh-routing-suite-repair-{}", timestamp_ms()));
+        let runtime_nm = base.join("runtime").join("node_modules");
+        let injector_dir = base.join("injector");
+        // 伪造 runtime：每个 link 目标（@deepseek-ai/<pkg>）都带 marker 文件
+        for (_, target_rel) in INJECTOR_LINK_PAIRS {
+            let t = runtime_nm.join(target_rel);
+            std::fs::create_dir_all(&t).unwrap();
+            std::fs::write(t.join("marker.txt"), "ok").unwrap();
+        }
+        // 伪造注入器（lib/index.js 存在即可）
+        std::fs::create_dir_all(injector_dir.join("lib")).unwrap();
+        std::fs::write(injector_dir.join("lib").join("index.js"), "// stub").unwrap();
+
+        // 1) 全缺 → 修复 → Some，且所有链接可见目标内容
+        let r1 = repair_injector_links(&runtime_nm, &injector_dir).unwrap();
+        assert!(r1.is_some(), "missing links should trigger repair");
+        for (link, _) in INJECTOR_LINK_PAIRS {
+            assert!(
+                injector_dir.join("node_modules").join(link).join("marker.txt").is_file(),
+                "link {link} should expose target marker"
+            );
+        }
+        // 2) 再跑 → None（幂等，无事可做）
+        let r2 = repair_injector_links(&runtime_nm, &injector_dir).unwrap();
+        assert!(r2.is_none(), "all links present should be a no-op");
+        // 3) 删一个链接 → 再修复 → Some 且恢复
+        let victim = injector_dir.join("node_modules").join("schemastery");
+        std::fs::remove_dir(&victim).unwrap();
+        let r3 = repair_injector_links(&runtime_nm, &injector_dir).unwrap();
+        assert!(r3.is_some(), "single missing link should trigger repair");
+        assert!(victim.join("marker.txt").is_file(), "victim link restored");
+
         let _ = std::fs::remove_dir_all(&base);
     }
 }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { SessionSummary } from "@deepseek-ai/dsh-host-apiproxy/api";
 import { useAppState, appStore } from "../lib/dsh/store";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
@@ -32,7 +32,34 @@ export function Sidebar({
   const [ctx, setCtx] = useState<{ x: number; y: number; id: SessionId } | null>(null);
   const [renameCtx, setRenameCtx] = useState<{ id: SessionId; title: string } | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
-  const { pinnedSessions, workspaces, archivedSessionIds, sessionTitles } = useAppState();
+  const [searchDraft, setSearchDraft] = useState("");
+  const debounceRef = useRef<number | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const { pinnedSessions, workspaces, archivedSessionIds, sessionTitles, searchResults, searching } = useAppState();
+  // 搜索输入防抖（400ms）：空值即清除结果
+  useEffect(() => {
+    if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    debounceRef.current = window.setTimeout(() => {
+      void appStore.searchSessions(searchDraft);
+    }, 400);
+    return () => {
+      if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    };
+  }, [searchDraft]);
+  // `/` 快捷键聚焦搜索框：不在输入控件中、且搜索框为空（非空时豁免聚焦，避免打断正在进行的搜索）才接管
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "/") return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const el = document.activeElement;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT")) return;
+      if (searchDraft) return;
+      e.preventDefault();
+      searchRef.current?.focus();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [searchDraft]);
   // 归档（移除）的会话不再显示在左侧列表；dsh 的 sessions.list 会返回全部会话，需用归档集合过滤
   const visible = sessions.filter((s) => !archivedSessionIds.includes(s.sessionId));
   const pinned = visible.filter((s) => pinnedSessions.includes(s.sessionId));
@@ -91,6 +118,15 @@ export function Sidebar({
       </div>
     );
   };
+  // 会话在工作区手动顺序中的上移/下移（workspace.insertSessionBefore）
+  const moveSession = (id: SessionId, dir: -1 | 1) => {
+    const ws = workspaces.find((w) => w.sessionIds.includes(id));
+    if (!ws) return;
+    const idx = ws.sessionIds.indexOf(id);
+    const anchor = dir === -1 ? ws.sessionIds[idx - 1] : ws.sessionIds[idx + 2];
+    void appStore.moveSessionInWorkspace(ws.workspaceId, id, anchor);
+  };
+  const canMoveSession = (id: SessionId): boolean => workspaces.some((w) => w.sessionIds.includes(id));
   return (
     <aside className="sidebar">
       <div className="mode-tabs">
@@ -101,6 +137,44 @@ export function Sidebar({
         <button className={`nav-item${view === "welcome" ? " active" : ""}`} onClick={() => onNavigate("welcome")}>＋ 新建任务</button>
         <button className="nav-item" title="自动化（开发中）">自动化</button>
       </nav>
+      <div className="search-box">
+        <input
+          ref={searchRef}
+          className="search-input"
+          placeholder="搜索会话内容…"
+          value={searchDraft}
+          onChange={(e) => setSearchDraft(e.currentTarget.value)}
+        />
+        {searchDraft && (
+          <button className="search-clear" title="清除" onClick={() => { setSearchDraft(""); appStore.clearSearch(); }}>×</button>
+        )}
+      </div>
+      {searchResults && (
+        <div className="side-block search-results">
+          <div className="side-head">
+            <span>{searching ? "搜索中…" : `搜索结果（${searchResults.items.length}${searchResults.hasMore ? "，更多未显示" : ""}）`}</span>
+          </div>
+          {searchResults.items.length === 0 && <div className="empty-state" style={{ padding: "6px 4px", textAlign: "left" }}>无匹配会话，试试更短的关键词</div>}
+          {searchResults.items.map((it) => {
+            const s = sessions.find((x) => x.sessionId === it.sessionId);
+            return (
+              <button
+                key={it.sessionId}
+                className="task-item"
+                onClick={() => {
+                  onSelectSession(it.sessionId);
+                  setSearchDraft("");
+                  appStore.clearSearch();
+                }}
+              >
+                <span className={`dot${s?.running ? " green" : ""}`} />
+                <span className="t-title">{s ? (displayTitle(s, sessionTitles) ?? it.sessionId.slice(0, 8)) : it.sessionId.slice(0, 8)}</span>
+                <span className="t-time" style={{ maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.snippet}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
       <div className="side-block">
         <div className="side-head" onClick={() => setPinnedOpen((v) => !v)}>
           <span>置顶</span><span className="arrow">{pinnedOpen ? "▾" : "›"}</span>
@@ -140,6 +214,12 @@ export function Sidebar({
             >
               重命名
             </button>
+            {canMoveSession(ctx.id) && (
+              <>
+                <button className="mm-item" onClick={() => { moveSession(ctx.id, -1); setCtx(null); }}>在工作区内上移</button>
+                <button className="mm-item" onClick={() => { moveSession(ctx.id, 1); setCtx(null); }}>在工作区内下移</button>
+              </>
+            )}
             <button
               className="mm-item"
               onClick={() => {
@@ -184,7 +264,7 @@ export function Sidebar({
           <span className="t-time">{status?.port ?? "-"}</span>
         </button>
         <button className={`nav-item${view === "workspaces" ? " active" : ""}`} onClick={() => onNavigate("workspaces")}>工作区</button>
-        <button className={`nav-item${view === "settings" ? " active" : ""}`} onClick={() => onNavigate("settings")}>设置 · API Key</button>
+        <button className={`nav-item${view === "settings" ? " active" : ""}`} onClick={() => onNavigate("settings")}>设置</button>
       </div>
     </aside>
   );

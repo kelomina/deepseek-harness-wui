@@ -47,7 +47,7 @@
   /* 主区 */
   .main{flex:1;min-width:0;min-height:0;background:var(--panel);border-radius:12px 12px 0 0;overflow:hidden}
   .view{display:none;padding:48px clamp(20px,4vw,40px);justify-content:center;overflow:auto}
-  .view.active{display:flex;height:100%}
+  .view.active{display:flex;height:100%;position:relative}
   .col{display:flex;flex-direction:column;width:100%}
   .view-cap{font-size:12px;color:var(--text-3);margin-bottom:28px}
 
@@ -444,3 +444,165 @@ input,textarea,.composer-input{user-select:text;-webkit-user-select:text}
 .cot-warning{display:flex;align-items:center;gap:8px;border:1px solid #e0b184;background:#fdf4e7;border-radius:8px;padding:6px 10px;font-size:12px;color:#7a4a12;margin-bottom:8px}
 .cot-warning-icon{flex:none}
 .cot-warning-text{flex:1;line-height:1.6}
+
+/* ===== 汉堡菜单 ===== */
+.hamburger-top-right{position:absolute;top:16px;right:20px;z-index:50}
+.hamburger-wrap{position:relative}
+
+/* ===== ToolDock 侧边面板（类似 chat-pane） ===== */
+.tool-dock{position:absolute;top:12px;right:12px;bottom:12px;width:320px;z-index:100;display:flex;flex-direction:column;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,.1);overflow:hidden}
+.td-head{flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 8px 0 12px;height:36px;border-bottom:1px solid var(--border);background:var(--panel)}
+.td-tabs{display:flex;align-items:center;gap:2px}
+.td-tabs .t-tab{padding:4px 8px;font-size:12px;border-radius:6px;cursor:pointer;color:var(--text-2)}
+.td-tabs .t-tab.on{background:var(--card);color:var(--text);font-weight:500}
+.td-close{flex:none;width:24px;height:24px;border-radius:6px;font-size:16px;color:var(--text-2);display:flex;align-items:center;justify-content:center}
+.td-close:hover{background:#e0e0e4}
+.td-body{flex:1;min-height:0;overflow:hidden;padding:8px;display:flex;flex-direction:column}
+.td-body .tools-col{flex:1;min-height:0;max-height:none;height:auto;border:none;background:transparent}
+.td-body .tools-body{max-height:none;flex:1;min-height:0;overflow:auto;height:100%}
+.td-body .tv-list{max-height:none;flex:1;min-height:0}
+.td-body .tv-file{display:flex;flex-direction:column;flex:1;min-height:0}
+
+/* 工具交互面板（终端/浏览器/Git） */
+.tp-wrap{display:flex;flex-direction:column;gap:6px;height:100%;min-height:0}
+.tp-input-row{display:flex;align-items:center;gap:6px}
+.tp-prompt{flex:none;font-size:11.5px;color:var(--text-3);min-width:28px}
+.tp-cmd{flex:1;min-width:0}
+.tp-cwd{flex:1;min-width:0;font-size:12px}
+.tp-records{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:6px}
+.tp-commit-row{display:flex;gap:6px;align-items:center;border-top:1px solid var(--border);padding-top:8px}
+.tp-commit-row .input{flex:1;min-width:0}
+.hamburger-btn{display:flex;align-items:center;justify-content:center;width:32px;height:32px;border:1px solid var(--border);background:var(--card);border-radius:8px;cursor:pointer;padding:0}
+.hamburger-btn:hover{border-color:var(--accent)}
+.hamburger-icon,.hamburger-icon::before,.hamburger-icon::after{display:block;width:16px;height:2px;background:var(--text-2);border-radius:1px;transition:all .15s}
+.hamburger-icon{position:relative}
+.hamburger-icon::before{content:"";position:absolute;top:-5px;left:0}
+.hamburger-icon::after{content:"";position:absolute;top:5px;left:0}
+.hamburger-menu{position:absolute;right:0;top:calc(100% + 6px);z-index:200;min-width:200px;background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.12);padding:4px}
+.hm-item{display:grid;grid-template-columns:auto 1fr;grid-template-rows:auto auto;column-gap:10px;row-gap:2px;width:100%;padding:10px 12px;border-radius:8px;border:0;background:transparent;text-align:left;cursor:pointer;font-family:inherit}
+.hm-item:hover{background:var(--bg-hover)}
+.hm-icon{grid-row:1 / span 2;align-self:center;font-size:16px;width:20px;text-align:center}
+.hm-label{font-size:13px;color:var(--text);font-weight:500}
+.hm-desc{font-size:11px;color:var(--text-3)}
+
+/* ===== CotSettings 友好规则卡片 ===== */
+.cot-rule-item{border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px}
+.cot-rule-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.cot-rule-title{font-size:13px;font-weight:600;color:var(--text)}
+.cot-rule-desc{font-size:12px;color:var(--text-3);line-height:1.6;margin-top:4px}
+.cot-advanced-toggle{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-2);cursor:pointer;border:1px solid var(--border);border-radius:8px;padding:7px 12px;background:var(--card);width:fit-content;margin-top:8px}
+.cot-advanced-toggle:hover{border-color:var(--accent)}
+.cot-advanced-toggle .caret{font-size:10px;transition:transform .15s}
+.cot-advanced-toggle.open .caret{transform:rotate(90deg)}
+
+/* ===== 侧边栏会话搜索 ===== */
+.search-box{position:relative;margin:8px 8px 4px}
+.search-input{width:100%;padding:6px 26px 6px 10px;font-size:12px;border-radius:8px}
+.search-clear{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:20px;height:20px;border-radius:6px;color:var(--text-3);font-size:13px;line-height:1}
+.search-clear:hover{background:var(--bg-hover);color:var(--text)}
+.search-results{border-bottom:1px solid var(--border);padding-bottom:6px}
+.search-results .side-head{cursor:default}
+
+/* ===== 目标栏（goal 域投影） ===== */
+.goal-bar{display:flex;align-items:center;gap:8px;padding:6px 14px;border-bottom:1px solid var(--border);background:var(--card);min-height:34px}
+.goal-bar-empty{justify-content:flex-start}
+.goal-add{font-size:12px;color:var(--text-2)}
+.goal-add:hover{color:var(--accent)}
+.goal-input{flex:1;min-width:120px;padding:4px 10px;font-size:12px;border-radius:6px}
+.goal-objective{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:500}
+.goal-rounds{font-size:12px;color:var(--text-3);white-space:nowrap}
+.goal-act{display:inline-flex;gap:10px;white-space:nowrap;font-size:12px}
+
+/* ===== 队列坞 + 后台任务 ===== */
+.queue-dock{border-top:1px solid var(--border);background:var(--panel);max-height:180px;overflow:auto;padding:6px 14px}
+.queue-section{margin-bottom:6px}
+.queue-head{font-size:12px;font-weight:600;color:var(--text-2);margin:2px 0 4px}
+.queue-item{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px}
+.queue-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.queue-kind{color:var(--text-3);white-space:nowrap}
+.queue-detail{color:var(--text-3);white-space:nowrap}
+
+/* ===== 附件 chips ===== */
+.attach-chips{display:flex;flex-wrap:wrap;gap:6px;padding:8px 8px 0}
+.attach-chip{position:relative;width:44px;height:44px;border:1px solid var(--border);border-radius:8px;overflow:visible}
+.attach-chip img{width:100%;height:100%;object-fit:cover;border-radius:7px}
+.attach-x{position:absolute;top:-6px;right:-6px;width:16px;height:16px;border-radius:50%;background:var(--red);color:#fff;font-size:10px;line-height:16px;text-align:center}
+
+/* ===== 子代理面板 ===== */
+.sa-modal{width:min(680px,92vw);max-height:80vh;overflow:auto}
+.sa-row{border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px}
+.sa-line{display:flex;align-items:center;gap:8px}
+.sa-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:500}
+.sa-prompt{display:flex;gap:6px;margin-top:8px}
+.sa-hist{margin-top:8px;border-top:1px dashed var(--border);padding-top:6px;max-height:220px;overflow:auto}
+.sa-hist-row{font-size:12px;padding:2px 0;white-space:pre-wrap;word-break:break-word}
+.sa-hist-user{color:var(--accent)}
+.sa-hist-asst{color:var(--text)}
+.sa-hist-tool{color:var(--text-3);font-family:ui-monospace,Consolas,monospace}
+
+/* ===== 技能菜单 ===== */
+.skills-wrap{position:relative}
+.skills-menu{min-width:280px;max-height:300px;overflow:auto}
+.mm-title{font-size:11px;color:var(--text-3);padding:6px 12px 4px}
+.mm-name{font-weight:600;white-space:nowrap}
+.mm-desc{color:var(--text-3);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:180px}
+
+/* ===== 工作区排序按钮 ===== */
+.ws-order{display:inline-flex;gap:4px}
+.ws-order .btn{padding:2px 6px}
+
+/* ===== 会话头部入口工具栏（.ent-*） ===== */
+.ent-bar{display:flex;align-items:center;gap:4px;flex:none}
+.ent-btn{position:relative;display:flex;align-items:center;gap:5px;padding:4px 9px;border:1px solid var(--border);background:#fff;border-radius:8px;font-size:12px;color:var(--text-2);cursor:pointer;white-space:nowrap}
+.ent-btn:hover{border-color:var(--accent);color:var(--text)}
+.ent-btn.dim{color:var(--text-3)}
+.ent-btn.dim .ent-ico,.ent-btn.dim{opacity:.75}
+.ent-ico{font-size:11px}
+.ent-btn:hover .ent-ico{color:var(--accent)}
+/* 数字角标：相对按钮定位，右上角小圆点 */
+.ent-badge{position:absolute;top:-6px;right:-4px;min-width:15px;height:15px;padding:0 4px;border-radius:999px;font-size:9.5px;line-height:15px;text-align:center;font-weight:600;color:#fff}
+.ent-badge.red{background:var(--red)}
+.ent-badge.green{background:var(--green)}
+/* 目标状态小圆点 */
+.ent-dot{flex:none;width:7px;height:7px;border-radius:50%}
+.ent-dot.green{background:var(--green)}
+
+/* ===== 管理页入口按钮收口（mgmt-* / ws-order-btn） ===== */
+/* 通用管理页按钮组：icon+文字、细边框、8px 圆角，primary 为 accent 填充 */
+.mgmt-actions{display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap}
+.mgmt-btn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border:1px solid var(--border);background:#fff;border-radius:8px;font-size:12.5px;line-height:1;color:var(--text-2);cursor:pointer;white-space:nowrap;transition:border-color .12s}
+.mgmt-btn .ico{font-size:12px;line-height:1}
+.mgmt-btn:hover{border-color:var(--accent);color:var(--text)}
+.mgmt-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.mgmt-btn.primary:hover{filter:brightness(1.05);color:#fff}
+.mgmt-btn:disabled{opacity:.4;cursor:default}
+/* 工作区排序：小号图标按钮，固定宽高、hover 反馈、disabled 灰 */
+.ws-order-btn{width:26px;height:26px;padding:0;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);background:#fff;border-radius:8px;font-size:13px;line-height:1;color:var(--text-2);cursor:pointer}
+.ws-order-btn:hover{border-color:var(--accent);color:var(--accent)}
+.ws-order-btn:disabled{opacity:.35;cursor:default;color:var(--text-3)}
+.ent-dot.orange{background:var(--orange)}
+.ent-dot.gray{background:var(--text-3)}
+
+/* ===== 会话功能坞（.sd-*） ===== */
+.sd-panel{flex:1;min-height:0;display:flex;flex-direction:column;gap:8px}
+.sd-seg{flex:none;display:flex;align-items:center;gap:2px;background:#e6e6eb;border-radius:8px;padding:2px}
+.sd-seg-item{flex:1;padding:4px 6px;border-radius:6px;font-size:11.5px;color:var(--text-2);text-align:center;cursor:pointer;white-space:nowrap}
+.sd-seg-item:hover{color:var(--text)}
+.sd-seg-item.on{background:var(--card);color:var(--text);font-weight:500;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.sd-body{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:8px}
+.sd-pane-title{font-size:11px;color:var(--text-3);padding:2px 2px 4px;flex:none}
+/* 目标面板：去掉整行 border-bottom 残留，改为面板内卡片 */
+.sd-body .goal-bar{border:1px solid var(--border);border-bottom:1px solid var(--border);border-radius:8px;min-height:0;margin:0}
+.sd-body .goal-bar-empty{border:1px dashed var(--border)}
+/* 队列面板：内嵌卡片化 */
+.sd-body .queue-dock{border:1px solid var(--border);border-radius:8px;background:transparent;max-height:none;overflow:visible;padding:6px 10px}
+/* 子代理面板：内嵌（无 modal-mask / modal 外壳） */
+.sd-subagents{display:flex;flex-direction:column;gap:8px;min-height:0;flex:1}
+.sd-subagents-inner{display:flex;flex-direction:column;gap:4px;min-height:0;overflow:auto;flex:1}
+.sd-subagents-inner h4{font-size:13px;margin-bottom:2px}
+/* 技能列表 */
+.sd-skills{display:flex;flex-direction:column;gap:4px}
+.sd-skill{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--card);text-align:left;cursor:pointer}
+.sd-skill:hover{border-color:var(--accent);background:var(--panel)}
+.sd-skill-name{font-size:12.5px;font-weight:600;color:var(--accent)}
+.sd-skill-desc{font-size:11px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}

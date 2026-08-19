@@ -11,10 +11,16 @@
 
 /** 默认保守规则（可配置）。命中表示「思维链可能异常」，不是模型身份结论。 */
 export const DEFAULT_COT_RULES: string[] = [
-  // 高频模板化开头/重复占位，通常与低质量推理相关（保守：必须同时命中长度信号才提示）
+  // 中文高频模板化开头/重复占位
   "(?:好的|好的，|好的 我来|首先|我们|接下来).{0,12}(?:分析|解决|处理|回答|进行).{0,20}(?:这个问题|这个任务|需求|问题)",
-  // 思维链中出现「我不能」式拒绝/绕行且伴随自我指涉模板
+  // 中文"让我……"式模板化开头（低质量推理信号）
+  "(?:让我|让我来|让我先).{0,14}(?:想想|分析|梳理|整理|确认|看看|考虑).{0,16}(?:一下|这个|一下这|清楚|一下这个问题)",
+  // 中文思维链中出现「我不能」式拒绝/绕行且伴随自我指涉模板
   "我不能(?:直接|完全|提供|给出|告诉).{0,24}(?:建议|答案|结果|内容)",
+  // 英文高频模板化开头（Let's / Let me）
+  "(?:Let's|Let me|Let me first|Alright,? let's|Okay,? let's|Sure,? let me).{0,18}(?:think|analyze|look|figure|sort|walk|break|review|start).{0,18}(?:about|this|through|down|through this)",
+  // 英文拒绝/绕行模板
+  "I (?:can't|cannot|can not|am not able to|am unable to).{0,24}(?:directly|fully|completely|exactly).{0,24}(?:provide|give|offer|share|deliver).{0,24}(?:answer|solution|result|content|advice)",
 ];
 
 export interface CotDetectConfig {

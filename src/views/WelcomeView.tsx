@@ -4,15 +4,18 @@ import { ModelMenu } from "../components/ModelMenu";
 import { WorkspaceMenu } from "../components/WorkspaceMenu";
 import { AgentPresetChip } from "../components/AgentPresetChip";
 import { PermissionMenu } from "../components/PermissionMenu";
+import { HamburgerMenu, type ToolTab } from "../components/HamburgerMenu";
 
 export function WelcomeView({
   mode,
   onEnterSession,
   onOpenSettings,
+  onOpenToolDock,
 }: {
   mode: "work" | "code";
   onEnterSession: () => void;
   onOpenSettings: () => void;
+  onOpenToolDock: (tab: ToolTab) => void;
 }) {
   const { connected } = useAppState();
   const [draft, setDraft] = useState("");
@@ -30,6 +33,9 @@ export function WelcomeView({
 
   return (
     <section className="view active" id="view-welcome">
+      <div className="hamburger-top-right">
+        <HamburgerMenu onOpenTool={onOpenToolDock} />
+      </div>
       <div className="col col-welcome">
         <h1 className="hero">
           <span className="logo">{mode === "work" ? "|>_" : "</>"}</span>

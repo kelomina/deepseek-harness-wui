@@ -32,6 +32,8 @@ interface ProviderEdit {
   baseURL: string;
   models: ModelRow[];
   keyDraft: string;
+  /** 命名空间 CAS 修订号（settings.update/replace 的 expectedRevision）。 */
+  rev?: number;
 }
 
 function buildModels(edit: ProviderEdit): Array<{ id: string; name: string; contextWindow?: number }> {
@@ -54,42 +56,133 @@ function buildModels(edit: ProviderEdit): Array<{ id: string; name: string; cont
   }
   return out;
 }
+/** 内置检测规则预设：用户友好描述 + 对应正则 */
+const COT_RULE_PRESETS: Array<{ pattern: string; title: string; desc: string }> = [
+  {
+    pattern: DEFAULT_COT_RULES[0],
+    title: "中文模板化开头",
+    desc: "检测中文思维链是否以高频模板化语句开头（如「好的，我来分析这个问题」），通常与低质量推理相关。",
+  },
+  {
+    pattern: DEFAULT_COT_RULES[1],
+    title: "中文「让我……」式模板",
+    desc: "检测中文思维链中「让我想想/分析一下这个问题」等模板化开头，是低质量推理的保守信号。",
+  },
+  {
+    pattern: DEFAULT_COT_RULES[2],
+    title: "中文拒绝/绕行模式",
+    desc: "检测中文思维链中是否出现「我不能直接/完全提供…」式拒绝并伴随自我指涉模板。",
+  },
+  {
+    pattern: DEFAULT_COT_RULES[3],
+    title: "English templated opening（Let's/Let me）",
+    desc: "Catches English low-quality openings like \"Let's think about this problem\", \"Let me analyze this\" etc.",
+  },
+  {
+    pattern: DEFAULT_COT_RULES[4],
+    title: "English refusal / deflection",
+    desc: "Catches English deflection patterns like \"I can't directly provide the answer\", \"I am unable to exactly give you the solution\" etc.",
+  },
+];
+
 function CotSettings() {
   const [cfg, setCfg] = useState<CotDetectConfig>(() => loadCotConfig());
-  const [rulesText, setRulesText] = useState(cfg.rules.join("\n"));
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [customRulesText, setCustomRulesText] = useState(
+    (() => {
+      const presetPatterns = new Set(COT_RULE_PRESETS.map((p) => p.pattern));
+      return cfg.rules.filter((r) => !presetPatterns.has(r)).join("\n");
+    })()
+  );
   const [msg, setMsg] = useState<string | null>(null);
 
+  // 某条预设规则是否启用（在 rules 数组中）
+  const isPresetOn = (pattern: string) => cfg.rules.includes(pattern);
+
+  const togglePreset = (pattern: string) => {
+    const next = isPresetOn(pattern)
+      ? cfg.rules.filter((r) => r !== pattern)
+      : [...cfg.rules, pattern];
+    setCfg({ ...cfg, rules: next });
+  };
+
   const save = () => {
-    const rules = rulesText.split("\n").map((r) => r.trim()).filter(Boolean);
-    const next: CotDetectConfig = { enabled: cfg.enabled, rules };
+    const customRules = customRulesText
+      .split("\n")
+      .map((r) => r.trim())
+      .filter(Boolean);
+    const enabledPresets = COT_RULE_PRESETS.filter((p) => isPresetOn(p.pattern)).map((p) => p.pattern);
+    const next: CotDetectConfig = { enabled: cfg.enabled, rules: [...enabledPresets, ...customRules] };
     saveCotConfig(next);
     setCfg(next);
     setMsg("已保存（仅本机 localStorage；默认规则保守，误报/漏报不可避免）");
   };
 
+  const resetToDefault = () => {
+    setCfg({ enabled: cfg.enabled, rules: [...DEFAULT_COT_RULES] });
+    setCustomRulesText("");
+    setMsg(null);
+  };
+
   return (
-    <div className="card">
-      <div className="card-head"><span className="card-title">DeepSeek-V4-Pro 思维链降智检测（启发式提示）</span></div>
-      <div className="f-label">
-        <label style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
-          <input type="checkbox" checked={cfg.enabled} onChange={(e) => setCfg({ ...cfg, enabled: e.currentTarget.checked })} /> 启用检测
-        </label>
+    <div className="card wide">
+      <div className="card-head">
+        <span className="card-title">思维链降智检测</span>
+        <span
+          className={`switch${cfg.enabled ? " on" : ""}`}
+          title={cfg.enabled ? "点击关闭" : "点击启用"}
+          onClick={() => setCfg({ ...cfg, enabled: !cfg.enabled })}
+        />
       </div>
-      <div className="f-label">正则规则（每行一条；非法正则自动跳过）</div>
-      <textarea
-        className="input"
-        style={{ minHeight: 120, fontFamily: "Consolas, monospace", fontSize: 12, whiteSpace: "pre", width: "100%" }}
-        value={rulesText}
-        onChange={(e) => setRulesText(e.currentTarget.value)}
-        placeholder={DEFAULT_COT_RULES.join("\n")}
-      />
-      <div className="hint" style={{ marginTop: 8 }}>
-        {`提示措辞：检测到当前思维链可能异常，存在被路由到低质量模型或生成质量下降的可能。该提示为启发式判断，不代表模型身份结论。\n模型可识别性（V4-Pro 出现在 llm.models / session.models.current）需按 docs/RISKS.md spike 结论；未确认前按假设处理。检测不阻断对话、不改变模型路由。`}
+      <div className="hint" style={{ marginBottom: 12 }}>
+        当会话使用 DeepSeek-V4-Pro 模型时，自动检测思维链是否可能出现质量下降（如模板化输出、拒绝回答等模式）。检测为启发式提示，不阻断对话、不改变模型路由。
       </div>
-      {msg && <div className="hint" style={{ color: "var(--green)" }}>{msg}</div>}
+
+      {cfg.enabled && (
+        <>
+          <div className="f-label">内置检测规则</div>
+          {COT_RULE_PRESETS.map((p) => (
+            <div key={p.pattern} className="cot-rule-item">
+              <div className="cot-rule-head">
+                <span className="cot-rule-title">{p.title}</span>
+                <span
+                  className={`switch${isPresetOn(p.pattern) ? " on" : ""}`}
+                  title={isPresetOn(p.pattern) ? "点击关闭" : "点击启用"}
+                  onClick={() => togglePreset(p.pattern)}
+                />
+              </div>
+              <div className="cot-rule-desc">{p.desc}</div>
+            </div>
+          ))}
+
+          <button
+            className={`cot-advanced-toggle${advancedOpen ? " open" : ""}`}
+            onClick={() => setAdvancedOpen((v) => !v)}
+          >
+            <span className="caret">▶</span>
+            高级：自定义规则
+          </button>
+          {advancedOpen && (
+            <>
+              <div className="hint" style={{ marginTop: 8, marginBottom: 4 }}>
+                每行一条正则表达式（非法正则自动跳过）。仅推荐熟悉正则的高级用户使用。
+              </div>
+              <textarea
+                className="input"
+                style={{ minHeight: 80, fontFamily: "Consolas, monospace", fontSize: 12, whiteSpace: "pre", width: "100%" }}
+                value={customRulesText}
+                onChange={(e) => setCustomRulesText(e.currentTarget.value)}
+                placeholder="例如：(?:自定义模式).{0,20}(?:异常词)"
+              />
+            </>
+          )}
+        </>
+      )}
+
+      {msg && <div className="hint" style={{ color: "var(--green)", marginTop: 8 }}>{msg}</div>}
       <div className="actions">
-        <button className="btn primary" onClick={save}>保存规则</button>
-        <button className="btn" onClick={() => { setRulesText(DEFAULT_COT_RULES.join("\n")); setCfg({ enabled: cfg.enabled, rules: [...DEFAULT_COT_RULES] }); }}>恢复默认</button>
+        <button className="btn primary" onClick={save}>保存设置</button>
+        <button className="btn" onClick={resetToDefault}>恢复默认</button>
       </div>
     </div>
   );
@@ -100,7 +193,7 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
   const [form, setForm] = useState<DshConfig | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
-  const [tab, setTab] = useState<"providers" | "agent" | "plugins" | "dsh" | "runtime" | "wsl" | "assist">("providers");
+  const [tab, setTab] = useState<"providers" | "agent" | "plugins" | "dsh" | "wsl" | "assist">("providers");
   const running = status?.state !== "stopped";
 
   // Agent 模式管理
@@ -263,14 +356,14 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
 
   const installSuite = async () => {
     setSuiteBusy(true);
-    setSuiteMsg(null);
+    setSuiteMsg("正在安装路由套装，写入 dsh profile 与 Agent 预设…（首次安装可能耗时数十秒）");
     setSuiteConfirm(false);
     try {
       const r = await routingSuite.install();
       setSuiteMsg(r);
-      await refreshSuite();
-      await refreshPlugins();
-      if (connected) void appStore.loadAgentPresets();
+      const tasks: Promise<unknown>[] = [refreshSuite(), refreshPlugins()];
+      if (connected) tasks.push(appStore.loadAgentPresets());
+      await Promise.all(tasks);
     } catch (e) {
       setSuiteMsg(String(e));
     } finally {
@@ -280,13 +373,13 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
 
   const removeSuite = async () => {
     setSuiteBusy(true);
-    setSuiteMsg(null);
+    setSuiteMsg("正在卸载路由套装并回滚旧预设…");
     try {
       const r = await routingSuite.remove();
       setSuiteMsg(r);
-      await refreshSuite();
-      await refreshPlugins();
-      if (connected) void appStore.loadAgentPresets();
+      const tasks: Promise<unknown>[] = [refreshSuite(), refreshPlugins()];
+      if (connected) tasks.push(appStore.loadAgentPresets());
+      await Promise.all(tasks);
     } catch (e) {
       setSuiteMsg(String(e));
     } finally {
@@ -315,8 +408,10 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
     let apiKeyEnv = "";
     let baseURL = "";
     let models: ModelRow[] = [];
+    let rev: number | undefined;
     try {
       const info = await appStore.getSettingsNamespace(p.settingsNs);
+      rev = info?.revision;
       const val = info?.value as { apiKeyEnv?: string; models?: unknown[]; providers?: Record<string, { apiKeyEnv?: string; baseURL?: string; models?: unknown[] }> } | undefined;
       if (p.settingsNs === "llm-deepseek") {
         apiKeyEnv = val?.apiKeyEnv ?? "DEEPSEEK_API_KEY";
@@ -340,6 +435,7 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
       baseURL,
       models: models.length ? models : [emptyModelRow()],
       keyDraft: "",
+      rev,
     });
     setFormOpen(true);
   };
@@ -367,37 +463,50 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
 
   const saveProvider = async () => {
     if (!edit) return;
-    const ops: SettingsPathOpView[] = [];
     const ref = edit.apiKeyEnv.trim() || "DEEPSEEK_API_KEY";
     if (edit.ns === "llm-deepseek") {
+      // DeepSeek 官方：扁平命名空间，走 settings.update（补丁合并 + revision CAS）
+      const patch: Record<string, unknown> = {};
       if (edit.apiKeyEnv.trim() && edit.apiKeyEnv.trim() !== "DEEPSEEK_API_KEY") {
-        ops.push({ op: "set", path: ["apiKeyEnv"], value: edit.apiKeyEnv.trim() });
+        patch.apiKeyEnv = edit.apiKeyEnv.trim();
       }
       if (edit.models.some((m) => m.id.trim())) {
         try {
-          ops.push({ op: "set", path: ["models"], value: buildModels(edit) });
+          patch.models = buildModels(edit);
         } catch (e) {
           setProviderMsg(String(e));
           return;
         }
       }
-    } else {
-      const name = (edit.routeKey || edit.displayName).trim();
-      if (!name) {
-        setProviderMsg("需要提供商名称");
+      try {
+        if (Object.keys(patch).length > 0) {
+          await appStore.updateSettings(edit.ns, patch, edit.rev);
+        }
+        if (edit.keyDraft.trim()) await appStore.setCredential(ref, edit.keyDraft.trim());
+        setProviderMsg(`DeepSeek 官方设置已保存（凭据引用 ${ref}）`);
+        setFormOpen(false);
+        await refreshProviders();
+      } catch (e) {
+        setProviderMsg(String(e));
+      }
+      return;
+    }
+    const ops: SettingsPathOpView[] = [];
+    const name = (edit.routeKey || edit.displayName).trim();
+    if (!name) {
+      setProviderMsg("需要提供商名称");
+      return;
+    }
+    const base = ["providers", name];
+    ops.push({ op: "set", path: [...base, "api"], value: edit.api });
+    ops.push({ op: "set", path: [...base, "apiKeyEnv"], value: ref });
+    if (edit.baseURL.trim()) ops.push({ op: "set", path: [...base, "baseURL"], value: edit.baseURL.trim() });
+    if (edit.models.some((m) => m.id.trim())) {
+      try {
+        ops.push({ op: "set", path: [...base, "models"], value: buildModels(edit) });
+      } catch (e) {
+        setProviderMsg(String(e));
         return;
-      }
-      const base = ["providers", name];
-      ops.push({ op: "set", path: [...base, "api"], value: edit.api });
-      ops.push({ op: "set", path: [...base, "apiKeyEnv"], value: ref });
-      if (edit.baseURL.trim()) ops.push({ op: "set", path: [...base, "baseURL"], value: edit.baseURL.trim() });
-      if (edit.models.some((m) => m.id.trim())) {
-        try {
-          ops.push({ op: "set", path: [...base, "models"], value: buildModels(edit) });
-        } catch (e) {
-          setProviderMsg(String(e));
-          return;
-        }
       }
     }
     try {
@@ -480,8 +589,7 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
           <button className={`stab${tab === "providers" ? " on" : ""}`} onClick={() => setTab("providers")}>模型提供商</button>
           <button className={`stab${tab === "agent" ? " on" : ""}`} onClick={() => setTab("agent")}>Agent 模式</button>
           <button className={`stab${tab === "plugins" ? " on" : ""}`} onClick={() => setTab("plugins")}>插件</button>
-          <button className={`stab${tab === "dsh" ? " on" : ""}`} onClick={() => setTab("dsh")}>DSH 运行配置</button>
-          <button className={`stab${tab === "runtime" ? " on" : ""}`} onClick={() => setTab("runtime")}>DSH 运行时</button>
+          <button className={`stab${tab === "dsh" ? " on" : ""}`} onClick={() => setTab("dsh")}>DSH 运行</button>
           <button className={`stab${tab === "wsl" ? " on" : ""}`} onClick={() => setTab("wsl")}>WSL 连接</button>
           <button className={`stab${tab === "assist" ? " on" : ""}`} onClick={() => setTab("assist")}>智能辅助</button>
         </div>
@@ -491,7 +599,41 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
         <div className="card wide">
           <div className="card-head">
             <span className="card-title">模型提供商</span>
-            <button className="btn primary" onClick={openAdd}>＋ 添加提供商</button>
+            <span className="mgmt-actions">
+              <button
+                className="mgmt-btn"
+                disabled={!connected}
+                title="用系统编辑器打开 dsh 设置文档"
+                onClick={async () => {
+                  try {
+                    await appStore.openSettingsDocument();
+                    setProviderMsg("已在系统默认编辑器中打开设置文档");
+                  } catch (e) {
+                    setProviderMsg(String(e));
+                  }
+                }}
+              >
+                <span className="ico">📄</span>打开设置文档
+              </button>
+              <button
+                className="mgmt-btn"
+                disabled={!connected}
+                title="settings.replace 整体重置 llm-pi-ai 用户层（section={} 恢复默认）"
+                onClick={async () => {
+                  if (!window.confirm("将重置全部自定义 OpenAI 兼容提供商（llm-pi-ai）为默认值，确认？")) return;
+                  try {
+                    await appStore.replaceSettings("llm-pi-ai", {});
+                    setProviderMsg("llm-pi-ai 已恢复默认");
+                    await refreshProviders();
+                  } catch (e) {
+                    setProviderMsg(String(e));
+                  }
+                }}
+              >
+                <span className="ico">↺</span>恢复默认
+              </button>
+              <button className="mgmt-btn primary" onClick={openAdd}>＋ 添加提供商</button>
+            </span>
           </div>
 
           {!connected && <div className="muted">dsh 未连接，无法查看或配置提供商</div>}
@@ -670,7 +812,7 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
 
         {tab === "plugins" && (
           <>
-        <div className="card">
+        <div className="card wide">
           <div className="card-head">
             <span className="card-title">路由套装（dsh-routing-suite）</span>
             {suiteBusy && <span className="badge orange">处理中…</span>}
@@ -723,7 +865,7 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
           </div>
         </div>
 
-        <div className="card">
+        <div className="card wide">
           <div className="card-head">
             <span className="card-title">插件</span>
             <button className="btn sm primary" disabled={!connected} onClick={() => setImportOpen(true)}>＋ 导入插件</button>
@@ -834,11 +976,10 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
             </>
           )}
         </div>
+        <RuntimeManager running={running} />
           </>
         )}
-        {tab === "runtime" && <RuntimeManager running={running} />}
         {tab === "wsl" && <WslPanel />}
-        {tab === "assist" && <CotSettings />}
         {tab === "assist" && <CotSettings />}
         {/* 复制 Agent 模式对话框 */}
         {copyTarget && (

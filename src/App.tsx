@@ -9,10 +9,14 @@ import { CodeView } from "./views/CodeView";
 import { StatusPage } from "./pages/StatusPage";
 import { WorkspacesPage } from "./pages/WorkspacesPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { ToolDock, type ToolTab, type SessionSubTab } from "./components/ToolDock";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 
 export default function App() {
   const [view, setView] = useState<View>("welcome");
+  const [toolTab, setToolTab] = useState<ToolTab>("files");
+  const [toolDockOpen, setToolDockOpen] = useState(false);
+  const [sessionSubTab, setSessionSubTab] = useState<SessionSubTab>("goal");
   const [mode, setMode] = useState<Mode>("work");
   const { sessions, selectedSessionId, status, error, notice } = useAppState();
 
@@ -21,6 +25,16 @@ export default function App() {
   }, []);
 
   const navigate = (v: View) => setView(v);
+  const openToolDock = (t: ToolTab) => {
+    setToolTab(t);
+    setToolDockOpen(true);
+  };
+  const openSessionDock = (sub: SessionSubTab) => {
+    setToolTab("session");
+    setToolDockOpen(true);
+    setSessionSubTab(sub);
+  };
+  const closeToolDock = () => setToolDockOpen(false);
   const selectSession = (id: SessionId) => {
     appStore.selectSession(id);
     setView(mode === "code" ? "code" : "session");
@@ -45,12 +59,21 @@ export default function App() {
           onSelectSession={selectSession}
         />
         <main className="main">
-          {view === "welcome" && <WelcomeView mode={mode} onEnterSession={() => setView(mode === "code" ? "code" : "session")} onOpenSettings={() => setView("settings")} />}
-          {view === "session" && <WorkSessionView onOpenSettings={() => setView("settings")} />}
+          {view === "welcome" && <WelcomeView mode={mode} onEnterSession={() => setView(mode === "code" ? "code" : "session")} onOpenSettings={() => setView("settings")} onOpenToolDock={openToolDock} />}
+          {view === "session" && <WorkSessionView onOpenSettings={() => setView("settings")} onOpenToolDock={openToolDock} onOpenSessionDock={openSessionDock} />}
           {view === "code" && <CodeView />}
           {view === "status" && <StatusPage />}
           {view === "workspaces" && <WorkspacesPage />}
           {view === "settings" && <SettingsPage onStartSession={() => setView(mode === "code" ? "code" : "session")} />}
+          {toolDockOpen && view !== "code" && (
+            <ToolDock
+              tab={toolTab}
+              onTabChange={setToolTab}
+              onClose={closeToolDock}
+              sessionSubTab={sessionSubTab}
+              onSessionSubTabChange={setSessionSubTab}
+            />
+          )}
         </main>
       </div>
       {notice && (

@@ -284,3 +284,24 @@
   wire 级 live：`sessions.rename` ok（返回 title+seq）、`session/title`(user) 事件持久化、history 投影 `title` 正确。
   证据：`evidence/test-sessiontitle.mjs`、`evidence/rename-verify-*.txt`、`evidence/title-probe.mjs`（gitignored）。
 
+## 2026-08-18：dsh 全量接入（20 个缺失请求方法 + 5 类事件；见 docs/DSH_INTEGRATION_REPORT.md）
+
+- 接入方法（dsh 0.1.0-rc.6 类型契约，src/lib/dsh/store.ts）：
+  `session.search/attachment/updateQueue`、`settings.update/replace/openDocument`、`workspace.insertBefore/insertSessionBefore`、
+  `host.openPath`、`subagent.list/history/prompt/interrupt`、`skill.list`、`goal.create/edit/pause/resume/complete/clear`。
+- [事实] 事件面补全：`session/queue`（队列全量快照）、`session/jobs`（后台任务快照）、`session/projection`（higher-seq-wins 投影存储，
+  兼作 goal 读侧与 title/permissions/imageLimits 基线）、`session/subscribed`（基线 lastSeq）、`host/remote-event`（日志留痕）。
+- [事实] goal 读侧无 RPC：goals.d.ts 注释明确读侧 = `goal` 投影（GoalProjection：goal.id/revision/objective/phase/maxGoalRounds + roundsStarted）；
+  变更只回 CAS ref，UI 状态由 mux `session/projection` 帧回推。实现据此：GoalBar 从投影存储读，六个动词调用后依赖投影帧刷新。
+- [推断] `session.attachment` 仅"读已引用图片"（宿主校验会话日志引用过该 id）；上传走 `session.prompt` 的 image content part
+  （宿主把字节升级为持久引用）。图片预检用 `imageLimits` 投影（maxImagesPerMessage/maxImageBytes/maxMessageImageBytes/mediaTypes），
+  投影缺失时跳过预检交给宿主。需 live 验证媒体类型白名单实际取值。
+- [推断] 队列项编辑 `updateQueue(kind:edit)` 的 ContentBlock 按官方类型仅传 text 块；图片类队列项编辑为未验证路径。
+- 设置页接线语义：DeepSeek 官方保存走 `settings.update`（补丁 + expectedRevision CAS，revision 取自 getSettingsNamespace）；
+  「恢复默认」走 `settings.replace(llm-pi-ai, {})`（整体重置用户层，含 secret 移除，前端二次确认）；
+  `settings.openDocument` 需宿主 hasDocument（打开按钮未按 describe.hasDocument 门禁，失败报错提示——待 live 确认后在 UI 加门禁）。
+- 验证：`npm run build`（tsc + vite）通过、`cargo check` 通过（1 个既有 dead_code 警告，与本次无关）。
+  **未 live 验证**：未在真实 dsh 上实操 goal/subagent/skills/queue/attachment 搜索排序等新链路（部分动作消耗 token 或改动用户数据，
+  如 settings.replace 重置、goal 创建）；接口形状以 0.1.0-rc.6 类型契约为准，live 冒烟列后续。
+- dsh 0.1.0-rc.6 验证日期：2026-08-18（类型级）；升级依赖后需重扫 DSH_INTEGRATION_REPORT.md。
+

@@ -7,10 +7,21 @@ import { WorkspaceMenu } from "../components/WorkspaceMenu";
 import { AgentPresetChip } from "../components/AgentPresetChip";
 import { PermissionMenu } from "../components/PermissionMenu";
 import { CotWarningBanner } from "../components/CotWarningBanner";
+import { HamburgerMenu, type ToolTab } from "../components/HamburgerMenu";
+import type { SessionSubTab } from "../components/ToolDock";
 
-export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => void }) {
-  const { connected, sessions, selectedSessionId, history, stoppingSessions, sessionTitles } = useAppState();
+/** 待发送图片附件（base64，未提交）。 */
+interface PendingImage {
+  mediaType: string;
+  data: string;
+  name?: string;
+}
+
+export function WorkSessionView({ onOpenSettings, onOpenToolDock, onOpenSessionDock }: { onOpenSettings?: () => void; onOpenToolDock: (tab: ToolTab) => void; onOpenSessionDock?: (sub: SessionSubTab) => void }) {
+  const { connected, sessions, selectedSessionId, history, stoppingSessions, sessionTitles, projections, sessionQueues, subagentCatalogs, pendingSkillInsert } = useAppState();
   const [draft, setDraft] = useState("");
+  const [images, setImages] = useState<PendingImage[]>([]);
+  const fileRef = useRef<HTMLInputElement>(null);
   const msgsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -39,6 +50,24 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
   const running = selected?.running ?? false;
   const stopping = selectedSessionId ? (stoppingSessions[selectedSessionId] ?? null) : null;
 
+  // 会话功能坞「技能」子tab 点击技能 → 追加 /name 到输入框（消费后清空 pendingSkillInsert）
+  useEffect(() => {
+    if (pendingSkillInsert) {
+      setDraft((d) => (d ? `${d}\n/${pendingSkillInsert} ` : `/${pendingSkillInsert} `));
+      appStore.setSkillInsert(null);
+    }
+  }, [pendingSkillInsert]);
+
+  // 会话头部入口工具栏的角标数据
+  const goalView = selectedSessionId
+    ? (projections.get(selectedSessionId)?.["goal"]?.value as { goal?: { phase: string } } | null | undefined)
+    : undefined;
+  const goalPhase = goalView?.goal?.phase ?? null;
+  const queueCount = selectedSessionId ? (sessionQueues.get(selectedSessionId)?.length ?? 0) : 0;
+  const runningSubagents = selectedSessionId
+    ? (subagentCatalogs.get(selectedSessionId)?.entries.filter((e) => e.kind === "child" && e.activity === "running").length ?? 0)
+    : 0;
+
   // 会话重命名（内联）：铅笔 → 输入框；Enter/失焦保存，Esc 取消
   const [renaming, setRenaming] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
@@ -62,11 +91,52 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
   };
 
 
+  // 图片附件读取（base64）+ 数量/大小预检（imageLimits 投影；缺失则交给宿主校验）
+  const imageLimits = (selectedSessionId ? projections.get(selectedSessionId)?.["imageLimits"]?.value : undefined) as
+    | { maxImagesPerMessage: number; maxImageBytes: number; maxMessageImageBytes: number; mediaTypes: string[] }
+    | undefined;
+  const pickImages = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const next: PendingImage[] = [];
+    for (const f of Array.from(files)) {
+      if (!f.type.startsWith("image/")) continue;
+      if (imageLimits && !imageLimits.mediaTypes.includes(f.type)) {
+        appStore.set({ error: `不支持的图片类型: ${f.type}（允许: ${imageLimits.mediaTypes.join(", ")}）` });
+        continue;
+      }
+      const buf = await f.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      if (imageLimits && bytes.length > imageLimits.maxImageBytes) {
+        appStore.set({ error: `图片 ${f.name} 超过单图上限（${Math.round(imageLimits.maxImageBytes / 1024)}KB）` });
+        continue;
+      }
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      }
+      next.push({ mediaType: f.type, data: btoa(bin), name: f.name });
+    }
+    const merged = [...images, ...next];
+    if (imageLimits && merged.length > imageLimits.maxImagesPerMessage) {
+      appStore.set({ error: `每条消息最多 ${imageLimits.maxImagesPerMessage} 张图片` });
+      return;
+    }
+    setImages(merged);
+  };
+
   const send = () => {
     const text = draft.trim();
-    if (!text || !selectedSessionId || !connected) return;
-    void appStore.sendPrompt(selectedSessionId, text);
+    if ((!text && images.length === 0) || !selectedSessionId || !connected) return;
+    if (imageLimits && images.length > 0) {
+      const total = images.reduce((n, img) => n + Math.floor((img.data.length * 3) / 4), 0);
+      if (total > imageLimits.maxMessageImageBytes) {
+        appStore.set({ error: `图片总量超过单条消息上限（${Math.round(imageLimits.maxMessageImageBytes / 1024)}KB）` });
+        return;
+      }
+    }
+    void appStore.sendPrompt(selectedSessionId, text, images);
     setDraft("");
+    setImages([]);
   };
 
   return (
@@ -98,6 +168,46 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
           </div>
           <span className={`badge ${running ? "orange" : "gray"}`}>{running ? "运行中" : "已停止"}</span>
           {stopping && <span className="badge orange">正在停止…</span>}
+          <div className="ent-bar">
+            <button
+              className={`ent-btn${goalPhase ? "" : " dim"}`}
+              title="目标"
+              onClick={() => onOpenSessionDock?.("goal")}
+            >
+              <span className="ent-ico">◎</span>
+              <span>目标</span>
+              {goalPhase === "active" && <span className="ent-dot green" />}
+              {goalPhase === "paused" && <span className="ent-dot orange" />}
+              {goalPhase === "complete" && <span className="ent-dot gray" />}
+            </button>
+            <button
+              className="ent-btn"
+              title="队列"
+              onClick={() => onOpenSessionDock?.("queue")}
+            >
+              <span className="ent-ico">☰</span>
+              <span>队列</span>
+              {queueCount > 0 && <span className="ent-badge red">{queueCount}</span>}
+            </button>
+            <button
+              className="ent-btn"
+              title="子代理"
+              onClick={() => onOpenSessionDock?.("subagents")}
+            >
+              <span className="ent-ico">◔</span>
+              <span>子代理</span>
+              {runningSubagents > 0 && <span className="ent-badge green">{runningSubagents}</span>}
+            </button>
+            <button
+              className="ent-btn"
+              title="技能"
+              onClick={() => onOpenSessionDock?.("skills")}
+            >
+              <span className="ent-ico">✦</span>
+              <span>技能</span>
+            </button>
+          </div>
+          <HamburgerMenu onOpenTool={onOpenToolDock} />
         </div>
         <div className="msgs" ref={msgsRef}>
           {selectedSessionId && <CotWarningBanner sessionId={selectedSessionId} reasoning={reasoningText} />}
@@ -109,6 +219,27 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
         </div>
         <div className="composer-wrap">
           <div className="composer">
+            {images.length > 0 && (
+              <div className="attach-chips">
+                {images.map((img, i) => (
+                  <span className="attach-chip" key={i} title={img.name ?? img.mediaType}>
+                    <img src={`data:${img.mediaType};base64,${img.data}`} alt={img.name ?? ""} />
+                    <button className="attach-x" title="移除" onClick={() => setImages(images.filter((_, j) => j !== i))}>×</button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              multiple
+              style={{ display: "none" }}
+              onChange={(e) => {
+                void pickImages(e.target.files);
+                e.target.value = "";
+              }}
+            />
             <textarea
               className="composer-input"
               value={draft}
@@ -122,7 +253,15 @@ export function WorkSessionView({ onOpenSettings }: { onOpenSettings?: () => voi
               }}
             />
             <div className="toolbar">
-              <div className="tools"><button className="plus-btn" title="附件（开发中）">+</button></div>
+              <div className="tools">
+                <button
+                  className="plus-btn"
+                  title={imageLimits ? `附加图片（每条最多 ${imageLimits.maxImagesPerMessage} 张）` : "附加图片"}
+                  onClick={() => fileRef.current?.click()}
+                >
+                  +
+                </button>
+              </div>
               <div className="tools">
                 <ModelMenu onOpenSettings={onOpenSettings} />
                 <button

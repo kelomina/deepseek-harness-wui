@@ -148,6 +148,211 @@ fn git_restore_deleted(root: String) -> Result<Vec<String>, String> {
     }
     Ok(restored)
 }
+
+/// 目录浏览（只读）：返回指定路径下的子目录列表。
+/// 用于文件管理器面板，不依赖 dsh browse capability。
+#[tauri::command]
+fn fs_list_dir(path: Option<String>) -> Result<DirListing, String> {
+    let cwd = path.unwrap_or_default();
+    let p = if cwd.is_empty() {
+        dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."))
+    } else {
+        std::path::PathBuf::from(&cwd)
+    };
+    let canonical = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+    let mut entries: Vec<DirEntry> = Vec::new();
+    if let Ok(read_dir) = std::fs::read_dir(&canonical) {
+        for entry in read_dir.flatten() {
+            let ft = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if !ft.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            let full = entry.path().to_string_lossy().to_string();
+            let hidden = name.starts_with('.') || name.starts_with('$');
+            entries.push(DirEntry { name, path: full, hidden });
+        }
+    }
+    entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(DirListing {
+        path: canonical.to_string_lossy().to_string(),
+        entries,
+    })
+}
+
+#[derive(serde::Serialize)]
+struct DirEntry {
+    name: String,
+    path: String,
+    hidden: bool,
+}
+
+#[derive(serde::Serialize)]
+struct DirListing {
+    path: String,
+    entries: Vec<DirEntry>,
+}
+
+/// 终端命令执行（同步，带输出截断保护）。
+#[tauri::command]
+fn term_exec(cmd: String, cwd: Option<String>) -> Result<TermExecResult, String> {
+    let trimmed = cmd.trim();
+    if trimmed.is_empty() {
+        return Err("命令为空".to_string());
+    }
+    let workdir = cwd
+        .filter(|c| !c.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")));
+    let output = if cfg!(target_os = "windows") {
+        std::process::Command::new("cmd")
+            .args(["/C", trimmed])
+            .current_dir(&workdir)
+            .output()
+    } else {
+        std::process::Command::new("sh")
+            .args(["-c", trimmed])
+            .current_dir(&workdir)
+            .output()
+    }
+    .map_err(|e| format!("命令启动失败: {e}"))?;
+    let mut text = String::from_utf8_lossy(&output.stdout).to_string();
+    let err_text = String::from_utf8_lossy(&output.stderr);
+    if !err_text.trim().is_empty() {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(&err_text);
+    }
+    const MAX: usize = 200_000;
+    if text.len() > MAX {
+        text.truncate(MAX);
+        text.push_str("\n…（输出过长已截断）");
+    }
+    Ok(TermExecResult {
+        output: text,
+        exit_code: output.status.code(),
+    })
+}
+
+#[derive(serde::Serialize)]
+struct TermExecResult {
+    output: String,
+    exit_code: Option<i32>,
+}
+
+/// 网页抓取：返回 HTTP 状态码与正文（截断保护）。
+#[tauri::command]
+fn web_fetch(url: String) -> Result<WebFetchResult, String> {
+    let trimmed = url.trim();
+    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+        return Err("URL 必须以 http:// 或 https:// 开头".to_string());
+    }
+    let resp = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) DeepSeekHarnessWUI/0.1")
+        .build()
+        .map_err(|e| format!("HTTP 客户端初始化失败: {e}"))?
+        .get(trimmed)
+        .send()
+        .map_err(|e| format!("请求失败: {e}"))?;
+    let status = resp.status().as_u16();
+    let body = resp.text().map_err(|e| format!("读取响应失败: {e}"))?;
+    const MAX: usize = 100_000;
+    let body = if body.len() > MAX {
+        let mut b = body;
+        b.truncate(MAX);
+        b.push_str("\n…（内容过长已截断）");
+        b
+    } else {
+        body
+    };
+    Ok(WebFetchResult { status, body })
+}
+
+#[derive(serde::Serialize)]
+struct WebFetchResult {
+    status: u16,
+    body: String,
+}
+
+/// git status --porcelain 解析结果。
+#[tauri::command]
+fn git_status(root: String) -> Result<Vec<GitFileStatus>, String> {
+    let out = run_git(&root, &["status", "--porcelain"])?;
+    let mut files = Vec::new();
+    for line in out.lines() {
+        let mut chars = line.chars();
+        let x = chars.next().unwrap_or(' ');
+        let y = chars.next().unwrap_or(' ');
+        let path = line.get(3..).unwrap_or("").trim().to_string();
+        if path.is_empty() {
+            continue;
+        }
+        // 跳过重命名条目的 " -> " 后缀
+        let path = path.rsplit(" -> ").next().unwrap_or(&path).to_string();
+        files.push(GitFileStatus {
+            path,
+            staged: x,
+            unstaged: y,
+        });
+    }
+    Ok(files)
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+struct GitFileStatus {
+    path: String,
+    staged: char,
+    unstaged: char,
+}
+
+/// git diff（默认工作区；staged=true 时取暂存区）。
+#[tauri::command]
+fn git_diff_file(root: String, path: String, staged: bool) -> Result<String, String> {
+    let mut args: Vec<&str> = vec!["diff", "--"];
+    if staged {
+        args.insert(1, "--cached");
+    }
+    args.push(&path);
+    run_git(&root, &args)
+}
+
+#[tauri::command]
+fn git_stage(root: String, path: String) -> Result<String, String> {
+    run_git(&root, &["add", "--", &path])
+}
+
+#[tauri::command]
+fn git_unstage(root: String, path: String) -> Result<String, String> {
+    run_git(&root, &["restore", "--staged", "--", &path])
+}
+
+#[tauri::command]
+fn git_commit(root: String, message: String) -> Result<String, String> {
+    if message.trim().is_empty() {
+        return Err("提交信息不能为空".to_string());
+    }
+    run_git(&root, &["commit", "-m", &message])
+}
+
+fn run_git(root: &str, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .map_err(|e| format!("git 执行失败: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("git 报错: {}", err.trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
 #[tauri::command]
 fn dsh_status(state: State<AppState>) -> DshStatusView {
     lock(state.manager.lock()).status_view()
@@ -155,6 +360,12 @@ fn dsh_status(state: State<AppState>) -> DshStatusView {
 
 #[tauri::command]
 fn dsh_start(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    // 启动前自愈路由套装注入器依赖 junction：链接缺失会让 dsh 启动即失败
+    // （ERR_MODULE_NOT_FOUND），提前修复并给出可读错误
+    let cfg = lock(state.manager.lock()).config().clone();
+    if let Some(lines) = dsh::routing_suite::heal_injector_links_if_needed(&app, &cfg)? {
+        eprintln!("[routing-suite] 启动前自愈依赖链接：\n{}", lines.join("\n"));
+    }
     let shared = state.manager.clone();
     let mut mgr = lock(shared.lock());
     mgr.start(shared.clone(), TauriSink::new(app.clone()))
@@ -395,6 +606,14 @@ pub fn run() {
             dsh_set_selected_model,
             clipboard_write,
             fs_revert,
+            fs_list_dir,
+            term_exec,
+            web_fetch,
+            git_status,
+            git_diff_file,
+            git_stage,
+            git_unstage,
+            git_commit,
             git_restore_deleted,
             dsh_status,
             dsh_start,
@@ -439,6 +658,20 @@ pub fn run() {
             if cfg.auto_start {
                 let app2 = handle.clone();
                 tauri::async_runtime::spawn_blocking(move || {
+                    // 自愈路由套装依赖链接（尽力而为：失败不阻断启动，
+                    // 由 dsh 原始报错兜底暴露问题）
+                    {
+                        let state = app2.state::<AppState>();
+                        let cfg = lock(state.manager.lock()).config().clone();
+                        if let Ok(Some(lines)) =
+                            dsh::routing_suite::heal_injector_links_if_needed(&app2, &cfg)
+                        {
+                            eprintln!(
+                                "[routing-suite] 启动前自愈依赖链接：\n{}",
+                                lines.join("\n")
+                            );
+                        }
+                    }
                     let state = app2.state::<AppState>();
                     let shared = state.manager.clone();
                     let mut mgr = lock(shared.lock());
@@ -464,4 +697,118 @@ pub fn run() {
 #[cfg(feature = "e2e")]
 pub fn run() {
     // no-op：e2e 构建不运行桌面应用入口。
+}
+
+#[cfg(test)]
+mod tool_panel_tests {
+    //! 工具面板（终端/浏览器/Git）真实功能测试：
+    //! 终端真实执行命令、浏览器真实发起 HTTP 请求、Git 真实操作临时仓库。
+    use super::*;
+    use std::io::{Read as _, Write as _};
+
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "wui_tool_test_{}_{}",
+            tag,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn term_exec_runs_real_command() {
+        let r = term_exec("echo hello_term_exec".to_string(), None).unwrap();
+        assert_eq!(r.exit_code, Some(0));
+        assert!(r.output.contains("hello_term_exec"), "output: {}", r.output);
+    }
+
+    #[test]
+    fn term_exec_respects_cwd_and_reports_exit_code() {
+        let dir = tmp_dir("term");
+        let r = term_exec("dir /b".to_string(), Some(dir.to_string_lossy().to_string())).unwrap();
+        assert_eq!(r.exit_code, Some(0));
+        // 不存在的命令应返回非零退出码而非 panic
+        let bad = term_exec("no_such_command_xyz_123".to_string(), None).unwrap();
+        assert_ne!(bad.exit_code, Some(0));
+        // 空命令应报错
+        assert!(term_exec("   ".to_string(), None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn web_fetch_rejects_bad_scheme() {
+        assert!(web_fetch("ftp://example.com".to_string()).is_err());
+        assert!(web_fetch("not a url".to_string()).is_err());
+    }
+
+    #[test]
+    fn web_fetch_fetches_real_local_http() {
+        // 本地起一个一次性 HTTP 服务，真实走 reqwest 网络栈
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let body = "hello_web_fetch_ok";
+        let srv = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        let r = web_fetch(format!("http://127.0.0.1:{port}/")).unwrap();
+        assert_eq!(r.status, 200);
+        assert!(r.body.contains(body), "body: {}", r.body);
+        let _ = srv.join();
+    }
+
+    #[test]
+    fn git_full_cycle_on_temp_repo() {
+        if std::process::Command::new("git").arg("--version").output().is_err() {
+            // 环境无 git 时跳过（本测试机已确认有 git）
+            return;
+        }
+        let dir = tmp_dir("git");
+        let root = dir.to_string_lossy().to_string();
+        run_git(&root, &["init"]).unwrap();
+        run_git(&root, &["config", "user.email", "t@t.local"]).unwrap();
+        run_git(&root, &["config", "user.name", "t"]).unwrap();
+
+        std::fs::write(dir.join("a.txt"), "line1\n").unwrap();
+
+        // 未跟踪
+        let st = git_status(root.clone()).unwrap();
+        assert_eq!(st.len(), 1);
+        assert_eq!(st[0].path, "a.txt");
+        assert_eq!(st[0].staged, '?');
+
+        // 暂存
+        git_stage(root.clone(), "a.txt".to_string()).unwrap();
+        let st = git_status(root.clone()).unwrap();
+        assert_eq!(st[0].staged, 'A');
+
+        // 提交后工作区干净
+        git_commit(root.clone(), "init commit".to_string()).unwrap();
+        let st = git_status(root.clone()).unwrap();
+        assert!(st.is_empty(), "after commit: {st:?}");
+
+        // 修改后出现 unstaged diff
+        std::fs::write(dir.join("a.txt"), "line1\nline2\n").unwrap();
+        let st = git_status(root.clone()).unwrap();
+        assert_eq!(st.len(), 1);
+        assert_eq!(st[0].unstaged, 'M');
+        let diff = git_diff_file(root.clone(), "a.txt".to_string(), false).unwrap();
+        assert!(diff.contains("+line2"), "diff: {diff}");
+
+        // 空提交信息应报错
+        assert!(git_commit(root.clone(), "  ".to_string()).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
