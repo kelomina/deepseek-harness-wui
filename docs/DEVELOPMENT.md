@@ -49,3 +49,12 @@ cd runtime; npm install; cd ..
 2. 重新 `npm install`（runtime 与根）。
 3. 对照 `docs/RISKS.md` 记录新版本行为变化；重跑验收清单。
 4. 提交信息用 `chore(runtime): bump @deepseek-ai/dsh to X`。
+
+## CI 与跨平台
+
+- GitHub Actions（`.github/workflows/build.yml`，push/PR/dispatch 触发）：
+  - **macOS job**：`cargo test --lib` + `tauri build --config src-tauri/tauri.macos.conf.json`（app+dmg），产物上传 artifact；
+  - **Windows job**：同口径回归 + NSIS/MSI 打包。
+- macOS 本地开发/构建：装 Node ≥22 与 Rust 后，`npm install` + `cargo check` 同 Windows；打包用
+  `npm run tauri build -- --config src-tauri/tauri.macos.conf.json`。WSL 功能在 macOS 优雅不可用（设置页显示原因）。
+- git hooks 为 PowerShell 脚本（`core.hooksPath=scripts/hooks`），macOS/Linux 本地不执行——规范与密钥检查由 CI 兜底。

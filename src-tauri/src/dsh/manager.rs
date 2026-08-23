@@ -122,6 +122,9 @@ impl DshManager {
         if self.child.is_some() {
             return Ok(());
         }
+        if self.config.exec_mode == ExecMode::Wsl && !cfg!(windows) {
+            return Err("WSL 执行模式仅支持 Windows；macOS/Linux 请使用 bundled/npx/path 模式".to_string());
+        }
         if port_in_use(self.config.port) {
             let stale = find_dsh_pids(self.config.port);
             if !stale.is_empty() {
@@ -611,9 +614,24 @@ fn resolve_npx_cli() -> Result<String, String> {
             }
         }
     }
-    let fallback = r"C:\Program Files\nodejs\node_modules\npm\bin\npx-cli.js";
-    if std::path::Path::new(fallback).exists() {
-        return Ok(fallback.to_string());
+    #[cfg(windows)]
+    {
+        let fallback = r"C:\Program Files\nodejs\node_modules\npm\bin\npx-cli.js";
+        if std::path::Path::new(fallback).exists() {
+            return Ok(fallback.to_string());
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        // macOS 常见安装位置：官方 pkg（/usr/local）与 Homebrew（/opt/homebrew，arm64）；Linux 官方源同 /usr/local
+        for fallback in [
+            "/usr/local/lib/node_modules/npm/bin/npx-cli.js",
+            "/opt/homebrew/lib/node_modules/npm/bin/npx-cli.js",
+        ] {
+            if std::path::Path::new(fallback).exists() {
+                return Ok(fallback.to_string());
+            }
+        }
     }
     Err("npx-cli.js not found (Node.js is required for npx mode)".to_string())
 }
@@ -625,7 +643,8 @@ fn port_in_use(port: u16) -> bool {
 }
 
 /// Find stale dsh node processes (bundled bin.js web --port N or @deepseek-ai/dsh).
-/// Uses PowerShell Get-CimInstance because `wmic` is removed on modern Windows.
+/// Windows: PowerShell Get-CimInstance (wmic is removed on modern Windows).
+/// macOS/Linux: `lsof` for the listening port, then verify the cmdline via `ps`.
 fn find_dsh_pids(port: u16) -> Vec<u32> {
     let mut out = Vec::new();
     #[cfg(windows)]
@@ -650,6 +669,37 @@ fn find_dsh_pids(port: u16) -> Vec<u32> {
                     if is_dsh_cmdline(cmd, port) {
                         out.push(pid);
                     }
+                }
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        // 先按端口找监听进程（macOS 自带 lsof；Linux 可能缺失 → 返回空，走端口占用报错路径）
+        let Ok(output) = Command::new("lsof")
+            .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN"])
+            .output()
+        else {
+            return out;
+        };
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut pids: Vec<u32> = Vec::new();
+        for line in text.lines().skip(1) {
+            // COMMAND PID USER ... （第 2 列为 PID）
+            if let Some(tok) = line.split_whitespace().nth(1) {
+                if let Ok(pid) = tok.parse::<u32>() {
+                    if !pids.contains(&pid) {
+                        pids.push(pid);
+                    }
+                }
+            }
+        }
+        for pid in pids {
+            // 核对命令行确属 dsh（bin.js web --port N / @deepseek-ai/dsh），避免误杀无关进程
+            if let Ok(ps) = Command::new("ps").args(["-p", &pid.to_string(), "-o", "command="]).output() {
+                let cmd = String::from_utf8_lossy(&ps.stdout).trim().to_string();
+                if is_dsh_cmdline(&cmd, port) {
+                    out.push(pid);
                 }
             }
         }

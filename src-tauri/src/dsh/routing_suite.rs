@@ -209,8 +209,22 @@ fn make_junction(link: &Path, target: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-fn make_junction(_link: &Path, _target: &Path) -> Result<(), String> {
-    Err("当前仅支持 Windows junction".to_string())
+fn make_junction(link: &Path, target: &Path) -> Result<(), String> {
+    // Unix：目录 symlink 等价于 junction（Node ESM 按真实路径解析的行为一致）
+    std::os::unix::fs::symlink(target, link).map_err(|e| format!("创建 symlink 失败: {e}"))
+}
+
+/// 移除残留链接（junction/symlink），失败忽略；不触碰真实目录与目标内容。
+/// - Windows junction 与 Unix symlink 在 symlink_metadata 中均表现为 is_symlink；
+/// - Windows 用 remove_dir 解除 junction；Unix 的 remove_dir 对 symlink 报 ENOTDIR，
+///   回退 remove_file（unlink）。真实目录不动。
+fn remove_link_best_effort(link_path: &Path) {
+    let Ok(meta) = std::fs::symlink_metadata(link_path) else {
+        return; // 不存在：无事可做
+    };
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        let _ = std::fs::remove_dir(link_path).or_else(|_| std::fs::remove_file(link_path));
+    }
 }
 
 /// Ensure the injector's own node_modules carries junctions to the active
@@ -233,6 +247,8 @@ fn ensure_injector_links(runtime_nm: &Path, injector_dir: &Path) -> Result<Vec<S
             ));
             continue;
         }
+        // 清理悬空链接（存在但目标不可达），否则创建会因路径已占用而失败
+        remove_link_best_effort(&link_path);
         if let Some(parent) = link_path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("创建 {} 失败: {e}", parent.display()))?;
@@ -295,11 +311,9 @@ pub fn heal_injector_links_if_needed(
 fn remove_injector_links(injector_dir: &Path) {
     let nm = injector_dir.join("node_modules");
     for (link, _) in INJECTOR_LINK_PAIRS {
-        let link_path = nm.join(link);
-        if link_path.exists() {
-            let _ = std::fs::remove_dir(&link_path);
-        }
+        remove_link_best_effort(&nm.join(link));
     }
+    // 空目录收尾（@deepseek-ai 与 node_modules 本体是真实目录）
     let _ = std::fs::remove_dir(nm.join("@deepseek-ai"));
     let _ = std::fs::remove_dir(nm);
 }

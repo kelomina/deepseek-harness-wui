@@ -127,8 +127,9 @@ pub fn save<R: Runtime>(app: &tauri::AppHandle<R>, cfg: &DshConfig) -> Result<()
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
 }
 
-/// Detect the Windows user-level system proxy (HKCU Internet Settings).
+/// Detect the user-level system proxy for the current platform.
 /// Returns the proxy server with an http:// scheme, or None when disabled/unset.
+#[cfg(windows)]
 pub fn detect_system_proxy() -> Option<String> {
     let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
     let enabled = std::process::Command::new("reg")
@@ -156,6 +157,40 @@ pub fn detect_system_proxy() -> Option<String> {
     } else {
         Some(format!("http://{val}"))
     }
+}
+
+/// macOS：解析 `scutil --proxies` 的 HTTP 代理（SOCKS 与 http:// 语义不符，忽略）。
+#[cfg(target_os = "macos")]
+pub fn detect_system_proxy() -> Option<String> {
+    let out = std::process::Command::new("scutil")
+        .arg("--proxies")
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let get = |key: &str| -> Option<String> {
+        text.lines()
+            .find(|l| l.contains(key))
+            .and_then(|l| l.split_once(':'))
+            .map(|(_, v)| v.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    if get("HTTPEnable")?.as_str() != "1" {
+        return None;
+    }
+    let host = get("HTTPProxy")?;
+    if host.is_empty() {
+        return None;
+    }
+    match get("HTTPPort") {
+        Some(port) if !port.is_empty() => Some(format!("http://{host}:{port}")),
+        _ => Some(format!("http://{host}")),
+    }
+}
+
+/// 其他平台（Linux 等）：无统一系统代理源，返回 None（用户可在设置中手动指定）。
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn detect_system_proxy() -> Option<String> {
+    None
 }
 
 

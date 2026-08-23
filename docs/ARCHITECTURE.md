@@ -1,5 +1,13 @@
 # 架构
 
+## 平台支持（2026-08-23）
+
+| 平台 | 状态 | 说明 |
+|---|---|---|
+| Windows | 主目标，live 验证 | 全功能：bundled/npx/path/WSL 四种执行模式、系统代理探测（注册表）、路由套装 junction |
+| macOS | 编译级 + CI 构建 | bundled/npx/path 模式；代理探测走 `scutil --proxies`；残留进程清理走 `lsof`+`ps`；路由套装链接用 symlink；剪贴板用原生 `pbcopy`；WSL 功能优雅不可用。打包经 GitHub Actions macos runner（`tauri.macos.conf.json`：app+dmg）。**真机运行未验证**（无硬件），dsh 上游在 macOS 的行为未实证 |
+| Linux | 未支持/未验证 | 代理检测返回 None（可手动配置）；其余同 macOS 路径，无 CI |
+
 ## 总览
 
 ```

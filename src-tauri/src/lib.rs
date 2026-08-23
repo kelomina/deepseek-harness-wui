@@ -43,8 +43,29 @@ fn dsh_set_selected_model(
 }
 #[tauri::command]
 fn clipboard_write(text: String) -> Result<(), String> {
-    let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-    cb.set_text(text).map_err(|e| e.to_string())
+    #[cfg(target_os = "macos")]
+    {
+        // macOS 原生剪贴板（pbcopy），避免引入 objc2 C 工具链依赖
+        use std::io::Write;
+        use std::process::Stdio;
+        let mut child = std::process::Command::new("pbcopy")
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("pbcopy 不可用: {e}"))?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| "pbcopy stdin 不可用".to_string())?
+            .write_all(text.as_bytes())
+            .map_err(|e| format!("写入剪贴板失败: {e}"))?;
+        child.wait().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+        cb.set_text(text).map_err(|e| e.to_string())
+    }
 }
 #[tauri::command]
 fn fs_revert(

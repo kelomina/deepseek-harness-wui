@@ -353,6 +353,27 @@ DSH_HOME=用户真实 `~/.dsh`，测试后 taskkill /T 清理）。输出：`evi
 - settings.update/replace：避免改动用户提供商配置；UI 已有确认门禁，类型契约以 0.1.0-rc.6 为准。
 - dsh 0.1.0-rc.6 验证日期：2026-08-23。
 
+## 2026-08-23：macOS 支持（编译级 + CI 构建；真机运行未验证）
+
+范围：让代码在 macOS 目标可编译、运行时行为正确门控，并经 GitHub Actions macos runner 真实构建。
+
+- 平台分支落地：
+  - 系统代理探测：Windows 注册表 / macOS `scutil --proxies`（HTTP；SOCKS 忽略）/ 其余平台 None（可手动配置）。
+  - 残留 dsh 进程清理：Windows PowerShell Get-CimInstance / macOS·Linux `lsof -sTCP:LISTEN` + `ps -o command=` 核对命令行（`is_dsh_cmdline` 防误杀）。
+  - 路由套装注入器链接：Windows junction（mklink /J）/ Unix symlink；统一 `remove_link_best_effort`（junction 用 remove_dir 解链、symlink 回退 remove_file；真实目录不动）；悬空链接先清再建。
+  - 剪贴板：macOS 原生 `pbcopy`（arboard 移出 mac 依赖树，避免 objc2 C 工具链）；Windows/Linux 保持 arboard。
+  - npx 模式回退路径补 macOS 官方 pkg 与 Homebrew 位置。
+  - WSL：`wsl_status` 已有优雅桩；`provision` 非 Windows 提前失败并说明；`start()` 对 WSL 执行模式显式报错。WSL 面板 UI 无需改动（读 status.reason）。
+- 打包：`src-tauri/tauri.macos.conf.json`（targets: app+dmg），经 GitHub Actions `.github/workflows/build.yml`
+  （push/PR/dispatch 触发；macOS job = cargo test --lib + tauri build + 上传 dmg/app；Windows job = 同口径回归 + nsis/msi）。
+- 验证边界：
+  - [事实] Windows 主机回归通过（cargo test --lib 29 passed；npm run build 通过）。
+  - [事实] 新增 unix 分支经无依赖 shim crate 对 `aarch64-apple-darwin` 与 `x86_64-unknown-linux-gnu` 两目标 cargo check 通过
+    （Tauri 自身 mac 后端含 objc2 C 构建脚本，Windows 主机无法交叉 check 整个 app——CI mac runner 是完整验证路径）。
+  - **未验证**：macOS 真机运行（无硬件）——dsh 上游 runtime 在 macOS 的启动与工具行为未实证；
+    未签名 app/dmg 会触发 Gatekeeper（右键打开或 `xattr -cr` 绕过，正式分发前签名+公证，同 Windows SmartScreen 条目）。
+    git hooks 为 .ps1，macOS 贡献者本地不生效（CI 兜底）。
+
 ## 2026-08-23：dsh 升级 0.1.0-rc.6 → 0.1.1-rc.2（兼容性验证通过）
 
 按 docs/DEVELOPMENT.md 升级流程执行：runtime 与根依赖精确锁定 0.1.1-rc.2（latest/next 双标签），全新安装

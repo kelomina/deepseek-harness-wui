@@ -545,6 +545,24 @@ pub fn provision<S: EventSink>(
         sink.emit("wsl://provision", &s);
         steps.push(s);
     };
+    if !cfg!(windows) {
+        emit(WslProvisionStep::new(
+            "check",
+            "error",
+            "WSL 仅在 Windows 上可用；macOS/Linux 请直接本机安装 Node + dsh（bundled/npx/path 模式）",
+        ));
+        return WslProvisionReport {
+            ok: false,
+            distro: None,
+            user: None,
+            node_version: None,
+            dsh_version: None,
+            dsh_home: None,
+            workspace_dir: None,
+            steps,
+            error: Some("WSL 仅在 Windows 上可用".to_string()),
+        };
+    }
     let version = exact_version
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())

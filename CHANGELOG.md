@@ -10,6 +10,7 @@ All notable user-visible changes are aggregated here. / 本项目重要变更按
 
 ### Added / 新增
 
+- **macOS support (compile-level + CI builds)**: platform-gated system proxy detection (`scutil --proxies`), stale-process cleanup via `lsof`+`ps`, symlink-based routing-suite links, native `pbcopy` clipboard, macOS npx fallback paths; WSL features degrade gracefully. GitHub Actions workflow builds unsigned app+dmg on macos runners and NSIS/MSI on Windows on every push/PR — **macOS 支持落地**：平台门控的代理探测/进程清理/symlink 链接/pbcopy 剪贴板，WSL 优雅降级；GitHub Actions 在 macos runner 上自动打包 app+dmg（真机运行仍待验证，见 RISKS）。
 - Default model card in Settings (providers tab): reads/edits the new dsh `agent-default-model` settings namespace (provider / model / reasoning effort, CAS-guarded write, dropdowns from the live model catalog); write path live-verified — 设置页新增「默认模型（新会话）」卡片，接入 dsh 0.1.1-rc.2 新增的 agent-default-model 命名空间（CAS 写路径已 live 实证）。
 - Status page now shows the host home directory (new `home` field of host.describe) — 状态页宿主信息新增「宿主主目录」。
 - Feature entrypoints alignment with the `design/feature-entrypoints` mockup: sidebar search loading spinner + focus highlight, guided "＋ 设定目标" state on the session-header goal capsule, queue dock empty state, dock segment icons, default dock sub-tab = 队列 — 功能入口体系与设计稿对齐：侧栏搜索加载态与聚焦高亮、会话头目标胶囊无目标引导态、队列坞空态、功能坞分段图标、默认子 tab=队列。
