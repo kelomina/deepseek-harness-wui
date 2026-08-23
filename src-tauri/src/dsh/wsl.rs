@@ -783,6 +783,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)] // 证书导出走 Windows 证书存储（PowerShell/.NET），非 Windows 无此路径
     fn dbg_export_host_ca_bundle() {
         // 无控制台进程 spawn powershell 时，PSDrive `Cert:\` 与 stdout 均不可靠；
         // export_host_ca_bundle 已改为 .NET X509Store + 写文件。此处验证其确实产出 PEM。

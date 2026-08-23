@@ -748,7 +748,9 @@ mod tool_panel_tests {
     #[test]
     fn term_exec_respects_cwd_and_reports_exit_code() {
         let dir = tmp_dir("term");
-        let r = term_exec("dir /b".to_string(), Some(dir.to_string_lossy().to_string())).unwrap();
+        // 平台各自的列目录命令：cmd 用 dir /b，sh 用 ls
+        let list_cmd = if cfg!(target_os = "windows") { "dir /b" } else { "ls" };
+        let r = term_exec(list_cmd.to_string(), Some(dir.to_string_lossy().to_string())).unwrap();
         assert_eq!(r.exit_code, Some(0));
         // 不存在的命令应返回非零退出码而非 panic
         let bad = term_exec("no_such_command_xyz_123".to_string(), None).unwrap();
