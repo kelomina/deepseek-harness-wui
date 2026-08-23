@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>dsh 功能入口设计稿</title><style>
+:root{
+  --bg:#ededf0; --panel:#f4f4f6; --card:#fbfbfc; --border:#e3e3e8;
+  --text:#1f2329; --text-2:#585c62; --text-3:#9ba0a6;
+  --accent:#5b5bd6; --green:#2f7d4f; --orange:#b26a1b; --red:#c23a3a;
+  --bg-hover:#e3e3e7; --accent-soft:#e9e9f8;
+  --green-soft:#eef7f0; --orange-soft:#fdf4e7; --red-soft:#fdeaea;
+  --shadow:0 1px 2px rgba(0,0,0,.04),0 3px 12px rgba(0,0,0,.05);
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,Consolas,"Courier New",monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{min-height:100%}
+body{font-family:var(--font);background:var(--bg);color:var(--text);font-size:14px;-webkit-font-smoothing:antialiased}
+button{font-family:inherit;border:0;background:none;cursor:pointer;color:inherit;font-size:inherit}
+input{font-family:inherit}
+a{color:var(--accent);cursor:pointer;text-decoration:none;font-size:12px}
+a:hover{text-decoration:underline}
+a.danger{color:var(--red)}
+.mono{font-family:var(--mono)}
+kbd{font-family:var(--mono);font-size:10.5px;border:1px solid var(--border);border-bottom-width:2px;border-radius:5px;padding:1px 5px;background:#fff;color:var(--text-2)}
+
+/* ===== 顶部条 ===== */
+.topbar{display:flex;align-items:center;gap:10px;height:46px;padding:0 24px;border-bottom:1px solid var(--border);background:var(--card)}
+.tb-dot{width:12px;height:12px;border-radius:4px;background:var(--accent)}
+.tb-name{font-size:13px;font-weight:600}
+.tb-tag{margin-left:auto;font-size:11.5px;color:var(--text-3);border:1px solid var(--border);background:var(--panel);border-radius:999px;padding:3px 12px}
+
+.page{max-width:1280px;margin:0 auto;padding:30px 28px 64px}
+.page-title{font-size:24px;font-weight:700;letter-spacing:.2px}
+.page-sub{font-size:13px;color:var(--text-2);margin:6px 0 22px;line-height:1.7}
+
+/* ===== 三层流程总览 ===== */
+.flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:center;gap:18px;background:var(--card);border:1px solid var(--border);border-radius:14px;padding:20px 24px;margin-bottom:26px;box-shadow:var(--shadow)}
+.fstep .fno{font-size:11px;color:var(--text-3);font-weight:700;letter-spacing:.6px;margin-bottom:6px;display:block}
+.fstep .ft{font-size:14.5px;font-weight:600;display:block;margin-bottom:5px}
+.fstep .fd{font-size:12px;color:var(--text-2);line-height:1.7}
+.farrow{color:var(--text-3);font-size:20px}
+
+/* ===== 分区 ===== */
+.sec{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:26px 28px 30px;margin-bottom:26px;box-shadow:var(--shadow)}
+.sec-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:20px}
+.sec-num{flex:none;width:30px;height:30px;border-radius:9px;background:var(--accent);color:#fff;font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.sec-title{font-size:16.5px;font-weight:700;padding-top:4px}
+.sec-desc{font-size:12.5px;color:var(--text-2);margin-top:4px;line-height:1.7}
+.sec-body{display:flex;flex-direction:column;gap:22px}
+
+/* ===== 窗口框架 ===== */
+.win{border:1px solid var(--border);border-radius:12px;background:var(--panel);overflow:hidden;box-shadow:var(--shadow)}
+.win-bar{display:flex;align-items:center;gap:9px;padding:9px 14px;border-bottom:1px solid var(--border);background:#e9e9ee;font-size:11.5px;color:var(--text-3)}
+.win-bar .dots{display:flex;gap:5px}
+.win-bar .dots i{width:9px;height:9px;border-radius:50%;background:#d5d5db}
+.win-bar .dots i:nth-child(1){background:#f0b3a2}
+.win-bar .dots i:nth-child(2){background:#e8cd8f}
+.win-bar .dots i:nth-child(3){background:#a9cfa9}
+.win-tag{margin-left:auto;font-family:var(--mono);font-size:10.5px;background:#fff;border:1px solid var(--border);border-radius:6px;padding:2px 8px;color:var(--text-2)}
+.note-line{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);background:#f1f1f4;border:1px dashed var(--border);border-radius:8px;padding:8px 12px;line-height:1.6}
+.note-line b{color:var(--text);font-weight:600}
+/* ===== ① 侧边栏 ===== */
+.s1-main{display:flex;gap:18px;align-items:stretch}
+.sidebar-mock{flex:none;width:264px;display:flex;flex-direction:column;min-height:560px;background:var(--bg);padding:14px 16px 14px}
+.mode-tabs{align-self:flex-start;display:flex;align-items:center;gap:2px;background:#e2e2e6;border-radius:10px;padding:3px}
+.tab{padding:6px 14px;border-radius:8px;font-size:13px;color:var(--text-2);cursor:pointer}
+.tab.active{background:#fff;color:var(--text);font-weight:500;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.nav{margin-top:16px;display:flex;flex-direction:column;gap:2px}
+.nav-item{display:flex;align-items:center;gap:8px;height:34px;padding:0 10px;border-radius:8px;font-size:13px;color:var(--text);cursor:pointer}
+.nav-item:hover{background:var(--bg-hover)}
+.nav-item.active{background:#dcdce1}
+.ni-ic{width:16px;text-align:center;color:var(--text-2);font-size:13px}
+.search-box{position:relative;margin:14px 2px 4px}
+.search-input{width:100%;padding:6px 26px 6px 10px;font-size:12px;border:1px solid var(--border);border-radius:8px;background:#fff;color:var(--text);outline:none}
+.search-input:focus,.search-box.focus .search-input{border-color:var(--accent);box-shadow:0 0 0 3px rgba(91,91,214,.12)}
+.search-input::placeholder{color:var(--text-3)}
+.search-clear{position:absolute;right:5px;top:50%;transform:translateY(-50%);width:18px;height:18px;border-radius:5px;color:var(--text-3);font-size:13px;line-height:18px;text-align:center;cursor:pointer}
+.search-clear:hover{background:var(--bg-hover);color:var(--text)}
+.spinner-wrap{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:16px;height:16px;display:flex;align-items:center;justify-content:center}
+.spinner{width:13px;height:13px;border:2px solid #d5d5db;border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.side-block{margin-top:18px;display:flex;flex-direction:column;gap:2px}
+.side-head{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-2);padding:4px 6px;border-radius:6px;margin-bottom:4px}
+.side-head .arrow{color:var(--text-3);font-size:10px}
+.side-head .count{margin-left:auto;font-size:11px;color:var(--text-3)}
+.task-item{display:flex;align-items:center;gap:8px;width:100%;min-width:0;padding:7px 10px;border-radius:8px;font-size:12.5px;cursor:pointer}
+.task-item:hover{background:var(--bg-hover)}
+.task-item.active{background:#d8d8f0}
+.t-title{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.t-time{flex:none;font-size:11px;color:var(--text-3)}
+.dot{flex:none;width:8px;height:8px;border-radius:50%;background:#9aa0a6}
+.dot.green{background:#2f9e5f;box-shadow:0 0 0 2px rgba(47,158,95,.18)}
+.side-bottom{margin-top:auto;border-top:1px solid #dcdce0;padding-top:10px;display:flex;flex-direction:column;gap:2px}
+.main-placeholder{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;background:repeating-linear-gradient(135deg,transparent,transparent 22px,rgba(0,0,0,.012) 22px,rgba(0,0,0,.012) 24px),var(--panel);border:1px solid var(--border);border-radius:12px}
+.mph-t{font-size:14px;font-weight:600;color:var(--text-2)}
+.mph-s{font-size:12px;color:var(--text-3)}
+
+/* ===== 搜索四态 ===== */
+.states-row{display:flex;gap:14px;padding:16px;flex-wrap:wrap}
+.state-card{flex:1;min-width:220px;background:#fff;border:1px solid var(--border);border-radius:10px;padding:12px 12px 8px}
+.st-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.st-name{font-size:12.5px;font-weight:600}
+.st-tag{font-size:10.5px;font-family:var(--mono);color:var(--text-3);border:1px solid var(--border);background:var(--panel);border-radius:6px;padding:1px 6px}
+.state-card .search-box{margin:0 0 8px}
+.st-hint{font-size:11.5px;color:var(--text-3);padding:0 2px 8px}
+.st-empty{font-size:11.5px;color:var(--text-3);text-align:center;padding:14px 4px 12px;border-top:1px solid #f0f0f3}
+.st-results{display:flex;flex-direction:column;gap:1px;border-top:1px solid #f0f0f3;padding-top:6px}
+.st-result{display:flex;align-items:center;gap:7px;padding:5px 6px;border-radius:6px;font-size:12px}
+.st-result:hover{background:#f2f2f5}
+.st-more{font-size:11px;color:var(--text-3);padding:6px 6px 4px;border-top:1px dashed var(--border);margin-top:4px}
+/* ===== ② 会话头部入口工具栏 ===== */
+.s2-row{display:flex;gap:18px;align-items:stretch;flex-wrap:wrap}
+.s2-col{flex:1;min-width:420px;display:flex;flex-direction:column;gap:10px}
+.conv-mock{display:flex;flex-direction:column;background:var(--panel);min-height:230px}
+.conv-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 18px;border-bottom:1px solid var(--border);background:var(--card)}
+.conv-title-wrap{display:flex;align-items:center;gap:10px;min-width:0;flex:1}
+.conv-title{font-size:16px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.badge{padding:3px 12px;border-radius:999px;font-size:12px;border:1px solid;white-space:nowrap}
+.badge.green{color:var(--green);border-color:#9cc8a9;background:var(--green-soft)}
+.badge.gray{color:var(--text-2);border-color:#c9c9d0;background:#eeeef1}
+.badge.red{color:var(--red);border-color:#e0a0a0;background:var(--red-soft)}
+.badge.sm{padding:1px 8px;font-size:10.5px}
+.head-actions{flex:none;display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.cap{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 13px;border-radius:999px;border:1px solid var(--border);background:#fff;font-size:12.5px;color:var(--text);box-shadow:0 1px 1px rgba(0,0,0,.03);transition:border-color .12s, box-shadow .12s}
+.cap:hover{border-color:var(--accent);box-shadow:0 0 0 3px rgba(91,91,214,.1)}
+.cap .ic{font-size:12px;line-height:1}
+.cap-badge{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 5px;border-radius:999px;font-size:10.5px;font-weight:700;color:#fff;line-height:1}
+.cap-badge.red{background:var(--red)}
+.cap-badge.green{background:var(--green)}
+.cap .caret{font-size:9px;color:var(--text-3)}
+.cap.goal-active{border-color:#9cc8a9;background:var(--green-soft);color:var(--green)}
+.cap.goal-active:hover{border-color:var(--green)}
+.cap.goal-empty{border-style:dashed;border-color:#c9c9d0;background:#f6f6f8;color:var(--text-3)}
+.cap.goal-empty:hover{border-color:var(--accent);color:var(--accent)}
+.conv-body{flex:1;display:flex;flex-direction:column;gap:10px;padding:18px}
+.sk-line{height:12px;border-radius:6px;background:#e7e7eb}
+.sk-line.w50{width:50%}
+.sk-line.w70{width:70%}
+.sk-line.w90{width:90%}
+
+/* ===== ③ 会话功能坞 ===== */
+.dock-wrap{display:flex;justify-content:flex-start;padding:16px}
+.dock{width:380px;display:flex;flex-direction:column;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,.08);overflow:hidden}
+.dock-tabs{display:flex;gap:2px;padding:5px;background:#e6e6ea;border-bottom:1px solid var(--border)}
+.dock-tab{flex:1;padding:6px 4px;border-radius:7px;font-size:12px;color:var(--text-2);text-align:center;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px}
+.dock-tab:hover{color:var(--text)}
+.dock-tab.on{background:#fff;color:var(--text);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.dock-tab .di{font-size:11px}
+.dock-body{height:356px;overflow:auto;padding:12px 14px;display:flex;flex-direction:column}
+.dock-panel{display:none;flex-direction:column;gap:16px}
+.dock-panel.on{display:flex}
+.dp-sec{display:flex;flex-direction:column;gap:4px}
+.dp-head{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:6px}
+.dp-count{margin-left:auto;font-size:11px;color:var(--text-3);font-weight:400}
+.q-item{display:flex;align-items:center;gap:8px;padding:7px 8px;border:1px solid var(--border);border-radius:9px;background:#fff}
+.q-badge{flex:none;font-size:10.5px;font-weight:600;border-radius:5px;padding:1px 6px}
+.q-badge.q-queued{color:var(--text-2);background:#eeeef1}
+.q-badge.q-jump{color:var(--accent);background:var(--accent-soft)}
+.q-text{flex:1;min-width:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text)}
+.q-no{flex:none;font-size:10.5px;color:var(--text-3)}
+.q-acts{flex:none;display:flex;gap:8px}
+.bgt{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;background:#fff;border:1px solid var(--border)}
+.bgt-cmd{flex:1;min-width:0;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text)}
+.goal-obj{font-size:12.5px;line-height:1.7;color:var(--text);background:#fff;border:1px solid var(--border);border-radius:9px;padding:9px 11px;margin-bottom:8px}
+.goal-prog{margin:2px 0 10px}
+.gp-meta{display:flex;justify-content:space-between;font-size:11.5px;color:var(--text-2);margin-bottom:5px}
+.gp-pct{color:var(--accent);font-weight:600}
+.progress{height:6px;border-radius:999px;background:#e6e6ea;overflow:hidden}
+.progress > i{display:block;height:100%;background:var(--accent);border-radius:999px}
+.goal-acts,.sa-acts{display:flex;gap:12px}
+.sa-row{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:9px;background:#fff}
+.sa-label{flex:1;min-width:0;font-size:12.5px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sa-hist{margin:2px 0 6px;border:1px dashed var(--border);border-radius:9px;background:#fafafc;padding:9px 11px;display:flex;flex-direction:column;gap:6px}
+.hist-u{font-size:12px;color:var(--accent)}
+.hist-a{font-size:12px;color:var(--text);line-height:1.65}
+.hist-t{font-size:11px;color:var(--text-3)}
+.sk-row{display:flex;flex-direction:column;gap:3px;padding:8px 10px;border:1px solid var(--border);border-radius:9px;background:#fff}
+.sk-top{display:flex;align-items:center;gap:8px}
+.sk-name{font-size:12px;font-weight:600;color:var(--accent)}
+.sk-when{margin-left:auto;font-size:10.5px;color:var(--text-3);background:var(--panel);border:1px solid var(--border);border-radius:5px;padding:1px 6px;white-space:nowrap}
+.sk-desc{font-size:11.5px;color:var(--text-2);line-height:1.6}
+
+/* 其余子 tab 展开态并列 */
+.minis-row{display:flex;gap:14px;padding:16px;flex-wrap:wrap}
+.mini{flex:1;min-width:250px;background:#fff;border:1px solid var(--border);border-radius:10px;overflow:hidden;display:flex;flex-direction:column}
+.mini-head{padding:8px 12px;font-size:12px;font-weight:600;color:var(--text-2);border-bottom:1px solid var(--border);background:#f7f7fa}
+.mini-body{padding:12px;display:flex;flex-direction:column;gap:8px}
+.mini-body .dp-head{margin-bottom:2px}
+/* ===== ④ 管理页入口 ===== */
+.s4-row{display:flex;gap:18px;align-items:stretch;flex-wrap:wrap}
+.s4-col{flex:1;min-width:430px;display:flex;flex-direction:column;gap:10px}
+.ws-mock{display:flex;flex-direction:column;gap:10px;padding:16px}
+.ws-row{display:flex;align-items:center;gap:12px;background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px 14px}
+.ws-order{display:inline-flex;gap:4px;flex:none}
+.ob{width:24px;height:24px;border-radius:7px;border:1px solid var(--border);background:#fff;color:var(--text-2);font-size:12px;line-height:1;display:flex;align-items:center;justify-content:center}
+.ob:hover{border-color:var(--accent);color:var(--accent)}
+.ob:disabled{opacity:.35;cursor:default}
+.ws-name{flex:none;max-width:30%;font-size:13.5px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ws-path{flex:1;min-width:0;font-size:11.5px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ws-acts{flex:none;display:flex;gap:14px;align-items:center}
+.set-mock{padding:16px;background:#fff;border-top:1px solid var(--border)}
+.pm-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px;flex-wrap:wrap}
+.pm-title{font-size:14.5px;font-weight:600}
+.pm-actions{display:flex;gap:8px;flex-wrap:wrap}
+.pm-btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);background:#fff;border-radius:8px;padding:6px 12px;font-size:12px;color:var(--text-2);transition:border-color .12s}
+.pm-btn:hover{border-color:var(--accent);color:var(--text)}
+.pm-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.pm-btn.primary:hover{filter:brightness(1.05);color:#fff}
+.provider-row{display:flex;align-items:center;gap:12px;border-top:1px solid var(--border);padding:11px 0;font-size:12.5px;flex-wrap:wrap}
+.p-name{font-weight:500}
+.p-model{color:var(--text-2);font-size:11.5px}
+.p-id{margin-left:auto;font-size:11px;color:var(--text-3)}
+
+/* ===== 底部 ===== */
+.foot{display:flex;flex-direction:column;gap:12px;padding-top:6px}
+.legend{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:11.5px;color:var(--text-2);background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 16px}
+.legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:1px}
+.foot-note{font-size:11.5px;color:var(--text-3);text-align:center;line-height:1.8}
+
+@media (max-width:1080px){
+  .flow{grid-template-columns:1fr;gap:14px}
+  .farrow{transform:rotate(90deg);justify-self:center}
+  .s1-main{flex-direction:column}
+  .main-placeholder{min-height:120px}
+  .s2-col,.s4-col{min-width:0;width:100%}
+  .s2-row,.s4-row{flex-direction:column}
+  .states-row,.minis-row{flex-direction:column}
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="tb-dot"></span>
+  <span class="tb-name">DeepSeek Harness WUI</span>
+  <span class="tb-tag">设计稿 · 功能入口 · feature-entrypoints</span>
+</div>
+
+<div class="page">
+
+  <div class="page-title">dsh 功能入口设计稿</div>
+  <div class="page-sub">已接入 dsh 功能的三层次统一入口体系 · 高保真静态示意（浏览器直接打开，非真实运行数据）</div>
+
+  <!-- 三层总览 -->
+  <div class="flow">
+    <div class="fstep">
+      <span class="fno">第 1 层 · 入口</span>
+      <span class="ft">① 全局搜索（侧边栏）</span>
+      <span class="fd">模式切换 Work / Code · ＋新建任务 / 自动化 · 会话内容搜索（聚焦 · 加载 · 空态 · hasMore）</span>
+    </div>
+    <span class="farrow">→</span>
+    <div class="fstep">
+      <span class="fno">第 2 层 · 会话内</span>
+      <span class="ft">② 会话头部入口工具栏 ＋ ③ 会话功能坞</span>
+      <span class="fd">目标 / 队列 / 子代理 / 技能 四入口，头部胶囊按钮 ↔ 右侧单层 tab 面板联动</span>
+    </div>
+    <span class="farrow">→</span>
+    <div class="fstep">
+      <span class="fno">第 3 层 · 管理</span>
+      <span class="ft">④ 管理页入口</span>
+      <span class="fd">工作区排序 / 打开目录 · 设置文档 / 恢复默认 / 添加提供商</span>
+    </div>
+  </div>
+  <!-- ========== ① 全局搜索（侧边栏） ========== -->
+  <div class="sec">
+    <div class="sec-head">
+      <span class="sec-num">①</span>
+      <div>
+        <div class="sec-title">全局搜索（侧边栏）</div>
+        <div class="sec-desc">左侧栏示意：模式 tabs 与导航 → 会话内容搜索框（四种态并排）→「置顶 / 任务列表」分组 → 底部管理导航</div>
+      </div>
+    </div>
+    <div class="sec-body">
+
+      <div class="s1-main">
+        <div class="win" style="flex:none">
+          <div class="win-bar">
+            <span class="dots"><i></i><i></i><i></i></span>
+            <span class="win-label">侧边栏 · Sidebar</span>
+            <span class="win-tag">264px</span>
+          </div>
+          <div class="sidebar-mock">
+            <div class="mode-tabs">
+              <span class="tab active">Work</span>
+              <span class="tab">Code</span>
+            </div>
+            <div class="nav">
+              <div class="nav-item"><span class="ni-ic">＋</span>新建任务</div>
+              <div class="nav-item"><span class="ni-ic">⚙</span>自动化</div>
+            </div>
+            <div class="search-box focus">
+              <input class="search-input" value="路由" spellcheck="false">
+              <span class="search-clear" title="清空">×</span>
+            </div>
+            <div class="side-block">
+              <div class="side-head"><span class="arrow">▾</span>置顶<span class="count">2</span></div>
+              <div class="task-item active"><span class="dot green"></span><span class="t-title">dsh 协议联调</span><span class="t-time">10:24</span></div>
+              <div class="task-item"><span class="dot"></span><span class="t-title">代理鉴权修复</span><span class="t-time">昨天</span></div>
+            </div>
+            <div class="side-block">
+              <div class="side-head"><span class="arrow">▾</span>任务列表<span class="count">6</span></div>
+              <div class="task-item"><span class="dot green"></span><span class="t-title">session/queue 帧处理</span><span class="t-time">09:58</span></div>
+              <div class="task-item"><span class="dot green"></span><span class="t-title">子代理目录扫描</span><span class="t-time">09:31</span></div>
+              <div class="task-item"><span class="dot"></span><span class="t-title">技能菜单接入</span><span class="t-time">08:12</span></div>
+            </div>
+            <div class="side-bottom">
+              <div class="nav-item active"><span class="ni-ic">●</span>连接状态</div>
+              <div class="nav-item"><span class="ni-ic">▤</span>工作区</div>
+              <div class="nav-item"><span class="ni-ic">⚙</span>设置</div>
+            </div>
+          </div>
+        </div>
+        <div class="main-placeholder">
+          <div class="mph-t">会话主区</div>
+          <div class="mph-s">头部入口工具栏 → 见 ② · 右侧会话功能坞 → 见 ③</div>
+        </div>
+      </div>
+
+      <div class="win">
+        <div class="win-bar">
+          <span class="dots"><i></i><i></i><i></i></span>
+          <span class="win-label">会话内容搜索框 · 四种态（并排）</span>
+          <span class="win-tag">search states</span>
+        </div>
+        <div class="states-row">
+
+          <div class="state-card">
+            <div class="st-head"><span class="st-name">聚焦态</span><span class="st-tag">:focus</span></div>
+            <div class="search-box focus">
+              <input class="search-input" value="路由" spellcheck="false">
+              <span class="search-clear">×</span>
+            </div>
+            <div class="st-hint">按 <kbd>/</kbd> 快速聚焦 · 聚焦蓝边高亮</div>
+          </div>
+
+          <div class="state-card">
+            <div class="st-head"><span class="st-name">加载态</span><span class="st-tag">searching</span></div>
+            <div class="search-box">
+              <input class="search-input" value="路由" spellcheck="false">
+              <span class="spinner-wrap"><span class="spinner"></span></span>
+            </div>
+            <div class="st-hint">正在搜索会话内容…</div>
+          </div>
+
+          <div class="state-card">
+            <div class="st-head"><span class="st-name">空态</span><span class="st-tag">empty</span></div>
+            <div class="search-box">
+              <input class="search-input" value="xzy" spellcheck="false">
+            </div>
+            <div class="st-empty">无匹配会话，试试更短的关键词</div>
+          </div>
+
+          <div class="state-card">
+            <div class="st-head"><span class="st-name">hasMore</span><span class="st-tag">截断提示</span></div>
+            <div class="search-box">
+              <input class="search-input" value="路由" spellcheck="false">
+              <span class="search-clear">×</span>
+            </div>
+            <div class="st-results">
+              <div class="st-result"><span class="dot green"></span><span class="t-title">路由鉴权</span></div>
+              <div class="st-result"><span class="dot"></span><span class="t-title">会话路由分发</span></div>
+              <div class="st-more">搜索结果（3，更多未显示）</div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+  </div>
+  <!-- ========== ② 会话头部入口工具栏 ========== -->
+  <div class="sec">
+    <div class="sec-head">
+      <span class="sec-num">②</span>
+      <div>
+        <div class="sec-title">会话头部入口工具栏</div>
+        <div class="sec-desc">主区顶栏：会话标题 + 运行状态徽章 + 右侧四个胶囊入口（🎯目标 / ☰队列 / 👥子代理 / 💠技能）；点击按钮联动展开右侧会话功能坞并切到对应 tab</div>
+      </div>
+    </div>
+    <div class="sec-body">
+
+      <div class="s2-row">
+
+        <div class="s2-col">
+          <div class="win">
+            <div class="win-bar">
+              <span class="dots"><i></i><i></i><i></i></span>
+              <span class="win-label">会话头部 · 常规态（目标 active / 队列待处理 2 / 子代理运行 1）</span>
+              <span class="win-tag">conv-head</span>
+            </div>
+            <div class="conv-mock">
+              <div class="conv-head">
+                <div class="conv-title-wrap">
+                  <span class="conv-title">dsh 协议联调</span>
+                  <span class="badge green">运行中</span>
+                </div>
+                <div class="head-actions">
+                  <button class="cap goal-active" title="阶段着色：active=绿 / paused=橙 / complete=灰"><span class="ic">🎯</span>目标</button>
+                  <button class="cap"><span class="ic">☰</span>队列<span class="cap-badge red">2</span></button>
+                  <button class="cap"><span class="ic">👥</span>子代理<span class="cap-badge green">1</span></button>
+                  <button class="cap"><span class="ic">💠</span>技能<span class="caret">▾</span></button>
+                </div>
+              </div>
+              <div class="conv-body">
+                <div class="sk-line w70"></div>
+                <div class="sk-line w90"></div>
+                <div class="sk-line w50"></div>
+                <div class="sk-line w80"></div>
+              </div>
+            </div>
+          </div>
+          <div class="note-line">
+            <b>角标语义：</b>队列＝待处理消息数（红 2）· 子代理＝运行中数量（绿 1）· 技能＝下拉菜单（点击插入 <span class="mono">/name</span>）· 目标＝按阶段着色
+          </div>
+        </div>
+
+        <div class="s2-col">
+          <div class="win">
+            <div class="win-bar">
+              <span class="dots"><i></i><i></i><i></i></span>
+              <span class="win-label">会话头部 · 无目标引导态</span>
+              <span class="win-tag">goal empty</span>
+            </div>
+            <div class="conv-mock">
+              <div class="conv-head">
+                <div class="conv-title-wrap">
+                  <span class="conv-title">功能入口设计讨论</span>
+                  <span class="badge gray">空闲</span>
+                </div>
+                <div class="head-actions">
+                  <button class="cap goal-empty" title="无目标 → 点击进入「设定目标」引导"><span class="ic">🎯</span>＋ 设定目标</button>
+                  <button class="cap"><span class="ic">☰</span>队列</button>
+                  <button class="cap"><span class="ic">👥</span>子代理<span class="cap-badge green">1</span></button>
+                  <button class="cap"><span class="ic">💠</span>技能<span class="caret">▾</span></button>
+                </div>
+              </div>
+              <div class="conv-body">
+                <div class="sk-line w60"></div>
+                <div class="sk-line w85"></div>
+                <div class="sk-line w40"></div>
+              </div>
+            </div>
+          </div>
+          <div class="note-line">
+            <b>无目标时：</b>🎯 目标按钮降级为灰色引导态（dashed 边框），点击后进入「设定目标」流程；队列角标随待处理数量实时更新，为 0 时不显示角标
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+  </div>
+  <!-- ========== ③ 右侧会话功能坞 ========== -->
+  <div class="sec">
+    <div class="sec-head">
+      <span class="sec-num">③</span>
+      <div>
+        <div class="sec-title">右侧会话功能坞</div>
+        <div class="sec-desc">主区右侧窄面板 · 单行分段切换（目标 | 队列 | 子代理 | 技能），默认高亮「队列」；下方并列示意其余三个子 tab 的展开态（点击上方分段可切换演示）</div>
+      </div>
+    </div>
+    <div class="sec-body">
+
+      <div class="win">
+        <div class="win-bar">
+          <span class="dots"><i></i><i></i><i></i></span>
+          <span class="win-label">会话功能坞 · 单层 tab（点击分段切换）</span>
+          <span class="win-tag">dock / 380px</span>
+        </div>
+        <div class="dock-wrap">
+          <div class="dock">
+            <div class="dock-tabs">
+              <button class="dock-tab" data-p="goal"><span class="di">🎯</span>目标</button>
+              <button class="dock-tab on" data-p="queue"><span class="di">☰</span>队列</button>
+              <button class="dock-tab" data-p="sa"><span class="di">👥</span>子代理</button>
+              <button class="dock-tab" data-p="skill"><span class="di">💠</span>技能</button>
+            </div>
+            <div class="dock-body">
+
+              <!-- 目标 tab -->
+              <div class="dock-panel" id="p-goal">
+                <div class="dp-sec">
+                  <div class="dp-head">当前目标 <span class="badge green sm">active</span></div>
+                  <div class="goal-obj">将 dsh 客户端请求面 52/52 全部接入，并统一功能入口体系</div>
+                  <div class="goal-prog">
+                    <div class="gp-meta"><span>第 1 / 3 轮</span><span class="gp-pct">33%</span></div>
+                    <div class="progress"><i style="width:33%"></i></div>
+                  </div>
+                  <div class="goal-acts">
+                    <a>编辑</a><a>暂停</a><a>完成</a><a class="danger">清除</a>
+                  </div>
+                </div>
+                <div class="note-line" style="margin-top:4px">阶段着色：active＝绿 · paused＝橙 · complete＝灰；清除前需确认</div>
+              </div>
+
+              <!-- 队列 tab（默认） -->
+              <div class="dock-panel on" id="p-queue">
+                <div class="dp-sec">
+                  <div class="dp-head">待处理消息<span class="dp-count">3</span></div>
+                  <div class="q-item">
+                    <span class="q-badge q-queued">排队</span>
+                    <span class="q-text">将上述改动整理为一次提交并推送</span>
+                    <span class="q-no mono">#12</span>
+                    <span class="q-acts"><a>编辑</a><a>插队</a><a class="danger">移除</a></span>
+                  </div>
+                  <div class="q-item">
+                    <span class="q-badge q-jump">插队</span>
+                    <span class="q-text">为 session/queue 帧补一份协议注释</span>
+                    <span class="q-no mono">#13</span>
+                    <span class="q-acts"><a>编辑</a><a>插队</a><a class="danger">移除</a></span>
+                  </div>
+                  <div class="q-item">
+                    <span class="q-badge q-queued">排队</span>
+                    <span class="q-text">运行全部回归测试并汇总结果</span>
+                    <span class="q-no mono">#14</span>
+                    <span class="q-acts"><a>编辑</a><a>插队</a><a class="danger">移除</a></span>
+                  </div>
+                </div>
+                <div class="dp-sec">
+                  <div class="dp-head">后台任务<span class="dp-count">4</span></div>
+                  <div class="bgt"><span class="bgt-cmd mono">bash · npm run build --watch</span><span class="badge green sm">运行</span></div>
+                  <div class="bgt"><span class="bgt-cmd mono">pwsh · cargo check (src-tauri)</span><span class="badge green sm">运行</span></div>
+                  <div class="bgt"><span class="bgt-cmd mono">bash · pytest tests/queue</span><span class="badge gray sm">完成</span></div>
+                  <div class="bgt"><span class="bgt-cmd mono">bash · rg "queue" src/lib</span><span class="badge red sm">失败</span></div>
+                </div>
+              </div>
+
+              <!-- 子代理 tab -->
+              <div class="dock-panel" id="p-sa">
+                <div class="dp-sec">
+                  <div class="dp-head">子代理<span class="dp-count">1 运行中</span></div>
+                  <div class="sa-row">
+                    <span class="dot green"></span>
+                    <span class="sa-label">research-doc</span>
+                    <span class="badge green sm">可继续</span>
+                    <span class="sa-acts"><a>查看记录</a><a class="danger">中断</a></span>
+                  </div>
+                  <div class="sa-row">
+                    <span class="dot"></span>
+                    <span class="sa-label">web-scraper</span>
+                    <span class="badge gray sm">一次性</span>
+                    <span class="sa-acts"><a>查看记录</a><a>中断</a></span>
+                  </div>
+                  <div class="sa-row">
+                    <span class="dot"></span>
+                    <span class="sa-label">unit-tester</span>
+                    <span class="badge gray sm">可继续</span>
+                    <span class="sa-acts"><a>查看记录</a><a>中断</a></span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 技能 tab -->
+              <div class="dock-panel" id="p-skill">
+                <div class="dp-sec">
+                  <div class="dp-head">技能<span class="dp-count">4</span></div>
+                  <div class="sk-row">
+                    <div class="sk-top"><span class="sk-name mono">/story</span><span class="sk-when">长文输出时</span></div>
+                    <span class="sk-desc">长文写作辅助：大纲到正文，支持日更与章节续写</span>
+                  </div>
+                  <div class="sk-row">
+                    <div class="sk-top"><span class="sk-name mono">/web</span><span class="sk-when">需最新网络信息</span></div>
+                    <span class="sk-desc">网页检索与抓取：时效性信息、官方文档核对</span>
+                  </div>
+                  <div class="sk-row">
+                    <div class="sk-top"><span class="sk-name mono">/test</span><span class="sk-when">新功能实现前</span></div>
+                    <span class="sk-desc">测试驱动开发：先写测试再实现</span>
+                  </div>
+                  <div class="sk-row">
+                    <div class="sk-top"><span class="sk-name mono">/docs</span><span class="sk-when">核对项目文档</span></div>
+                    <span class="sk-desc">文档审校：术语、版本号、操作步骤一致性</span>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="win">
+        <div class="win-bar">
+          <span class="dots"><i></i><i></i><i></i></span>
+          <span class="win-label">其余三个子 tab 展开态（并列示意）</span>
+          <span class="win-tag">goal / subagent / skill</span>
+        </div>
+        <div class="minis-row">
+
+          <!-- 目标 tab 展开态 -->
+          <div class="mini">
+            <div class="mini-head">🎯 目标 tab</div>
+            <div class="mini-body">
+              <div class="dp-head">当前目标 <span class="badge green sm">active</span></div>
+              <div class="goal-obj">将 dsh 客户端请求面 52/52 全部接入，并统一功能入口体系</div>
+              <div class="goal-prog">
+                <div class="gp-meta"><span>第 1 / 3 轮</span><span class="gp-pct">33%</span></div>
+                <div class="progress"><i style="width:33%"></i></div>
+              </div>
+              <div class="goal-acts"><a>编辑</a><a>暂停</a><a>完成</a><a class="danger">清除</a></div>
+            </div>
+          </div>
+
+          <!-- 子代理 tab 展开态（含对话记录） -->
+          <div class="mini">
+            <div class="mini-head">👥 子代理 tab</div>
+            <div class="mini-body">
+              <div class="sa-row">
+                <span class="dot green"></span>
+                <span class="sa-label">research-doc</span>
+                <span class="badge green sm">可继续</span>
+                <span class="sa-acts"><a>查看记录</a><a class="danger">中断</a></span>
+              </div>
+              <div class="sa-hist">
+                <span class="hist-u">扫描 src/lib/dsh 下所有文件并总结协议类型</span>
+                <span class="hist-a">已完成扫描，共 14 个类型定义。关键结论：队列帧走 session/queue，目标走 projections.goal…</span>
+                <span class="hist-t mono">read · src/lib/dsh/client.ts</span>
+              </div>
+              <div class="sa-row">
+                <span class="dot"></span>
+                <span class="sa-label">web-scraper</span>
+                <span class="badge gray sm">一次性</span>
+                <span class="sa-acts"><a>查看记录</a><a>中断</a></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 技能 tab 展开态 -->
+          <div class="mini">
+            <div class="mini-head">💠 技能 tab</div>
+            <div class="mini-body">
+              <div class="sk-row">
+                <div class="sk-top"><span class="sk-name mono">/story</span><span class="sk-when">长文输出时</span></div>
+                <span class="sk-desc">长文写作辅助：大纲到正文，支持日更与章节续写</span>
+              </div>
+              <div class="sk-row">
+                <div class="sk-top"><span class="sk-name mono">/web</span><span class="sk-when">需最新网络信息</span></div>
+                <span class="sk-desc">网页检索与抓取：时效性信息、官方文档核对</span>
+              </div>
+              <div class="sk-row">
+                <div class="sk-top"><span class="sk-name mono">/test</span><span class="sk-when">新功能实现前</span></div>
+                <span class="sk-desc">测试驱动开发：先写测试再实现</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+  </div>
+  <!-- ========== ④ 管理页入口 ========== -->
+  <div class="sec">
+    <div class="sec-head">
+      <span class="sec-num">④</span>
+      <div>
+        <div class="sec-title">管理页入口</div>
+        <div class="sec-desc">工作区页：每行 ↑↓ 排序按钮 + 名称 + 路径 + 打开目录 / 重命名 / 删除；设置页：「模型提供商」卡片头部按钮（打开设置文档 / 恢复默认 / ＋添加提供商），视觉风格统一收口</div>
+      </div>
+    </div>
+    <div class="sec-body">
+
+      <div class="s4-row">
+
+        <div class="s4-col">
+          <div class="win">
+            <div class="win-bar">
+              <span class="dots"><i></i><i></i><i></i></span>
+              <span class="win-label">工作区页 · 排序 / 打开目录入口</span>
+              <span class="win-tag">workspaces</span>
+            </div>
+            <div class="ws-mock">
+              <div class="ws-row">
+                <div class="ws-order">
+                  <button class="ob" title="上移">↑</button>
+                  <button class="ob" title="下移">↓</button>
+                </div>
+                <span class="ws-name">deepseek-harness</span>
+                <span class="ws-path mono">C:\dev\deepseek-harness</span>
+                <div class="ws-acts"><a>打开目录</a><a>重命名</a><a class="danger">删除</a></div>
+              </div>
+              <div class="ws-row">
+                <div class="ws-order">
+                  <button class="ob" title="上移">↑</button>
+                  <button class="ob" title="下移">↓</button>
+                </div>
+                <span class="ws-name">dsh-wui-react</span>
+                <span class="ws-path mono">D:\repo\dsh-wui-react</span>
+                <div class="ws-acts"><a>打开目录</a><a>重命名</a><a class="danger">删除</a></div>
+              </div>
+              <div class="ws-row">
+                <div class="ws-order">
+                  <button class="ob" title="上移">↑</button>
+                  <button class="ob" disabled title="已到最后一位">↓</button>
+                </div>
+                <span class="ws-name">rust-tooling</span>
+                <span class="ws-path mono">C:\tools\rust-tooling</span>
+                <div class="ws-acts"><a>打开目录</a><a>重命名</a><a class="danger">删除</a></div>
+              </div>
+            </div>
+          </div>
+          <div class="note-line">
+            <b>说明：</b>↑↓ 与既有会话右键「上移 / 下移」同一语义（<span class="mono">workspace.insertSessionBefore</span>），视觉收口为 icon+文字 按钮
+          </div>
+        </div>
+
+        <div class="s4-col">
+          <div class="win">
+            <div class="win-bar">
+              <span class="dots"><i></i><i></i><i></i></span>
+              <span class="win-label">设置页 · 模型提供商卡片头部</span>
+              <span class="win-tag">settings</span>
+            </div>
+            <div class="set-mock">
+              <div class="pm-head">
+                <span class="pm-title">模型提供商</span>
+                <div class="pm-actions">
+                  <button class="pm-btn">📄 打开设置文档</button>
+                  <button class="pm-btn">↺ 恢复默认</button>
+                  <button class="pm-btn primary">＋ 添加提供商</button>
+                </div>
+              </div>
+              <div class="provider-row">
+                <span class="p-name">DeepSeek</span>
+                <span class="p-model">deepseek-chat / deepseek-reasoner</span>
+                <span class="p-id mono">deepseek</span>
+                <span class="badge green sm">已启用</span>
+              </div>
+              <div class="provider-row">
+                <span class="p-name">OpenAI</span>
+                <span class="p-model">gpt-4o</span>
+                <span class="p-id mono">openai</span>
+                <span class="badge gray sm">未启用</span>
+              </div>
+              <div class="provider-row">
+                <span class="p-name">本地 Ollama</span>
+                <span class="p-model">llama3.2</span>
+                <span class="p-id mono">ollama</span>
+                <span class="badge gray sm">未启用</span>
+              </div>
+            </div>
+          </div>
+          <div class="note-line">
+            <b>说明：</b>「打开设置文档 / 恢复默认」与页内其他按钮统一为 icon+文字 风格；密钥配置仍交给 dsh（凭据零存储），本页仅管理提供商元数据
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+  </div>
+
+  <!-- 底部图例 -->
+  <div class="foot">
+    <div class="legend">
+      <span><i style="background:var(--green)"></i>运行 / active / 已启用</span>
+      <span><i style="background:var(--orange)"></i>paused / 警告态</span>
+      <span><i style="background:var(--red)"></i>失败 / 危险操作 / 数量角标</span>
+      <span><i style="background:var(--accent)"></i>主操作 / 聚焦 / 链接</span>
+      <span><i style="background:var(--text-3)"></i>中性 / 次要</span>
+      <span class="mono" style="margin-left:auto">slate gray · 系统原生字体 · 无外部依赖</span>
+    </div>
+    <div class="foot-note">
+      设计稿仅供 UI 落地参考，非真实运行数据。头部按钮与功能坞联动、角标实时更新、搜索快捷键等交互行为在真实实现中生效。<br>
+      打开本文件应无脚本报错 · 单文件内联样式 · 不引用任何 CDN / 字体 / 图片。
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  var tabs = document.querySelectorAll('.dock-tab');
+  var panels = document.querySelectorAll('.dock-panel');
+  function activate(name) {
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].classList.toggle('on', tabs[i].getAttribute('data-p') === name);
+    }
+    for (var j = 0; j < panels.length; j++) {
+      panels[j].classList.toggle('on', panels[j].id === 'p-' + name);
+    }
+  }
+  for (var k = 0; k < tabs.length; k++) {
+    tabs[k].addEventListener('click', function () {
+      activate(this.getAttribute('data-p'));
+    });
+  }
+})();
+</script>
+
+</body>
+</html>
