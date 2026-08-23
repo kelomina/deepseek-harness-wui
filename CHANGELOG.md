@@ -10,6 +10,8 @@ All notable user-visible changes are aggregated here. / 本项目重要变更按
 
 ### Added / 新增
 
+- **First-run prerequisite auto-setup**: on launch the app detects Node.js and the dsh runtime; missing pieces get one-click auto-install — Node v22.19.0 downloaded from the official nodejs.org dist with SHA256 verified against SHASUMS256.txt then silently installed via an elevation prompt (UAC / admin password), and dsh via the existing managed-runtime pipeline (sha512-verified, rollback-able). Windows NSIS installer additionally warns at install time when Node.js is absent. The dsh launcher now resolves node by absolute path so a freshly-installed Node works without restarting the app — 首启自动检测并安装缺失的 Node.js 与 dsh 运行时（官方源 + 哈希校验 + 提权静默安装）；Windows 安装包在安装期同步提示；启动器改用 node 绝对路径解析。
+
 - **macOS support (compile-level + CI builds)**: platform-gated system proxy detection (`scutil --proxies`), stale-process cleanup via `lsof`+`ps`, symlink-based routing-suite links, native `pbcopy` clipboard, macOS npx fallback paths; WSL features degrade gracefully. GitHub Actions workflow builds unsigned app+dmg on macos runners and NSIS/MSI on Windows on every push/PR — **macOS 支持落地**：平台门控的代理探测/进程清理/symlink 链接/pbcopy 剪贴板，WSL 优雅降级；GitHub Actions 在 macos runner 上自动打包 app+dmg（真机运行仍待验证，见 RISKS）。
 - Default model card in Settings (providers tab): reads/edits the new dsh `agent-default-model` settings namespace (provider / model / reasoning effort, CAS-guarded write, dropdowns from the live model catalog); write path live-verified — 设置页新增「默认模型（新会话）」卡片，接入 dsh 0.1.1-rc.2 新增的 agent-default-model 命名空间（CAS 写路径已 live 实证）。
 - Status page now shows the host home directory (new `home` field of host.describe) — 状态页宿主信息新增「宿主主目录」。

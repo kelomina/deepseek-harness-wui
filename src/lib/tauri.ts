@@ -104,6 +104,29 @@ export interface RoutingSuiteStatus {
   dsh_home: string;
 }
 
+/** 首启前置条件检测结果（Node + dsh 运行时）。 */
+export interface PrereqCheck {
+  ok: boolean;
+  node_path: string | null;
+  node_version: string | null;
+  dsh_runtime_version: string | null;
+  bundled_present: boolean;
+}
+
+export interface NodeInstallReport {
+  ok: boolean;
+  node_path: string | null;
+  node_version: string | null;
+  steps: string[];
+  error: string | null;
+}
+
+export const prereq = {
+  check: () => invoke<PrereqCheck>("prereq_check_cmd"),
+  /** 长耗时：下载官方 Node 安装包（SHA256 校验）+ 提权静默安装（UAC/管理员密码框）。 */
+  installNode: () => invoke<NodeInstallReport>("prereq_install_node_cmd"),
+};
+
 export const routingSuite = {
   status: () => invoke<RoutingSuiteStatus>("routing_suite_status_cmd"),
   install: () => invoke<string>("routing_suite_install_cmd"),

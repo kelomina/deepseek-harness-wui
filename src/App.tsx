@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { appStore, useAppState } from "./lib/dsh/store";
 import { ErrorBanner } from "./components/ui";
 import { TitleBar } from "./components/TitleBar";
@@ -10,6 +11,8 @@ import { StatusPage } from "./pages/StatusPage";
 import { WorkspacesPage } from "./pages/WorkspacesPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { ToolDock, type ToolTab, type SessionSubTab } from "./components/ToolDock";
+import { SetupWizard } from "./components/SetupWizard";
+import type { PrereqCheck } from "./lib/tauri";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 
 export default function App() {
@@ -18,10 +21,29 @@ export default function App() {
   const [toolDockOpen, setToolDockOpen] = useState(false);
   const [sessionSubTab, setSessionSubTab] = useState<SessionSubTab>("queue");
   const [mode, setMode] = useState<Mode>("work");
+  // 首启前置条件门控：checking → needed（显示安装向导）/ ready（正常初始化）
+  const [setup, setSetup] = useState<"checking" | "needed" | "ready">("checking");
+  const [prereqInitial, setPrereqInitial] = useState<PrereqCheck | null>(null);
   const { sessions, selectedSessionId, status, error, notice } = useAppState();
 
   useEffect(() => {
-    void appStore.init();
+    (async () => {
+      try {
+        const c = await invoke<PrereqCheck | null>("prereq_check_cmd");
+        // c 为 null/异常（旧 mock 环境）不阻塞主流程
+        if (c && typeof c === "object") {
+          setPrereqInitial(c);
+          if (c.ok === false) {
+            setSetup("needed");
+            return;
+          }
+        }
+      } catch {
+        // 忽略：探测命令不可用时不阻塞
+      }
+      setSetup("ready");
+      void appStore.init();
+    })();
   }, []);
 
   const navigate = (v: View) => setView(v);
@@ -59,13 +81,18 @@ export default function App() {
           onSelectSession={selectSession}
         />
         <main className="main">
-          {view === "welcome" && <WelcomeView mode={mode} onEnterSession={() => setView(mode === "code" ? "code" : "session")} onOpenSettings={() => setView("settings")} onOpenToolDock={openToolDock} />}
-          {view === "session" && <WorkSessionView onOpenSettings={() => setView("settings")} onOpenToolDock={openToolDock} onOpenSessionDock={openSessionDock} />}
-          {view === "code" && <CodeView />}
-          {view === "status" && <StatusPage />}
-          {view === "workspaces" && <WorkspacesPage />}
-          {view === "settings" && <SettingsPage onStartSession={() => setView(mode === "code" ? "code" : "session")} />}
-          {toolDockOpen && view !== "code" && (
+          {setup === "checking" && <div className="empty-state" style={{ margin: "auto" }}>正在检测运行环境…</div>}
+          {setup !== "checking" && (
+            <>
+              {view === "welcome" && <WelcomeView mode={mode} onEnterSession={() => setView(mode === "code" ? "code" : "session")} onOpenSettings={() => setView("settings")} onOpenToolDock={openToolDock} />}
+              {view === "session" && <WorkSessionView onOpenSettings={() => setView("settings")} onOpenToolDock={openToolDock} onOpenSessionDock={openSessionDock} />}
+              {view === "code" && <CodeView />}
+              {view === "status" && <StatusPage />}
+              {view === "workspaces" && <WorkspacesPage />}
+              {view === "settings" && <SettingsPage onStartSession={() => setView(mode === "code" ? "code" : "session")} />}
+            </>
+          )}
+          {toolDockOpen && view !== "code" && setup !== "checking" && (
             <ToolDock
               tab={toolTab}
               onTabChange={setToolTab}
@@ -76,6 +103,15 @@ export default function App() {
           )}
         </main>
       </div>
+      {setup === "needed" && prereqInitial && (
+        <SetupWizard
+          prereq={prereqInitial}
+          onDone={() => {
+            setSetup("ready");
+            void appStore.init();
+          }}
+        />
+      )}
       {notice && (
         <div className="notice-banner" title={notice}>
           <span>{notice}</span>

@@ -124,7 +124,7 @@ pub fn is_exact_version(v: &str) -> bool {
     parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
 }
 
-fn client_with_proxy() -> Result<reqwest::blocking::Client, String> {
+pub(crate) fn client_with_proxy() -> Result<reqwest::blocking::Client, String> {
     let mut b = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .connect_timeout(std::time::Duration::from_secs(20));

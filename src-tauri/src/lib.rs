@@ -4,6 +4,7 @@ use dsh::config::{load, DshConfig};
 use dsh::event::TauriSink;
 use dsh::manager::{lock, spawn_health_watcher, DshManager, DshStatusView};
 use dsh::plugins::{plugins_import, plugins_list, plugins_remove, plugins_set_enabled};
+use dsh::prereq;
 use dsh::proxy::{start_proxy, ProxyHandle};
 use dsh::routing_suite::{
     routing_suite_install, routing_suite_remove, routing_suite_status, RoutingSuiteStatus,
@@ -528,6 +529,38 @@ fn runtime_set_active_cmd(
     Ok(())
 }
 
+// ---- 首启前置条件：Node.js 检测/自动安装 + dsh 运行时状态汇总 ----
+#[tauri::command]
+fn prereq_check_cmd(app: AppHandle, state: State<AppState>) -> prereq::PrereqCheck {
+    let node = prereq::find_node();
+    let node_version = node.as_ref().and_then(|p| {
+        std::process::Command::new(p)
+            .arg("--version")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    });
+    let dsh_runtime_version = lock(state.manager.lock()).config().managed_runtime_version.clone();
+    let bundled_present = dsh::manager::bundled_bin_path().is_ok();
+    let _ = &app;
+    prereq::PrereqCheck {
+        ok: node_version.is_some() && (dsh_runtime_version.is_some() || bundled_present),
+        node_path: node.map(|p| p.to_string_lossy().to_string()),
+        node_version,
+        dsh_runtime_version,
+        bundled_present,
+    }
+}
+
+/// 长耗时（下载 ~30MB + 静默安装 + 提权弹窗）：放阻塞线程池执行。
+#[tauri::command]
+async fn prereq_install_node_cmd() -> Result<prereq::NodeInstallReport, String> {
+    tokio::task::spawn_blocking(prereq::install_node)
+        .await
+        .map_err(|e| format!("安装任务失败: {e}"))
+}
+
 // ---- 0.2.0 条目 2：DSH WSL 配置与连接 ----
 #[tauri::command]
 fn wsl_status_cmd() -> wsl::WslStatus {
@@ -656,6 +689,8 @@ pub fn run() {
             runtime_rollback_cmd,
             runtime_remote_versions_cmd,
             runtime_set_active_cmd,
+            prereq_check_cmd,
+            prereq_install_node_cmd,
             wsl_status_cmd,
             wsl_save_config_cmd,
             wsl_provision_cmd

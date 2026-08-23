@@ -2,6 +2,7 @@ pub mod config;
 pub mod event;
 pub mod manager;
 pub mod plugins;
+pub mod prereq;
 pub mod proxy;
 pub mod routing_suite;
 pub mod runtime;

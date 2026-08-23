@@ -260,15 +260,19 @@ impl DshManager {
 
     fn build_command(&self) -> Result<(String, Vec<String>), String> {
         let port = self.config.port.to_string();
+        // node 用绝对路径解析：安装器/首启装完 Node 后当前进程 PATH 不刷新，find_node 会兜底已知默认位置
+        let node = crate::dsh::prereq::find_node()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "node".to_string());
         match self.config.exec_mode {
             ExecMode::Bundled => {
                 let bin = self.managed_runtime_bin_path()?;
-                Ok(("node".to_string(), vec![bin, "web".to_string(), "--port".to_string(), port]))
+                Ok((node, vec![bin, "web".to_string(), "--port".to_string(), port]))
             }
             ExecMode::Npx => {
                 let npx = resolve_npx_cli()?;
                 Ok((
-                    "node".to_string(),
+                    node,
                     vec![
                         npx,
                         "-y".to_string(),

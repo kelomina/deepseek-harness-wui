@@ -421,3 +421,23 @@ DSH_HOME=用户真实 `~/.dsh`，测试后 taskkill /T 清理）。输出：`evi
   - 移除 `dsh-client-ui-slots`/`dsh-client-web` 等挂载契约包 → 注入器链接对容错 + 自愈修正；插件 UI 挂载路径
     不复存在，只读清单决策维持并更新说明。
   - 其余新增/移除包均为宿主内部能力，不经 apiproxy 暴露，无需应用侧接入。
+
+## 2026-08-23：首启前置条件检测与自动安装（Node.js / dsh 运行时）
+
+背景：打包产物不含 dsh 与 Node，全新机器需手工准备。现落地「安装包检测提示 + 应用首启自动安装」：
+
+- **NSIS 安装钩子**（`src-tauri/nsis-hooks.nsh`，POSTINSTALL）：读注册表 `SOFTWARE\Node.js` 检测 Node，
+  缺失时弹提示告知首启将引导自动安装。不在安装器内静默装 Node——本安装器按当前用户安装无提权，
+  Node MSI 需要 UAC；由应用经系统授权弹窗完成（macOS DMG 无安装期脚本，天然走应用侧）。
+- **应用首启门禁**（App.tsx → SetupWizard）：启动即调用 `prereq_check_cmd`
+  （find_node：PATH `node -p process.execPath` → 已知默认位置兜底；dsh = 受管版本或 bundled 存在性）。
+  缺失项显示向导：
+  - 装 Node：`prereq_install_node_cmd`（spawn_blocking）——下载 nodejs.org 官方 v22.19.0（win x64/arm64 msi、
+    mac universal pkg），以官方 SHASUMS256.txt 做 SHA256 校验，不一致拒绝安装；
+    提权静默安装（Windows PowerShell RunAs→UAC；macOS osascript administrator privileges→密码框）；
+    完成后 find_node 复检（含 PATH 未刷新兜底）并校验 >=22.19（pi-ai 引擎要求）。
+  - 装 dsh：复用既有受管运行时管道（runtime_install 0.1.1-rc.2 + setActive，sha512 必校验、可回滚）。
+- manager 启动 dsh 改用 find_node() 绝对路径（规避安装后当前进程 PATH 未刷新）。
+- 验证：cargo test --lib 32 passed（新增 SHASUMS 解析/版本比较/find_node 三测）；npm run build 通过。
+- 未验证 [边界]：install_node 完整提权安装流程未在本机实测（本机 node v25 已存在，触发会真实改动用户机器）；
+  下载与校验逻辑以单测+CI 编译覆盖。建议后续在干净 VM 实测一次并向导 UI 截图留证。
