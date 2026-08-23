@@ -8,7 +8,7 @@
 feat(shell): add dsh process manager
 fix(sessions): answer approvals with result envelope
 docs(hard-limits): document restart policy
-chore(runtime): bump @deepseek-ai/dsh to 0.1.0-rc.6
+chore(runtime): bump @deepseek-ai/dsh to 0.1.1-rc.2
 ```
 
 ## 工作流

@@ -49,7 +49,7 @@ spike（2026-08-14，dsh 0.1.0-rc.6）实测：`/api` 对带非 loopback `Origin
 ## 进程托管（dsh-manager）
 
 - 启动命令按 `exec_mode` 构造：bundled（`node runtime/node_modules/@deepseek-ai/dsh/lib/bin.js
-  web --port N`）/ npx（`node <npm>/npx-cli.js -y @deepseek-ai/dsh@0.1.0-rc.6 web --port N`）/
+  web --port N`）/ npx（`node <npm>/npx-cli.js -y @deepseek-ai/dsh@0.1.1-rc.2 web --port N`）/
   path（自定义可执行或 .cmd）。
 - 状态机：Stopped → Starting → Running / Error；健康检查每 2s TCP 探测 `/`；启动超时 90s；
   意外退出/失联时按 `max_restarts`（默认 3 次/600s）自动重启。
@@ -78,7 +78,7 @@ src-tauri/src/
   dsh/manager.rs      进程托管/看门狗/日志
   dsh/proxy.rs        axum 反向代理（HTTP + WS）
   lib.rs              Tauri 命令与生命周期
-runtime/              固定版本 dsh（@deepseek-ai/dsh@0.1.0-rc.6）
+runtime/              固定版本 dsh（@deepseek-ai/dsh@0.1.1-rc.2）
 scripts/hooks/        git 护栏 hooks
 docs/                 本文档
 ```

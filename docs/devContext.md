@@ -427,3 +427,8 @@
 - 2026-08-15：按评审意见修正：DEV_PLAN 失效引用改为 RISKS.md「Code 模式数据契约」；条目 3 补充 npm registry 首选下载源与校验要求；条目 4 补充模型可识别性 spike 前置；条目 8/9 补充 session-export 导出路径；后续迭代候选加注重复项口径。
 - 2026-08-15：按本契约完成 0.2.0 十项开发（P0 会话正确性、P1 工具视图/WSL/运行时、P2 检测/插件 spike）；
 pm run build、cargo check、Rust 单元测试 12 项、fixture 测试（render 8/8、revert 5/5、toolviews 5/5、cot 样本）全部通过；证据记录于 docs/RISKS.md。
+- 2026-08-23：P0——2026-08-18 全量接入链路 live 冒烟收口（goal 六动词全链/updateQueue/attachment/workspace 排序/openPath/
+openDocument/subagent.list/mux 事件面全 PASS；两项部署级发现：搜索索引默认 openAt=never 可经 patch 启用、skill.list 冷会话
+session-not-found；均已在 UI 加优雅降级）。P1——功能入口三层体系与 feature-entrypoints 设计稿对齐收尾（搜索四态补 spinner/
+聚焦高亮、目标胶囊无目标引导态、队列坞空态、功能坞分段图标、默认子 tab=队列、设置文档 hasDocument 门禁）。
+证据：evidence/p0-smoke-20260823-1213.txt、evidence/p0-search-patch-20260823.txt；npm run build + fixture 测试通过。

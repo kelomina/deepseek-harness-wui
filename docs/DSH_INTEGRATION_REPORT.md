@@ -1,6 +1,6 @@
 # dsh 接入完成度报告
 
-> 扫描日期：2026-08-18
+> 扫描日期：2026-08-18（**2026-08-23 对 dsh 0.1.1-rc.2 重扫，见文末「重扫附录」**）
 > 依据版本：`node_modules/@deepseek-ai/dsh-host-apiproxy`（`.npmrc` 精确锁定版本）
 > 真相源：`lib/types/api/rpc-map.d.ts`（52 个客户端请求方法）、`lib/types/api/events.d.ts`（事件面）
 
@@ -62,3 +62,33 @@ dsh 官方暴露 **52 个客户端请求方法**，接入前已用 **32 个**（
 
 - `session-export` / `downloads` / `jobs` 等类型为宿主内部模块或事件 payload，不计入 52 项请求面。
 - dsh 处于 developer preview，升级依赖后需重扫本报告。
+
+## 七、重扫附录（2026-08-23，dsh 0.1.1-rc.2 vs 0.1.0-rc.6）
+
+### 客户端协议面（本项目接入面）
+
+| 面 | 结论 |
+|---|---|
+| rpc-map（52 方法） | **零增删**（类型文件逐字节一致） |
+| events（事件帧） | **零增删** |
+| host.describe | 返回新增 `home` 字段 → 已接入：状态页「宿主信息」显示宿主主目录 |
+| 错误分类 rpc.d.ts | 移除 `settings-not-exposed` 成员 → 应用无引用，无需处理 |
+| sessions 投影映射 | `SessionProjectionStateMap` 声明微调（imageLimits/sessionListMetadata）→ 无代码影响 |
+
+### 设置命名空间
+
+- **新增 `agent-default-model`**：全局默认模型 `{ provider, model, reasoningEffort? }`，带 CAS revision，
+  applies=live。**已接入**：设置页「模型提供商」tab 新增「默认模型（新会话）」卡片
+  （读 = settings.describe；写 = settings.update + expectedRevision；下拉复用 llm.models 目录与模型 reasoning.efforts；
+  写路径 live 实证：CAS 幂等回写 ok、值不变，证据 `evidence/settings-describe-rc2.txt`）。
+
+### runtime 包组合（host 侧，非客户端接入面）
+
+- 新增包：`dsh-authorization`、`dsh-file-reference(+local)`、`dsh-tool-pwsh-persistent`、
+  UI 类 `dsh-client-ui-renderer / ui-brand-official / ui-reference`；组合配置树新增挂载
+  `session-reference`、`file-reference-local`、`ui-*` 三插件与 openBrowser 钩子——均为宿主内部能力，
+  不经 apiproxy 暴露新 RPC，应用无需接入。
+- 移除包：`dsh-client-ui-slots`、`dsh-client-web`、`dsh-client-web-react`、`dsh-client-schema-form`、
+  `dsh-client-ui-primitives` 及 markdown/shiki 渲染链依赖。
+  - `dsh-client-ui-slots`：影响 vendored 注入器链接对（仅类型级引用）→ 安装器已容错跳过 + 自愈信号修正（见 RISKS 08-23 升级段）。
+  - 其余为本应用未引用的官方 shell/渲染包 → 插件 UI 挂载路径自 rc.2 起不复存在，维持只读清单决策（设置页说明文字已同步更新）。

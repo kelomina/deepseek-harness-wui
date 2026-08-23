@@ -1,13 +1,13 @@
 # 风险与已知问题
 
-最后更新：2026-08-16（dsh 0.1.0-rc.6）
+最后更新：2026-08-23（dsh **0.1.1-rc.2**；升级兼容性验证通过，见文末专段）
 
 ## 高风险
 
 | 风险 | 状态/缓解 |
 |---|---|
-| dsh developer preview，破坏性变更频繁 | 所有 @deepseek-ai/* 精确锁定（0.1.0-rc.6）；升级走 docs/DEVELOPMENT.md 流程 |
-| npm 分发不一致（如 dsh-type-meta 未发布、部分包 latest tag 落后） | 安装 `@deepseek-ai/dsh@0.1.0-rc.6` 实测成功；用 next tag 对应版本；升级时先做安装冒烟 |
+| dsh developer preview，破坏性变更频繁 | 所有 @deepseek-ai/* 精确锁定（**0.1.1-rc.2**）；升级走 docs/DEVELOPMENT.md 流程 |
+| npm 分发不一致（如 dsh-type-meta 未发布、部分包 latest tag 落后） | 安装 `@deepseek-ai/dsh@0.1.1-rc.2` 实测成功；用 next tag 对应版本；升级时先做安装冒烟 |
 | 官方浏览器包（dsh-client-connection/client）是自定义模块加载器格式，无法直接 import | 已绕过：复用 `dsh-host-apiproxy/client` 纯 ESM 协议核心 + 复刻官方 WS 传输（MIT）；包内 `src/*` exports 指向缺失文件，不可用 |
 | dsh `/api` 浏览器 Origin 围栏 | Rust 代理必选（已实现）；直连会被 403 |
 
@@ -299,9 +299,101 @@
 - [推断] 队列项编辑 `updateQueue(kind:edit)` 的 ContentBlock 按官方类型仅传 text 块；图片类队列项编辑为未验证路径。
 - 设置页接线语义：DeepSeek 官方保存走 `settings.update`（补丁 + expectedRevision CAS，revision 取自 getSettingsNamespace）；
   「恢复默认」走 `settings.replace(llm-pi-ai, {})`（整体重置用户层，含 secret 移除，前端二次确认）；
-  `settings.openDocument` 需宿主 hasDocument（打开按钮未按 describe.hasDocument 门禁，失败报错提示——待 live 确认后在 UI 加门禁）。
-- 验证：`npm run build`（tsc + vite）通过、`cargo check` 通过（1 个既有 dead_code 警告，与本次无关）。
-  **未 live 验证**：未在真实 dsh 上实操 goal/subagent/skills/queue/attachment 搜索排序等新链路（部分动作消耗 token 或改动用户数据，
-  如 settings.replace 重置、goal 创建）；接口形状以 0.1.0-rc.6 类型契约为准，live 冒烟列后续。
+  `settings.openDocument` 需宿主 hasDocument（已按 `settings.describe().hasDocument` 加 UI 门禁，live 实证见 2026-08-23 段）。
+- 验证：npm run build（tsc + vite）通过、cargo check 通过（1 个既有 dead_code 警告，与本次无关）。
+  **未 live 验证**：goal/subagent/skills/queue/attachment/workspace 排序/openPath/settings 等新链路——已于 2026-08-23 补齐 live 冒烟，见下方专段。
 - dsh 0.1.0-rc.6 验证日期：2026-08-18（类型级）；升级依赖后需重扫 DSH_INTEGRATION_REPORT.md。
 
+
+## 2026-08-23：P0 live 冒烟——2026-08-18 全量接入链路对真实 dsh 0.1.0-rc.6 验证（已收口）
+
+探针：`evidence/p0-smoke.mjs`（应用同款 AbstractApiClient 直连 127.0.0.1:<port>、无 Origin；bundled dsh 独立实例，
+DSH_HOME=用户真实 `~/.dsh`，测试后 taskkill /T 清理）。输出：`evidence/p0-smoke-20260823-1213.txt`。
+专项探针：`evidence/p0-search-patch.mjs`（搜索索引启用验证），输出 `evidence/p0-search-patch-20260823.txt`。
+
+### 结果（21 PASS + 2 项明示未验证）
+
+| 域 | 结果 | 证据要点 |
+|---|---|---|
+| host.describe | PASS | canOpenPath=true |
+| settings.describe | PASS | hasDocument=true；11 个命名空间（ui-onboarding…llm-pi-ai） |
+| workspace.list / create / insertBefore / delete | PASS | 临时工作区（系统临时目录）建→置顶排序→删，未动用户工作区顺序 |
+| sessions.list / search / attachment(updateQueue 错误契约) | PASS/记录 | 见下方发现 1 |
+| skill.list | 记录 | 见下方发现 2 |
+| subagent.list | PASS | entries=0, parentAvailable=false（冷会话） |
+| goal 六动词（create/edit/pause/resume/complete/clear） | PASS 全链 | CAS ref 逐级返回；mux `session/projection` 帧实时回推 phase 变化 active→paused→active→complete→清除后 null |
+| session.updateQueue | PASS（错误契约） | bogus id → `queue-item-not-found: queued item is no longer pending`（RPC 可达 + 类型化错误） |
+| session.attachment | PASS（错误契约） | 未引用 id → `attachment-error: Image is not referenced by this session.`（与 RISKS 08-18 推断一致：仅读已引用图片） |
+| workspace.insertSessionBefore / archiveSession | PASS | 测试会话建入临时工作区 → 移至末尾 → 归档，用户既有顺序零影响 |
+| host.openPath | PASS | ok 路径实测（临时目录弹出资源管理器一次） |
+| settings.openDocument | PASS | hasDocument=true → `{opened:true}`；设置页按钮已按 describe.hasDocument 门禁（关闭 08-18 待办） |
+| mux 事件面消费 | PASS | 实测帧型：session/projection×37、session/event×35、session/subscribed×2、session/queue×4 |
+
+### 发现 1 [事实]：会话内容搜索在 web profile 默认被禁用
+
+- 默认组合配置（`--dump-config` 与 `--dump-default-config` 一致）：`session-query-sqlite { path: ':memory:', openAt: never }`
+  ——非用户误配，是 dsh 0.1.0-rc.6 上游默认。触发时 `session.search` 返回
+  `internal: session search is disabled: this deployment configures the session-query index with openAt "never"`。
+- 启用路径已实证（专项探针 P1/P2/P3 全 PASS）：顶层 `--patch` 覆盖
+  `{ id: session-query-sqlite, config: { path: <持久 sqlite>, openAt: first-search } }` → 搜索正常（存量 corpus 命中 20 条、hasMore=true）、
+  索引文件落盘。[事实] FTS 索引仅覆盖消息文本（`persisted_docs(text)`，无 title 列），会话标题重命名不可搜。
+- UI 处置（2026-08-23）：侧栏搜索遇该错误进入 `searchDisabled` 提示态（说明原因与启用方法），不再弹通用错误横幅。
+
+### 发现 2 [事实]：skill.list 要求会话 attached（本进程内有活跃 agent）
+
+- 冷会话（自 dsh 启动以来未产生过模型回合）调用返回 `session-not-found: … (not attached)`；
+  apiproxy 实现为 `ctx.sessions.get()` + agent 注册表判定。成功路径需先有活跃回合，本轮按边界未验证（见 G1）。
+- UI 处置（2026-08-23）：功能坞技能面板与 env-bar 技能菜单遇 session-not-found 进入 `skillsUnavailable` 提示态
+  （"会话未激活，先发送一条消息"），不再弹通用错误横幅。
+
+### 明示未验证（G1/G2，原因记录）
+
+- subagent.prompt/interrupt 与真实排队流：需活跃模型回合（token 消耗；且本环境 deepseek-v4-flash 存在空回合问题，
+  同 2026-08-15 routing-suite 会话级验证边界）。
+- settings.update/replace：避免改动用户提供商配置；UI 已有确认门禁，类型契约以 0.1.0-rc.6 为准。
+- dsh 0.1.0-rc.6 验证日期：2026-08-23。
+
+## 2026-08-23：dsh 升级 0.1.0-rc.6 → 0.1.1-rc.2（兼容性验证通过）
+
+按 docs/DEVELOPMENT.md 升级流程执行：runtime 与根依赖精确锁定 0.1.1-rc.2（latest/next 双标签），全新安装
+（根 233 包；runtime 452 包）。manager.rs Npx 模式与 wsl.rs DEFAULT_DSH_VERSION 同步升版；pi-ai 引擎要求不变
+（node>=22.19.0，WSL Node 钉版仍有效）。
+
+### 协议面 diff（对照备份的 rc.6 类型契约）
+
+- [事实] `rpc-map.d.ts` 与 `events.d.ts` **零变化**：52 个请求方法与事件面完全一致，前端协议层无需改动。
+- host.describe 返回新增 `home` 字段（增量）；错误分类移除 `settings-not-exposed` 成员（应用无引用）；
+  `SessionProjectionStateMap` 类型声明微调。tsc 严格模式零改动编译通过。
+- 新增设置命名空间 `agent-default-model`（settings.describe 实测可见，增量）。
+
+### 兼容性发现与处置
+
+1. [事实] 上游 rc.2 移除 `@deepseek-ai/dsh-client-ui-slots` 包（rc.6 存在）。注入器仅类型级引用、运行时不需要；
+   应用安装器 `ensure_injector_links` 已有"目标缺失→跳过"容错（实测跳过不报错）。修复：自愈信号
+   （repair_injector_links）改为"目标存在且链接缺失"才算缺失，避免 rc.2 下每次启动空转自愈。
+2. [事实] web profile 默认配置不变：session-query-sqlite 仍 `{ path: ':memory:', openAt: never }`——
+   搜索默认禁用与 patch 启用路径在 rc.2 复验成立（专项探针 P1/P2/P3 全 PASS）。
+3. 本地残留处置：vendored 注入器 node_modules 内 5 个 junction 因本机 runtime 重装而悬空（gitignored 本地产物，
+   08-15 live 安装遗留），已清除并按应用同款 LINK_PAIRS 用 rc.2 runtime 重建 4 个（ui-slots 无目标跳过）。
+
+### live 冒烟复验（对 0.1.1-rc.2 全部通过）
+
+- 主探针 21 PASS：goal 六动词全链（CAS ref + projection 帧回推）、updateQueue/attachment 错误契约、workspace
+  create/insertBefore/insertSessionBefore/delete/archiveSession、host.openPath ok 路径、settings.describe/openDocument
+  （hasDocument=true）、mux 帧消费（projection/event/subscribed/queue）。注入器在用户 profile 中随 rc.2 正常装载
+  （boot 门禁即证明）。证据：`evidence/p0-smoke-rc2-<ts>.txt`、`evidence/p0-search-patch-rc2-20260823.txt`。
+- Rust：cargo test --lib 29 passed（含 junction/repair 用例）；cargo check 通过。前端：npm run build、fixture 测试
+  （render 8/8、toolviews 5/5）通过。
+- 未跑：`npm run tauri dev` 完整运行门禁（需交互窗口；Tauri 壳层本轮零改动，dsh 启动路径已经探针实证）。
+  G1/G2 边界同 08-23 早前记录（真实模型回合未验证）。
+- dsh 0.1.1-rc.2 验证日期：2026-08-23。
+
+### 接口增删扫描与接入处置（2026-08-23 补充）
+
+- 客户端协议面零增删（rpc-map 52 方法 / events 逐字节一致）；接口级变化与接入处置详见
+  `docs/DSH_INTEGRATION_REPORT.md`「七、重扫附录」。要点：
+  - 新增 settings 命名空间 `agent-default-model` → 已接入（设置页默认模型卡片，CAS 写路径 live 实证）。
+  - host.describe 新增 `home` → 已接入（状态页宿主主目录行）。
+  - 移除 `dsh-client-ui-slots`/`dsh-client-web` 等挂载契约包 → 注入器链接对容错 + 自愈修正；插件 UI 挂载路径
+    不复存在，只读清单决策维持并更新说明。
+  - 其余新增/移除包均为宿主内部能力，不经 apiproxy 暴露，无需应用侧接入。
