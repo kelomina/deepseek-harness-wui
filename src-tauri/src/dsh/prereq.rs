@@ -26,12 +26,6 @@ pub struct PrereqCheck {
     pub bundled_present: bool,
 }
 
-impl PrereqCheck {
-    pub fn ok(&self) -> bool {
-        self.node_version.is_some() && (self.dsh_runtime_version.is_some() || self.bundled_present)
-    }
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct NodeInstallReport {
     pub ok: bool,

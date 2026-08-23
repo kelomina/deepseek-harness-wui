@@ -159,7 +159,7 @@ pub fn detect_system_proxy() -> Option<String> {
     }
 }
 
-/// macOS：解析 `scutil --proxies` 的 HTTP 代理（SOCKS 与 http:// 语义不符，忽略）。
+/// macOS：解析 `scutil --proxies`。HTTP 代理返回 http://；仅 SOCKS 时返回 socks5://。
 #[cfg(target_os = "macos")]
 pub fn detect_system_proxy() -> Option<String> {
     let out = std::process::Command::new("scutil")
@@ -174,17 +174,25 @@ pub fn detect_system_proxy() -> Option<String> {
             .map(|(_, v)| v.trim().to_string())
             .filter(|s| !s.is_empty())
     };
-    if get("HTTPEnable")?.as_str() != "1" {
-        return None;
+    // HTTP 代理优先（reqwest http:// 语义直接可用）
+    if get("HTTPEnable")?.as_str() == "1" {
+        if let Some(host) = get("HTTPProxy").filter(|h| !h.is_empty()) {
+            return match get("HTTPPort") {
+                Some(port) if !port.is_empty() => Some(format!("http://{host}:{port}")),
+                _ => Some(format!("http://{host}")),
+            };
+        }
     }
-    let host = get("HTTPProxy")?;
-    if host.is_empty() {
-        return None;
+    // SOCKS 兜底（reqwest "socks" feature 支持 socks5://）
+    if get("SOCKSEnable").as_deref() == Some("1") {
+        if let Some(host) = get("SOCKSProxy").filter(|h| !h.is_empty()) {
+            return match get("SOCKSPort") {
+                Some(port) if !port.is_empty() => Some(format!("socks5://{host}:{port}")),
+                _ => Some(format!("socks5://{host}")),
+            };
+        }
     }
-    match get("HTTPPort") {
-        Some(port) if !port.is_empty() => Some(format!("http://{host}:{port}")),
-        _ => Some(format!("http://{host}")),
-    }
+    None
 }
 
 /// 其他平台（Linux 等）：无统一系统代理源，返回 None（用户可在设置中手动指定）。

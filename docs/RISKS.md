@@ -441,3 +441,19 @@ DSH_HOME=用户真实 `~/.dsh`，测试后 taskkill /T 清理）。输出：`evi
 - 验证：cargo test --lib 32 passed（新增 SHASUMS 解析/版本比较/find_node 三测）；npm run build 通过。
 - 未验证 [边界]：install_node 完整提权安装流程未在本机实测（本机 node v25 已存在，触发会真实改动用户机器）；
   下载与校验逻辑以单测+CI 编译覆盖。建议后续在干净 VM 实测一次并向导 UI 截图留证。
+
+## 2026-08-23：[已修复] reqwest 无 TLS 后端——mac 真机「获取可用版本」秒失败根因
+
+- 现象：mac 安装产物中设置页「获取可用版本」立即失败：`获取 npm registry 版本列表失败: error sending request for url (https://registry.npmjs.org/@deepseek-ai/dsh)`。
+- 根因 [事实]：`Cargo.toml` 自 bootstrap 起对 reqwest 使用 `default-features = false` 且仅启用 `json/stream/blocking`——
+  依赖树经 `cargo tree` 证实 **无任何 TLS 后端**（rustls/native-tls/schannel/security-framework 均为 0），
+  所有 https 请求必然瞬间失败（Windows 构建同样受影响，此前未暴露属侥幸/历史环境差异）。
+- 修复：
+  1. reqwest 启用 `rustls-tls-native-roots`（纯 Rust TLS + 加载系统根证书，兼容用户自装 MITM CA）与
+     `socks`（支持系统 SOCKS 代理）；
+  2. 代理解析优先级改为 环境变量（HTTPS_PROXY/HTTP_PROXY/ALL_PROXY，与 Node 行为一致）→ 平台系统探测
+     （macOS scutil 补 SOCKS 兜底，返回 socks5://）；
+  3. registry 元数据/版本列表/tarball 三处网络错误改带完整原因链（err_chain），后续失败可自诊断。
+- 验证 [事实]：cargo test --lib 32 passed；ignored live E2E `runtime_live_install_and_verify`
+  （真实 npm registry 下载 @deepseek-ai/dsh@0.1.1-rc.2 + integrity 校验）修复后通过。
+  CI 双平台构建通过。待用户在 mac 上复测「获取可用版本 / 安装运行时」确认闭环。

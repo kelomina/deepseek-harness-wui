@@ -12,7 +12,6 @@
 //!   <root>/runtimes.json         记录（integrity + bin sha256 + 安装时间）
 //!   <root>/.trash-<version>-<ts> 移除时的可逆备份
 //! 校验失败 → 禁止安装（不落任何运行时目录）。
-use crate::dsh::config::detect_system_proxy;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use flate2::read::GzDecoder;
@@ -128,9 +127,20 @@ pub(crate) fn client_with_proxy() -> Result<reqwest::blocking::Client, String> {
     let mut b = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .connect_timeout(std::time::Duration::from_secs(20));
-    if let Some(proxy) = detect_system_proxy() {
-        if let Ok(p) = reqwest::Proxy::all(&proxy) {
-            b = b.proxy(p);
+    // 代理优先级：环境变量（与 Node 行为一致）→ 平台系统代理探测。
+    // 注意：reqwest 启用了 rustls-tls-native-roots（加载系统根证书，兼容自装 MITM CA）。
+    let proxy = std::env::var("HTTPS_PROXY")
+        .or_else(|_| std::env::var("https_proxy"))
+        .or_else(|_| std::env::var("HTTP_PROXY"))
+        .or_else(|_| std::env::var("http_proxy"))
+        .or_else(|_| std::env::var("ALL_PROXY"))
+        .or_else(|_| std::env::var("all_proxy"))
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(crate::dsh::config::detect_system_proxy);
+    if let Some(p) = proxy {
+        if let Ok(px) = reqwest::Proxy::all(&p) {
+            b = b.proxy(px);
         }
     }
     b.build().map_err(|e| format!("HTTP 客户端初始化失败: {e}"))
@@ -141,7 +151,7 @@ fn fetch_meta(client: &reqwest::blocking::Client, version: &str) -> Result<Regis
     let resp = client
         .get(&url)
         .send()
-        .map_err(|e| format!("获取 npm registry 元数据失败: {e}"))?;
+        .map_err(|e| format!("获取 npm registry 元数据失败: {}", err_chain(&e)))?;
     if !resp.status().is_success() {
         return Err(format!(
             "npm registry 返回 {}（版本 {} 不存在或已被移除）",
@@ -165,7 +175,7 @@ fn fetch_remote_versions(client: &reqwest::blocking::Client) -> Result<Vec<Strin
     let resp = client
         .get(REGISTRY)
         .send()
-        .map_err(|e| format!("获取 npm registry 版本列表失败: {e}"))?;
+        .map_err(|e| format!("获取 npm registry 版本列表失败: {}", err_chain(&e)))?;
     if !resp.status().is_success() {
         return Err(format!("npm registry 返回 {}", resp.status().as_u16()));
     }
@@ -178,6 +188,17 @@ fn fetch_remote_versions(client: &reqwest::blocking::Client) -> Result<Vec<Strin
 fn sha256_hex(data: &[u8]) -> String {
     let digest = Sha256::digest(data);
     hex::encode(digest)
+}
+
+/// 拼接错误原因链（reqwest 的 Display 不含根因，如 TLS/连接拒绝细节）。
+fn err_chain(e: &impl std::error::Error) -> String {
+    let mut s = e.to_string();
+    let mut src = std::error::Error::source(e);
+    while let Some(cause) = src {
+        s.push_str(&format!(" ← {cause}"));
+        src = cause.source();
+    }
+    s
 }
 
 /// 纯函数：校验字节流的 sha512 base64 是否与 npm dist.integrity 一致。
@@ -199,7 +220,7 @@ fn download_and_verify(client: &reqwest::blocking::Client, meta: &RegistryMeta, 
     let resp = client
         .get(&meta.dist.tarball)
         .send()
-        .map_err(|e| format!("下载 tarball 失败: {e}"))?;
+        .map_err(|e| format!("下载 tarball 失败: {}", err_chain(&e)))?;
     if !resp.status().is_success() {
         return Err(format!("tarball 下载返回 {}", resp.status().as_u16()));
     }
