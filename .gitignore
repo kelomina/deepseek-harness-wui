@@ -40,3 +40,10 @@ logs/
 /src-tauri/target
 /src-tauri/gen/
 
+# local verification artifacts (scripts/verify_tool_panels.py outputs)
+scripts/*.png
+scripts/report.json
+
+# Trae IDE working directory
+.trae/
+
