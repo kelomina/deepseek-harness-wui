@@ -170,12 +170,12 @@ export function WorkSessionView({ onOpenSettings, onOpenToolDock, onOpenSessionD
           {stopping && <span className="badge orange">正在停止…</span>}
           <div className="ent-bar">
             <button
-              className={`ent-btn${goalPhase ? "" : " dim"}`}
-              title="目标"
+              className={`ent-btn${goalPhase ? "" : " guide"}`}
+              title={goalPhase ? "目标" : "无目标 → 点击进入「设定目标」引导"}
               onClick={() => onOpenSessionDock?.("goal")}
             >
               <span className="ent-ico">◎</span>
-              <span>目标</span>
+              <span>{goalPhase ? "目标" : "＋ 设定目标"}</span>
               {goalPhase === "active" && <span className="ent-dot green" />}
               {goalPhase === "paused" && <span className="ent-dot orange" />}
               {goalPhase === "complete" && <span className="ent-dot gray" />}

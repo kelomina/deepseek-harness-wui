@@ -35,7 +35,7 @@ export function Sidebar({
   const [searchDraft, setSearchDraft] = useState("");
   const debounceRef = useRef<number | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
-  const { pinnedSessions, workspaces, archivedSessionIds, sessionTitles, searchResults, searching } = useAppState();
+  const { pinnedSessions, workspaces, archivedSessionIds, sessionTitles, searchResults, searching, searchDisabled } = useAppState();
   // 搜索输入防抖（400ms）：空值即清除结果
   useEffect(() => {
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
@@ -137,18 +137,27 @@ export function Sidebar({
         <button className={`nav-item${view === "welcome" ? " active" : ""}`} onClick={() => onNavigate("welcome")}>＋ 新建任务</button>
         <button className="nav-item" title="自动化（开发中）">自动化</button>
       </nav>
-      <div className="search-box">
+      <div className={`search-box${searching ? " searching" : ""}`}>
         <input
           ref={searchRef}
           className="search-input"
-          placeholder="搜索会话内容…"
+          placeholder="搜索会话内容…（按 / 聚焦）"
           value={searchDraft}
           onChange={(e) => setSearchDraft(e.currentTarget.value)}
         />
-        {searchDraft && (
+        {searching && <span className="search-spinner" aria-label="搜索中" />}
+        {!searching && searchDraft && (
           <button className="search-clear" title="清除" onClick={() => { setSearchDraft(""); appStore.clearSearch(); }}>×</button>
         )}
       </div>
+      {searchDisabled && (
+        <div className="side-block search-results">
+          <div className="side-head"><span>会话搜索不可用</span></div>
+          <div className="empty-state" style={{ padding: "6px 4px", textAlign: "left" }}>
+            当前 dsh 部署未启用搜索索引（默认 openAt=never）。可在 dsh 配置中为 session-query-sqlite 设置 openAt=startup/first-search 启用。
+          </div>
+        </div>
+      )}
       {searchResults && (
         <div className="side-block search-results">
           <div className="side-head">

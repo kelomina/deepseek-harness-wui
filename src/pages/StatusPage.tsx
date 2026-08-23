@@ -42,6 +42,7 @@ export function StatusPage() {
         <div className="card">
           <div className="card-head"><span className="card-title">宿主信息</span></div>
           <div className="kv"><span className="k">版本</span><span className="v">{host?.version ?? "-"}</span></div>
+          <div className="kv"><span className="k">宿主主目录</span><span className="v">{host?.home ?? "-"}</span></div>
           <div className="kv"><span className="k">工作目录</span><span className="v">{host?.cwd ?? "-"}</span></div>
           <div className="kv"><span className="k">默认 Provider</span><span className="v">{host?.provider ?? "-"}</span></div>
           <div className="kv"><span className="k">默认模型</span><span className="v">{host?.model ?? "-"}</span></div>

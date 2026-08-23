@@ -137,7 +137,9 @@ export function QueueDock({ sessionId }: { sessionId: SessionId }) {
   const [editId, setEditId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
 
-  if (queue.length === 0 && jobs.length === 0) return null;
+  if (queue.length === 0 && jobs.length === 0) {
+    return <div className="empty-state">暂无排队消息与后台任务（生成中发送的消息会自动排队）</div>;
+  }
   return (
     <div className="queue-dock">
       {queue.length > 0 && (
@@ -331,13 +333,13 @@ export function SubagentPanel({ sessionId, onClose, inline }: { sessionId: Sessi
 /* ---------------- 技能菜单（skill.list；点击插入 /name） ---------------- */
 
 export function SkillsMenu({ sessionId, onInsert }: { sessionId: SessionId; onInsert: (name: string) => void }) {
-  const { skills } = useAppState();
+  const { skills, skillsUnavailable } = useAppState();
   const [open, setOpen] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (open) void appStore.loadSkills(sessionId);
-  }, [open, sessionId]);
+    if (open && !skillsUnavailable) void appStore.loadSkills(sessionId);
+  }, [open, sessionId, skillsUnavailable]);
 
   useEffect(() => {
     if (!open) return;
@@ -354,7 +356,8 @@ export function SkillsMenu({ sessionId, onInsert }: { sessionId: SessionId; onIn
       {open && (
         <div className="model-menu skills-menu">
           <div className="mm-title">项目技能（输入 /名称 调用）</div>
-          {skills === null && <div className="muted" style={{ padding: "4px 12px" }}>加载中…</div>}
+          {skillsUnavailable && <div className="muted" style={{ padding: "4px 12px" }}>会话未激活，暂不可读取技能（先发送一条消息）</div>}
+          {!skillsUnavailable && skills === null && <div className="muted" style={{ padding: "4px 12px" }}>加载中…</div>}
           {skills && skills.length === 0 && <div className="muted" style={{ padding: "4px 12px" }}>当前项目无技能</div>}
           {skills && skills.map((s) => (
             <button

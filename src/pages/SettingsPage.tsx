@@ -188,6 +188,121 @@ function CotSettings() {
   );
 }
 
+/** 默认模型卡片（agent-default-model 命名空间；dsh 0.1.1-rc.2 新增，新会话生效）。
+ * 下拉数据复用 llm.models 目录；思考强度取所选模型的 reasoning.efforts（留空=跟随目录默认）。 */
+function DefaultModelCard() {
+  const { defaultModel, modelGroups, connected } = useAppState();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<{ provider: string; model: string; reasoningEffort: string }>({ provider: "", model: "", reasoningEffort: "" });
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (connected) void appStore.loadDefaultModel();
+  }, [connected]);
+
+  if (!connected) return null;
+  const value = defaultModel?.value ?? null;
+
+  const startEdit = () => {
+    setMsg(null);
+    setDraft({
+      provider: value?.provider ?? modelGroups?.[0]?.id ?? "",
+      model: value?.model ?? "",
+      reasoningEffort: value?.reasoningEffort ?? "",
+    });
+    setEditing(true);
+  };
+  const group = modelGroups?.find((g) => g.id === draft.provider) ?? null;
+  const model = group?.models.find((m) => m.id === draft.model) ?? null;
+  const efforts = model?.reasoning?.efforts ?? [];
+  const canSave = draft.provider.trim() !== "" && draft.model.trim() !== "";
+
+  const save = async () => {
+    if (!defaultModel || !canSave) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const patch: { provider: string; model: string; reasoningEffort?: string } = {
+        provider: draft.provider,
+        model: draft.model,
+      };
+      if (draft.reasoningEffort.trim()) patch.reasoningEffort = draft.reasoningEffort.trim();
+      await appStore.saveDefaultModel(patch, defaultModel.revision);
+      setMsg("已保存（新会话生效）");
+      setEditing(false);
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card wide">
+      <div className="card-head">
+        <span className="card-title">默认模型（新会话）</span>
+        {!editing && (
+          <span className="mgmt-actions">
+            {defaultModel && <button className="mgmt-btn" onClick={startEdit}>编辑</button>}
+          </span>
+        )}
+      </div>
+      <div className="hint">settings 命名空间 agent-default-model（dsh 0.1.1-rc.2 新增）。会话内仍可经模型菜单单独切换。</div>
+      {!defaultModel && <div className="muted">当前 dsh 未暴露 agent-default-model 命名空间</div>}
+      {defaultModel && !editing && (
+        <div className="provider-list">
+          <div className="kv"><span className="k">Provider</span><span className="v">{value?.provider ?? "-"}</span></div>
+          <div className="kv"><span className="k">模型</span><span className="v">{value?.model ?? "-"}</span></div>
+          <div className="kv"><span className="k">思考强度</span><span className="v">{value?.reasoningEffort || "跟随目录默认"}</span></div>
+          <div className="kv"><span className="k">生效方式</span><span className="v">{defaultModel.applies === "live" ? "立即（新会话）" : "需重启 dsh"}</span></div>
+        </div>
+      )}
+      {defaultModel && editing && (
+        <div className="provider-list">
+          <div className="field">
+            <label>Provider</label>
+            <select
+              value={draft.provider}
+              onChange={(e) => setDraft({ provider: e.currentTarget.value, model: "", reasoningEffort: "" })}
+            >
+              {(modelGroups ?? []).map((g) => (
+                <option key={g.id} value={g.id}>{g.name || g.id}</option>
+              ))}
+              {value && !(modelGroups ?? []).some((g) => g.id === value.provider) && (
+                <option value={value.provider}>{value.provider}（当前，目录未列出）</option>
+              )}
+            </select>
+          </div>
+          <div className="field">
+            <label>模型</label>
+            <select value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.currentTarget.value, reasoningEffort: "" })}>
+              <option value="">选择模型…</option>
+              {(group?.models ?? []).map((m) => (
+                <option key={m.id} value={m.id}>{m.name || m.id}</option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label>思考强度</label>
+            <select value={draft.reasoningEffort} onChange={(e) => setDraft({ ...draft, reasoningEffort: e.currentTarget.value })}>
+              <option value="">跟随目录默认{model?.reasoning?.defaultEffort ? `（${model.reasoning.defaultEffort}）` : ""}</option>
+              {efforts.map((e) => (
+                <option key={e.id} value={e.id}>{e.name ? `${e.name} (${e.id})` : e.id}</option>
+              ))}
+            </select>
+          </div>
+          <div className="modal-row">
+            <button className="btn" disabled={busy} onClick={() => { setEditing(false); setMsg(null); }}>取消</button>
+            <button className="btn primary" disabled={!canSave || busy} onClick={() => void save()}>保存</button>
+          </div>
+        </div>
+      )}
+      {msg && <div className="hint" style={{ marginTop: 8 }}>{msg}</div>}
+    </div>
+  );
+}
+
 export function SettingsPage({ onStartSession }: { onStartSession?: () => void }) {
   const { config, status, connected, hiddenPresets, agentPresets, agentPresetsMeta } = useAppState();
   const [form, setForm] = useState<DshConfig | null>(null);
@@ -228,6 +343,16 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
   const [showPresets, setShowPresets] = useState(false);
   const [connLoading, setConnLoading] = useState(false);
   const [connResult, setConnResult] = useState<string | null>(null);
+  // settings.describe 的 hasDocument（宿主是否拥有可打开的文件型设置文档；null=未知，不门禁）
+  const [settingsHasDoc, setSettingsHasDoc] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (!connected) {
+      setSettingsHasDoc(null);
+      return;
+    }
+    void appStore.describeSettings().then((d) => setSettingsHasDoc(d ? d.hasDocument : null));
+  }, [connected]);
 
   const refreshProviders = useCallback(async () => {
     if (!connected) return;
@@ -602,8 +727,8 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
             <span className="mgmt-actions">
               <button
                 className="mgmt-btn"
-                disabled={!connected}
-                title="用系统编辑器打开 dsh 设置文档"
+                disabled={!connected || settingsHasDoc === false}
+                title={settingsHasDoc === false ? "宿主无可打开的设置文档（settings.describe.hasDocument=false）" : "用系统编辑器打开 dsh 设置文档"}
                 onClick={async () => {
                   try {
                     await appStore.openSettingsDocument();
@@ -663,6 +788,8 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
             </div>
           )}
           {providerMsg && <div className="hint" style={{ marginTop: 10 }}>{providerMsg}</div>}
+
+          {connected && <DefaultModelCard />}
 
           {formOpen && edit && (
             <div className="p-form" id="provider-form">
@@ -871,8 +998,7 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
             <button className="btn sm primary" disabled={!connected} onClick={() => setImportOpen(true)}>＋ 导入插件</button>
           </div>
           <div className="hint" style={{ margin: "8px 0" }}>
-            插件 UI 兼容（devContext 0.2.0 条目 6）已降级：spike 结论（dsh 0.1.0-rc.6）显示官方插件 UI 挂载 = cordis + React slot registry（dsh-client-ui-slots）+ 官方 shell（dsh-client-web buildRenderApp），
-            无第三方外壳可独立挂载的公开契约。本轮仅提供只读插件清单与启停（受限入口），插件 UI 挂载移出 0.2.0，见 docs/RISKS.md。
+            插件 UI 兼容（devContext 0.2.0 条目 6）已降级：spike 结论（dsh 0.1.0-rc.6）显示官方插件 UI 挂载 = cordis + React slot registry（dsh-client-ui-slots）+ 官方 shell（dsh-client-web buildRenderApp），无独立可挂载契约；dsh 0.1.1-rc.2 起上游已移除上述挂载契约包，该路径不复存在，故维持只读清单与启停管理（见 docs/RISKS.md）。
           </div>
           {!connected && <div className="muted">dsh 未连接，无法查看插件</div>}
           {connected && plugins === null && <div className="muted">加载中…</div>}

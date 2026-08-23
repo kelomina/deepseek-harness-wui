@@ -498,8 +498,11 @@ input,textarea,.composer-input{user-select:text;-webkit-user-select:text}
 /* ===== 侧边栏会话搜索 ===== */
 .search-box{position:relative;margin:8px 8px 4px}
 .search-input{width:100%;padding:6px 26px 6px 10px;font-size:12px;border-radius:8px}
+.search-input:focus,.search-box:focus-within .search-input{border-color:var(--accent);box-shadow:0 0 0 3px rgba(91,91,214,.12);outline:none}
 .search-clear{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:20px;height:20px;border-radius:6px;color:var(--text-3);font-size:13px;line-height:1}
 .search-clear:hover{background:var(--bg-hover);color:var(--text)}
+.search-spinner{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:13px;height:13px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:search-spin .7s linear infinite}
+@keyframes search-spin{to{transform:translateY(-50%) rotate(360deg)}}
 .search-results{border-bottom:1px solid var(--border);padding-bottom:6px}
 .search-results .side-head{cursor:default}
 
@@ -557,6 +560,7 @@ input,textarea,.composer-input{user-select:text;-webkit-user-select:text}
 .ent-btn:hover{border-color:var(--accent);color:var(--text)}
 .ent-btn.dim{color:var(--text-3)}
 .ent-btn.dim .ent-ico,.ent-btn.dim{opacity:.75}
+.ent-btn.guide{border-style:dashed;color:var(--text-3);background:transparent}
 .ent-ico{font-size:11px}
 .ent-btn:hover .ent-ico{color:var(--accent)}
 /* 数字角标：相对按钮定位，右上角小圆点 */
@@ -587,6 +591,7 @@ input,textarea,.composer-input{user-select:text;-webkit-user-select:text}
 .sd-panel{flex:1;min-height:0;display:flex;flex-direction:column;gap:8px}
 .sd-seg{flex:none;display:flex;align-items:center;gap:2px;background:#e6e6eb;border-radius:8px;padding:2px}
 .sd-seg-item{flex:1;padding:4px 6px;border-radius:6px;font-size:11.5px;color:var(--text-2);text-align:center;cursor:pointer;white-space:nowrap}
+.sd-seg-ico{margin-right:3px;font-size:10.5px}
 .sd-seg-item:hover{color:var(--text)}
 .sd-seg-item.on{background:var(--card);color:var(--text);font-weight:500;box-shadow:0 1px 2px rgba(0,0,0,.08)}
 .sd-body{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:8px}

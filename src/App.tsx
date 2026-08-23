@@ -16,7 +16,7 @@ export default function App() {
   const [view, setView] = useState<View>("welcome");
   const [toolTab, setToolTab] = useState<ToolTab>("files");
   const [toolDockOpen, setToolDockOpen] = useState(false);
-  const [sessionSubTab, setSessionSubTab] = useState<SessionSubTab>("goal");
+  const [sessionSubTab, setSessionSubTab] = useState<SessionSubTab>("queue");
   const [mode, setMode] = useState<Mode>("work");
   const { sessions, selectedSessionId, status, error, notice } = useAppState();
 

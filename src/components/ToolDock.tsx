@@ -16,23 +16,28 @@ const TAB_LABELS: Record<ToolTab, string> = {
   session: "会话",
 };
 
-const SUB_TAB_LABELS: { id: SessionSubTab; label: string }[] = [
-  { id: "goal", label: "目标" },
-  { id: "queue", label: "队列" },
-  { id: "subagents", label: "子代理" },
-  { id: "skills", label: "技能" },
+const SUB_TAB_LABELS: { id: SessionSubTab; label: string; icon: string }[] = [
+  { id: "goal", label: "目标", icon: "◎" },
+  { id: "queue", label: "队列", icon: "☰" },
+  { id: "subagents", label: "子代理", icon: "◔" },
+  { id: "skills", label: "技能", icon: "✦" },
 ];
 
 /** 会话功能坞「技能」子面板：读 store.skills，点击技能置位 pendingSkillInsert（功能坞保持打开）。 */
 function SkillListPanel({ sessionId, onInsert }: { sessionId: SessionId; onInsert: (name: string) => void }) {
-  const { skills } = useAppState();
+  const { skills, skillsUnavailable } = useAppState();
   useEffect(() => {
-    if (skills === null) void appStore.loadSkills(sessionId);
-  }, [sessionId, skills]);
+    if (skills === null && !skillsUnavailable) void appStore.loadSkills(sessionId);
+  }, [sessionId, skills, skillsUnavailable]);
   return (
     <div className="sd-skills">
       <div className="sd-pane-title">项目技能（点击插入 /名称）</div>
-      {skills === null && <div className="muted" style={{ padding: "8px 2px" }}>加载中…</div>}
+      {skillsUnavailable && (
+        <div className="empty-state">
+          会话未在本进程内激活（attached），暂不可读取技能。向该会话发送一条消息后再试。
+        </div>
+      )}
+      {!skillsUnavailable && skills === null && <div className="muted" style={{ padding: "8px 2px" }}>加载中…</div>}
       {skills && skills.length === 0 && <div className="empty-state">当前项目无技能</div>}
       {skills && skills.map((s) => (
         <button
@@ -67,8 +72,10 @@ function SessionPanel({
           <button
             key={t.id}
             className={`sd-seg-item${subTab === t.id ? " on" : ""}`}
+            title={t.label}
             onClick={() => onSubTabChange(t.id)}
           >
+            <span className="sd-seg-ico">{t.icon}</span>
             {t.label}
           </button>
         ))}

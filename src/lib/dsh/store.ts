@@ -34,10 +34,19 @@ import type {
 export interface HostDescription {
   version: string;
   cwd: string;
+  /** dsh 0.1.1-rc.2 新增：宿主账号主目录（Web 显示缩写）。 */
+  home?: string;
   provider?: string;
   model?: string;
   attachedSessions: number;
   canOpenPath: boolean;
+}
+
+/** 全局默认模型（settings 命名空间 agent-default-model；dsh 0.1.1-rc.2 新增，新会话生效）。 */
+export interface DefaultModelView {
+  value: { provider: string; model: string; reasoningEffort?: string } | null;
+  revision: number;
+  applies: "live" | "restart";
 }
 
 export interface InteractiveItem {
@@ -84,6 +93,8 @@ export interface AppState {
   selectedModel: { provider: string; model: string } | null;
   selectedReasoning: string | null;
   modelGroups: ModelProviderGroup[] | null;
+  /** 全局默认模型（agent-default-model 命名空间；null=命名空间不存在或未加载）。 */
+  defaultModel: DefaultModelView | null;
   history: Map<SessionId, unknown[]>;
   streams: Map<SessionId, LiveStream>;
   archivedSessionIds: SessionId[];
@@ -103,6 +114,8 @@ export interface AppState {
   notice: string | null;
   /** 会话内容搜索结果（session.search；null 表示无搜索）。 */
   searchResults: { items: SessionSearchItem[]; hasMore: boolean } | null;
+  /** 搜索索引被部署禁用（dsh web profile 默认 openAt=never）时的提示态。 */
+  searchDisabled: boolean;
   searching: boolean;
   /** 每会话待处理消息队列快照（session/queue 帧 + updateQueue 配对）。 */
   sessionQueues: Map<SessionId, QueuedInboxItem[]>;
@@ -118,6 +131,8 @@ export interface AppState {
   subagentHistories: Map<SessionId, HistoryEntry[]>;
   /** 技能目录（skill.list；随会话项目变化）。 */
   skills: SkillEntry[] | null;
+  /** skill.list 因会话未 attach（session-not-found）不可用时的提示态。 */
+  skillsUnavailable: boolean;
   /** 待插入输入框的技能名（会话功能坞「技能」子tab 点击技能后置位；消费后置 null）。 */
   pendingSkillInsert: string | null;
   loading: boolean;
@@ -143,6 +158,7 @@ const initialState: AppState = {
   selectedModel: null,
   selectedReasoning: null,
   modelGroups: null,
+  defaultModel: null,
   history: new Map(),
   streams: new Map(),
   archivedSessionIds: [],
@@ -156,6 +172,7 @@ const initialState: AppState = {
   stopEvidence: {},
   notice: null,
   searchResults: null,
+  searchDisabled: false,
   searching: false,
   sessionQueues: new Map(),
   sessionJobs: new Map(),
@@ -164,6 +181,7 @@ const initialState: AppState = {
   subagentCatalogs: new Map(),
   subagentHistories: new Map(),
   skills: null,
+  skillsUnavailable: false,
   pendingSkillInsert: null,
   loading: false,
   error: null,
@@ -270,6 +288,7 @@ class AppStore {
         this.set({ sessions: sess.result.value.items, sessionTitles: this.seedSessionTitles(sess.result.value.items) });
       }
       void this.loadAgentPresets();
+      void this.loadDefaultModel();
       this.set({ connected: true });
       void this.loadModels();
       if (this.state.selectedSessionId) {
@@ -300,7 +319,9 @@ class AppStore {
       forceFinished: [],
       stopEvidence: {},
       notice: null,
+      defaultModel: null,
       searchResults: null,
+      searchDisabled: false,
       searching: false,
       sessionQueues: new Map(),
       sessionJobs: new Map(),
@@ -309,6 +330,7 @@ class AppStore {
       subagentCatalogs: new Map(),
       subagentHistories: new Map(),
       skills: null,
+      skillsUnavailable: false,
       pendingSkillInsert: null,
     });
   }
@@ -622,11 +644,12 @@ class AppStore {
     return { mediaType: v.attachment.mediaType, data: v.data };
   }
 
-  /** 会话内容搜索（session.search；结果无游标，hasMore 提示细化查询）。 */
+  /** 会话内容搜索（session.search；结果无游标，hasMore 提示细化查询）。
+   * 部署禁用索引时（web profile 默认 openAt=never）进入 searchDisabled 提示态而非错误横幅。 */
   async searchSessions(query: string): Promise<void> {
     const q = query.trim();
     if (!q) {
-      this.set({ searchResults: null });
+      this.set({ searchResults: null, searchDisabled: false });
       return;
     }
     const api = this.requireApi();
@@ -634,7 +657,10 @@ class AppStore {
     try {
       const r = await api.sessions.search({ query: q }, new AbortController().signal);
       if (r.result.ok) {
-        this.set({ searchResults: { items: r.result.value.items, hasMore: r.result.value.hasMore } });
+        this.set({ searchResults: { items: r.result.value.items, hasMore: r.result.value.hasMore }, searchDisabled: false });
+      } else if (/search is disabled/.test(r.result.error.message ?? "")) {
+        // [事实] dsh 0.1.0-rc.6 web profile 默认 session-query openAt=never；启用需用户层 patch（见 RISKS 2026-08-23）
+        this.set({ searchResults: null, searchDisabled: true });
       } else {
         this.set({ searchResults: null, error: `搜索失败: ${r.result.error.code}: ${r.result.error.message}` });
       }
@@ -646,7 +672,7 @@ class AppStore {
   }
 
   clearSearch(): void {
-    this.set({ searchResults: null });
+    this.set({ searchResults: null, searchDisabled: false });
   }
 
   /** 编辑/移除/插队一条待处理消息（session.updateQueue）。 */
@@ -1299,6 +1325,38 @@ class AppStore {
     }
   }
 
+  // ---- agent-default-model（dsh 0.1.1-rc.2 新增命名空间：新会话默认模型） ----
+
+  /** 读取全局默认模型视图（settings.describe 的 agent-default-model 命名空间）。 */
+  async loadDefaultModel(): Promise<void> {
+    try {
+      const d = await this.describeSettings();
+      const ns = d?.namespaces.find((n) => n.ns === "agent-default-model");
+      if (!ns) {
+        this.set({ defaultModel: null });
+        return;
+      }
+      this.set({
+        defaultModel: {
+          value: (ns.value ?? null) as DefaultModelView["value"],
+          revision: ns.revision,
+          applies: ns.applies,
+        },
+      });
+    } catch {
+      // 目录未就绪等场景不阻塞；UI 保持 null
+    }
+  }
+
+  /** 保存全局默认模型（settings.update + expectedRevision CAS，成功后刷新视图）。 */
+  async saveDefaultModel(
+    patch: { provider: string; model: string; reasoningEffort?: string },
+    expectedRevision?: number,
+  ): Promise<void> {
+    await this.updateSettings("agent-default-model", patch, expectedRevision);
+    await this.loadDefaultModel();
+  }
+
   /** 整体替换命名空间用户层（settings.replace；section={} 即恢复默认）。 */
   async replaceSettings(ns: string, section: object, expectedRevision?: number): Promise<void> {
     const api = this.requireApi();
@@ -1414,15 +1472,20 @@ class AppStore {
 
   // ---- skill 域：list ----
 
-  /** 加载会话项目的技能目录（skill.list；调用即 /name 触发）。 */
+  /** 加载会话项目的技能目录（skill.list；调用即 /name 触发）。
+   * 冷会话（attached = 本进程内有活跃 agent，需先产生模型回合）不可用时进入 skillsUnavailable 提示态。 */
   async loadSkills(sessionId: SessionId): Promise<void> {
     const api = this.requireApi();
     const r = await api.skills.list({ sessionId });
     if (!r.result.ok) {
-      this.set({ skills: null, error: `读取技能失败: ${r.result.error.code}: ${r.result.error.message}` });
+      if (r.result.error.code === "session-not-found") {
+        this.set({ skills: null, skillsUnavailable: true });
+        return;
+      }
+      this.set({ skills: null, skillsUnavailable: false, error: `读取技能失败: ${r.result.error.code}: ${r.result.error.message}` });
       return;
     }
-    this.set({ skills: [...r.result.value.skills] });
+    this.set({ skills: [...r.result.value.skills], skillsUnavailable: false });
   }
 
   // ---- goal 域：create / edit / pause / resume / complete / clear ----
