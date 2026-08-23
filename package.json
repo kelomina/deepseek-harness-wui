@@ -10,7 +10,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-client-connection": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-connection": "0.1.1-rc.2",
     "@tauri-apps/api": "^2",
     "katex": "0.18.4",
     "react": "^19.1.0",
@@ -28,3 +28,4 @@
     "vite": "^7.0.4"
   }
 }
+

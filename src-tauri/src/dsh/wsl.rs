@@ -19,7 +19,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 /// 本项目锁定的 dsh 版本（与 runtime.rs / manager.rs 一致）。
-const DEFAULT_DSH_VERSION: &str = "0.1.0-rc.6";
+const DEFAULT_DSH_VERSION: &str = "0.1.1-rc.2";
 /// 未指定发行版时创建的应用专用发行版名（Ubuntu 基础）。
 const DEFAULT_CREATE_DISTRO: &str = "DshUbuntu";
 /// 复用 Node 官方二进制版本（>=20，含 node:util.parseEnv，dsh 需要）。
@@ -783,9 +783,9 @@ mod tests {
 
     #[test]
     fn provision_script_pins_versions_and_identity() {
-        let s = build_provision_script("0.1.0-rc.6", "v22.19.0", None);
+        let s = build_provision_script("0.1.1-rc.2", "v22.19.0", None);
         assert!(s.contains("exec 2>&1"));
-        assert!(s.contains("@deepseek-ai/dsh@0.1.0-rc.6"));
+        assert!(s.contains("@deepseek-ai/dsh@0.1.1-rc.2"));
         assert!(s.contains("node-$NODE_VER-linux-$NODE_ARCH.tar.xz"));
         assert!(s.contains("NODE_VER=\"v22.19.0\""));
         assert!(s.contains("dsh --version"));
@@ -802,7 +802,7 @@ mod tests {
 
     #[test]
     fn provision_script_injects_host_ca() {
-        let s = build_provision_script("0.1.0-rc.6", "v22.19.0", Some("$HOME/.dsh-node/host-ca.crt"));
+        let s = build_provision_script("0.1.1-rc.2", "v22.19.0", Some("$HOME/.dsh-node/host-ca.crt"));
         assert!(s.contains("CURL_CA_BUNDLE=\"$HOME/.dsh-node/host-ca.crt\""));
         assert!(s.contains("NODE_EXTRA_CA_CERTS=\"$HOME/.dsh-node/host-ca.crt\""));
     }

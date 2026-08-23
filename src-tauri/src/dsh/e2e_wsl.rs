@@ -4,7 +4,7 @@
 //! ```text
 //! cargo test --features e2e -- --ignored --nocapture wsl_provision_and_start_dsh_e2e
 //! ```
-//! 流程：用应用真实的 `wsl::provision` 一键创建全新发行版并安装 Node+v22.19.0 + dsh@0.1.0-rc.6，
+//! 流程：用应用真实的 `wsl::provision` 一键创建全新发行版并安装 Node+v22.19.0 + dsh@0.1.1-rc.2，
 //! 再用应用真实的 `DshManager::start`（WSL 执行模式）启动 dsh，验证宿主机经 WSL2 localhost 转发
 //! 可达其 Web 服务，最后停止并检查端口释放。
 //! 发行版默认保留以便复查；设 `DSH_E2E_CLEANUP=1` 自动 `wsl --unregister`。
@@ -58,7 +58,7 @@ fn wsl_provision_and_start_dsh_e2e() {
         )
     } else {
         let distro = format!("DshE2E{}", std::process::id());
-        eprintln!("[e2e] 阶段1 provision（创建发行版 {} + Node v22.19.0 + dsh 0.1.0-rc.6）…", distro);
+        eprintln!("[e2e] 阶段1 provision（创建发行版 {} + Node v22.19.0 + dsh 0.1.1-rc.2）…", distro);
         let report = wsl::provision(sink.clone(), None, Some(&distro), None);
         assert!(report.ok, "provision 失败: {:?}", report.error);
         eprintln!(

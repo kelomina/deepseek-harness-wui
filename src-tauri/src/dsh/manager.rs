@@ -269,7 +269,7 @@ impl DshManager {
                     vec![
                         npx,
                         "-y".to_string(),
-                        "@deepseek-ai/dsh@0.1.0-rc.6".to_string(),
+                        "@deepseek-ai/dsh@0.1.1-rc.2".to_string(),
                         "web".to_string(),
                         "--port".to_string(),
                         port,

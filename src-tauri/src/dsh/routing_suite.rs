@@ -245,14 +245,16 @@ fn ensure_injector_links(runtime_nm: &Path, injector_dir: &Path) -> Result<Vec<S
 
 /// 修复缺失的注入器依赖 junction：全部存在时返回 Ok(None)（无事可做），
 /// 有缺失时重建并返回 Ok(Some(说明行))。仅做文件系统检查，不跑 dsh CLI。
+/// 目标在 runtime 中不存在的 pair（如 dsh 0.1.1-rc.2 起移除的 dsh-client-ui-slots，
+/// 仅注入器类型引用）不算缺失——避免每次启动空转自愈。
 pub(crate) fn repair_injector_links(
     runtime_nm: &Path,
     injector_dir: &Path,
 ) -> Result<Option<Vec<String>>, String> {
     let nm = injector_dir.join("node_modules");
-    let any_missing = INJECTOR_LINK_PAIRS
-        .iter()
-        .any(|(link, _)| !nm.join(link).exists());
+    let any_missing = INJECTOR_LINK_PAIRS.iter().any(|(link, target_rel)| {
+        runtime_nm.join(target_rel).exists() && !nm.join(link).exists()
+    });
     if !any_missing {
         return Ok(None);
     }

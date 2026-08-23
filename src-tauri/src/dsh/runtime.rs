@@ -504,7 +504,7 @@ mod tests {
 
     #[test]
     fn exact_version_validation() {
-        assert!(is_exact_version("0.1.0-rc.6"));
+        assert!(is_exact_version("0.1.1-rc.2"));
         assert!(is_exact_version("0.1.0"));
         assert!(is_exact_version("1.2.3-alpha.1"));
         assert!(!is_exact_version("latest"));
@@ -514,7 +514,7 @@ mod tests {
         assert!(!is_exact_version("0.1"));
         assert!(!is_exact_version("0.1.0 "));
         assert!(!is_exact_version(""));
-        assert!(!is_exact_version("0.1.0-rc.6/extra"));
+        assert!(!is_exact_version("0.1.1-rc.2/extra"));
     }
 
     #[test]
@@ -541,16 +541,16 @@ mod tests {
     #[test]
     #[ignore = "live: 需要网络访问 npm registry，手动运行 cargo test -- --ignored runtime_live_install_and_verify"]
     fn runtime_live_install_and_verify() {
-        // 端到端：从 npm registry 下载 @deepseek-ai/dsh@0.1.0-rc.6，校验 integrity，解包，复验。
+        // 端到端：从 npm registry 下载 @deepseek-ai/dsh@0.1.1-rc.2，校验 integrity，解包，复验。
         let dir = std::env::temp_dir().join(format!("dsh-runtime-e2e-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let view = install_at(&dir, "0.1.0-rc.6").expect("live install should succeed");
+        let view = install_at(&dir, "0.1.1-rc.2").expect("live install should succeed");
         assert!(view.installed);
-        let report = verify_at(&dir, "0.1.0-rc.6").expect("verify");
+        let report = verify_at(&dir, "0.1.1-rc.2").expect("verify");
         assert!(report.ok, "verify failed: {}", report.detail);
-        let list = list_at(&dir, Some("0.1.0-rc.6")).expect("list");
-        assert!(list.iter().any(|r| r.version == "0.1.0-rc.6" && r.active));
+        let list = list_at(&dir, Some("0.1.1-rc.2")).expect("list");
+        assert!(list.iter().any(|r| r.version == "0.1.1-rc.2" && r.active));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
