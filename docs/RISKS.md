@@ -370,6 +370,9 @@ DSH_HOME=用户真实 `~/.dsh`，测试后 taskkill /T 清理）。输出：`evi
   - [事实] Windows 主机回归通过（cargo test --lib 29 passed；npm run build 通过）。
   - [事实] 新增 unix 分支经无依赖 shim crate 对 `aarch64-apple-darwin` 与 `x86_64-unknown-linux-gnu` 两目标 cargo check 通过
     （Tauri 自身 mac 后端含 objc2 C 构建脚本，Windows 主机无法交叉 check 整个 app——CI mac runner 是完整验证路径）。
+  - [事实] CI macos-latest runner 全链路通过（run 32639578900）：cargo test --lib 真实 macOS 工具链 +
+    tauri build 产出未签名 app/dmg artifact；Windows job 同绿（nsis+msi）。首跑失败两例为测试平台假设
+    （CA 导出测试仅 Windows 有意义、term_exec 用例的 cmd 语法），已按平台门控/分支修复。
   - **未验证**：macOS 真机运行（无硬件）——dsh 上游 runtime 在 macOS 的启动与工具行为未实证；
     未签名 app/dmg 会触发 Gatekeeper（右键打开或 `xattr -cr` 绕过，正式分发前签名+公证，同 Windows SmartScreen 条目）。
     git hooks 为 .ps1，macOS 贡献者本地不生效（CI 兜底）。
