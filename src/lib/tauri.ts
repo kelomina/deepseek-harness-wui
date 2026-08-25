@@ -132,6 +132,64 @@ export const routingSuite = {
   install: () => invoke<string>("routing_suite_install_cmd"),
   remove: () => invoke<string>("routing_suite_remove_cmd"),
 };
+
+// ---- dsh-std 插件宿主 sidecar（实验特性，默认关闭；见 docs/DSH_STD_HOST_PLAN.md）----
+export type PluginHostState = "stopped" | "starting" | "running" | "error";
+
+export interface PluginHostStatus {
+  state: PluginHostState;
+  pid: number | null;
+  message: string;
+  uptime_secs: number | null;
+}
+
+export interface DshStdCommandEntry {
+  pluginId: string;
+  id: string;
+  title: string;
+  description: string | null;
+  /** true = 所属插件当前已激活（效果存活） */
+  active?: boolean;
+}
+
+export type DshStdDecision =
+  | "compatible"
+  | "compatible_degraded"
+  | "waiting_authorization"
+  | "rejected"
+  | "unknown";
+
+export interface DshStdAdmission {
+  decision: DshStdDecision;
+  reasonCode?: string;
+  errors?: string[];
+  missingOptional?: string[];
+  deniedPermissions?: string[];
+  unknownContracts?: string[];
+  commands?: DshStdCommandEntry[];
+  manifest?: { id: string; name: string; version: string };
+}
+
+/** 实验适配（wui-admission/0.1）：仅用于设置页实验区，不构成稳定契约。 */
+export const dshStdHost = {
+  status: () => invoke<PluginHostStatus>("plugin_host_status_cmd"),
+  logs: (limit = 100) => invoke<string[]>("plugin_host_logs_cmd", { limit }),
+  start: () => invoke<void>("plugin_host_start_cmd"),
+  stop: () => invoke<void>("plugin_host_stop_cmd"),
+  admit: (manifestJson: string) => invoke<DshStdAdmission>("plugin_host_admit_cmd", { manifestJson }),
+  grantSet: (pluginId: string, permissions: string[]) =>
+    invoke<void>("plugin_host_grant_set_cmd", { pluginId, permissions }),
+  grants: () => invoke<Record<string, string[]>>("plugin_host_grants_cmd"),
+  activate: (pluginId: string, pluginRoot?: string) =>
+    invoke<{ activationInstance: string; commands: DshStdCommandEntry[] }>("plugin_host_activate_cmd", { pluginId, pluginRoot: pluginRoot ?? null }),
+  exampleRoot: () => invoke<string>("plugin_host_example_root_cmd"),
+  execute: (pluginId: string, commandId: string, rawInput = "") =>
+    invoke<{ kind: "success" | "error"; text?: string }>("plugin_host_execute_cmd", { pluginId, commandId, rawInput }),
+  commands: () => invoke<{ commands: DshStdCommandEntry[] }>("plugin_host_commands_cmd"),
+  deactivate: (pluginId: string) => invoke<{ deactivated: boolean; cleanupError: string | null }>("plugin_host_deactivate_cmd", { pluginId }),
+  uninstall: (pluginId: string, purge = false) =>
+    invoke<{ uninstalled: boolean }>("plugin_host_uninstall_cmd", { pluginId, purge }),
+};
 export const runtime = {
   list: () => invoke<RuntimeView[]>("runtime_list_cmd"),
   install: (version: string) => invoke<RuntimeView>("runtime_install_cmd", { version }),

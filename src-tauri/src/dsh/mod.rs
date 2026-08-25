@@ -1,6 +1,7 @@
 pub mod config;
 pub mod event;
 pub mod manager;
+pub mod plugin_host;
 pub mod plugins;
 pub mod prereq;
 pub mod proxy;

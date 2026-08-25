@@ -18,6 +18,7 @@ use tauri::{AppHandle, Manager, State};
 pub struct AppState {
     pub manager: Arc<Mutex<DshManager>>,
     pub proxy: Mutex<Option<ProxyHandle>>,
+    pub plugin_host: Arc<Mutex<dsh::plugin_host::PluginHostManager>>,
 }
 
 #[tauri::command]
@@ -529,6 +530,146 @@ fn runtime_set_active_cmd(
     Ok(())
 }
 
+// ---- dsh-std 插件宿主 sidecar（实验特性，默认关闭；见 docs/DSH_STD_HOST_PLAN.md）----
+#[tauri::command]
+fn plugin_host_status_cmd(
+    state: State<AppState>,
+) -> dsh::plugin_host::PluginHostStatusView {
+    lock(state.plugin_host.lock()).status_view()
+}
+
+#[tauri::command]
+fn plugin_host_logs_cmd(state: State<AppState>, limit: Option<usize>) -> Vec<String> {
+    lock(state.plugin_host.lock()).logs(limit.unwrap_or(100))
+}
+
+#[tauri::command]
+fn plugin_host_start_cmd(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    let shared = state.plugin_host.clone();
+    let mut host = lock(shared.lock());
+    host.start(&app)
+}
+
+#[tauri::command]
+fn plugin_host_stop_cmd(state: State<AppState>) -> Result<(), String> {
+    let shared = state.plugin_host.clone();
+    let mut host = lock(shared.lock());
+    host.stop()
+}
+
+/// 准入校验（授权状态由持久化 grants 决定，默认全拒 → waiting_authorization）。
+#[tauri::command]
+fn plugin_host_admit_cmd(
+    app: AppHandle,
+    state: State<AppState>,
+    manifest_json: String,
+) -> Result<serde_json::Value, String> {
+    let shared = state.plugin_host.clone();
+    let mut host = lock(shared.lock());
+    host.ensure_alive(&app)?;
+    host.admit(&manifest_json)
+}
+
+/// 授权决策（持久化 + 同步到 sidecar）。
+#[tauri::command]
+fn plugin_host_grant_set_cmd(
+    app: AppHandle,
+    state: State<AppState>,
+    plugin_id: String,
+    permissions: Vec<String>,
+) -> Result<(), String> {
+    let shared = state.plugin_host.clone();
+    let mut host = lock(shared.lock());
+    host.ensure_alive(&app)?;
+    host.grant_set(&plugin_id, &permissions)
+}
+
+/// 当前持久化授权快照。
+#[tauri::command]
+fn plugin_host_grants_cmd(state: State<AppState>) -> serde_json::Value {
+    lock(state.plugin_host.lock()).grants_snapshot()
+}
+
+/// 示例插件目录（实验区默认值）。
+#[tauri::command]
+fn plugin_host_example_root_cmd(app: AppHandle) -> Result<String, String> {
+    dsh::plugin_host::resolve_example_plugin_root(&app)
+        .map(|p| p.to_string_lossy().to_string())
+}
+
+/// 激活插件（真实 import entry 并执行 activate(ctx)）。
+/// plugin_root：本地插件目录（须含 dsh-plugin.json）；缺省时仅解析内置示例。
+#[tauri::command]
+fn plugin_host_activate_cmd(
+    app: AppHandle,
+    state: State<AppState>,
+    plugin_id: String,
+    plugin_root: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let shared = state.plugin_host.clone();
+    let mut host = lock(shared.lock());
+    host.ensure_alive(&app)?;
+    let root = match plugin_root.filter(|s| !s.trim().is_empty()) {
+        Some(dir) => std::path::PathBuf::from(dir.trim().to_string()),
+        None => dsh::plugin_host::resolve_example_plugin_root(&app)?,
+    };
+    host.activate(&plugin_id, &root)
+}
+
+/// 执行已激活命令。
+#[tauri::command]
+fn plugin_host_execute_cmd(
+    app: AppHandle,
+    state: State<AppState>,
+    plugin_id: String,
+    command_id: String,
+    raw_input: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let shared = state.plugin_host.clone();
+    let mut host = lock(shared.lock());
+    host.ensure_alive(&app)?;
+    host.execute(&plugin_id, &command_id, raw_input.as_deref().unwrap_or(""))
+}
+
+/// 停用（撤销效果，保留授权与 storage）。
+#[tauri::command]
+fn plugin_host_deactivate_cmd(
+    app: AppHandle,
+    state: State<AppState>,
+    plugin_id: String,
+) -> Result<serde_json::Value, String> {
+    let shared = state.plugin_host.clone();
+    let mut host = lock(shared.lock());
+    host.ensure_alive(&app)?;
+    host.deactivate(&plugin_id)
+}
+
+/// 卸载（停用+撤权；purge 额外删除 storage 文件）。
+#[tauri::command]
+fn plugin_host_uninstall_cmd(
+    app: AppHandle,
+    state: State<AppState>,
+    plugin_id: String,
+    purge: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let shared = state.plugin_host.clone();
+    let mut host = lock(shared.lock());
+    host.ensure_alive(&app)?;
+    host.uninstall(&plugin_id, purge.unwrap_or(false))
+}
+
+/// 命令目录（含激活状态）。
+#[tauri::command]
+fn plugin_host_commands_cmd(
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<serde_json::Value, String> {
+    let shared = state.plugin_host.clone();
+    let mut host = lock(shared.lock());
+    host.ensure_alive(&app)?;
+    host.commands_list()
+}
+
 // ---- 首启前置条件：Node.js 检测/自动安装 + dsh 运行时状态汇总 ----
 #[tauri::command]
 fn prereq_check_cmd(app: AppHandle, state: State<AppState>) -> prereq::PrereqCheck {
@@ -654,6 +795,7 @@ pub fn run() {
         .manage(AppState {
             manager: Arc::new(Mutex::new(DshManager::new(DshConfig::default(), 0))),
             proxy: Mutex::new(None),
+            plugin_host: Arc::new(Mutex::new(dsh::plugin_host::PluginHostManager::new())),
         })
         .invoke_handler(tauri::generate_handler![
             frontend_error,
@@ -693,7 +835,20 @@ pub fn run() {
             prereq_install_node_cmd,
             wsl_status_cmd,
             wsl_save_config_cmd,
-            wsl_provision_cmd
+            wsl_provision_cmd,
+            plugin_host_status_cmd,
+            plugin_host_logs_cmd,
+            plugin_host_start_cmd,
+            plugin_host_stop_cmd,
+            plugin_host_admit_cmd,
+            plugin_host_grant_set_cmd,
+            plugin_host_grants_cmd,
+            plugin_host_activate_cmd,
+            plugin_host_execute_cmd,
+            plugin_host_commands_cmd,
+            plugin_host_example_root_cmd,
+            plugin_host_deactivate_cmd,
+            plugin_host_uninstall_cmd
         ])
         .setup(|app| {
             let handle = app.handle();
@@ -744,6 +899,8 @@ pub fn run() {
                 if let Ok(mut mgr) = state.manager.lock() {
                     let _ = mgr.stop();
                 };
+                let plugin_host_stop = state.plugin_host.lock().map(|mut host| host.stop());
+                let _ = plugin_host_stop;
             }
         });
 }

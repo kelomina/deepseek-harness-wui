@@ -1,0 +1,19 @@
+{
+  "name": "dsh-wui-plugin-host",
+  "description": "DeepSeek Harness WUI dsh-std plugin host sidecar (experimental). Pinned @dsh-std/* per docs/DSH_STD_HOST_PLAN.md.",
+  "private": true,
+  "type": "module",
+  "main": "main.mjs",
+  "engines": {
+    "node": "^22.19 || >=24"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@dsh-std/command": "0.1.0-rc1",
+    "@dsh-std/core": "0.1.0-rc1",
+    "@dsh-std/manifest": "0.1.0-rc1",
+    "@dsh-std/storage": "0.1.0-rc1"
+  }
+}

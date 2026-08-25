@@ -1,0 +1,31 @@
+{
+  "$schema": "https://dsh.community/schemas/dsh-plugin-0.15.json",
+  "id": "com.example.echo",
+  "name": "Echo Plugin (wui example)",
+  "version": "0.1.0",
+  "manifestVersion": "0.15",
+  "facets": { "host": { "entry": "dist/main.js", "apiVersion": "v1alpha1" } },
+  "requires": {
+    "contracts": [
+      { "apiVersion": "commands.dsh/v1alpha1", "kind": "Command" },
+      { "apiVersion": "storage.dsh/v1alpha1", "kind": "LocalStorage" }
+    ]
+  },
+  "permissions": [
+    { "name": "commands.invoke", "scope": "com.example.echo.ping", "reason": "invoke the declared action" },
+    { "name": "storage.local.read", "scope": "com.example.echo", "reason": "read stored state" },
+    { "name": "storage.local.write", "scope": "com.example.echo", "reason": "write stored state" }
+  ],
+  "contributes": {
+    "commands": [
+      { "id": "com.example.echo.ping", "title": "Ping" },
+      { "id": "com.example.echo.remember", "title": "Remember" }
+    ]
+  },
+  "subscriptions": [],
+  "license": "MIT",
+  "source": {
+    "repository": "https://example.com/echo",
+    "revision": "example"
+  }
+}

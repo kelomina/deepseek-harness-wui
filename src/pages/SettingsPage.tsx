@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { dsh, routingSuite, type DshConfig, type ExecMode, type RoutingSuiteStatus } from "../lib/tauri";
+import { dsh, dshStdHost, routingSuite, type DshConfig, type DshStdAdmission, type DshStdCommandEntry, type ExecMode, type PluginHostStatus, type RoutingSuiteStatus } from "../lib/tauri";
 import { appStore, useAppState } from "../lib/dsh/store";
 import { RuntimeManager } from "../components/RuntimeManager";
 import { DEFAULT_COT_RULES, loadCotConfig, saveCotConfig, type CotDetectConfig } from "../lib/dsh/cotDetect";
@@ -9,6 +9,35 @@ import type { AgentPresetEntry, ConfigurableProviderView, SettingsPathOpView } f
 
 type PluginView = { id: string; name: string; enabled: boolean; builtin: boolean; conditional?: boolean };
 type PluginTab = "all" | "on" | "off";
+
+// dsh-std 宿主实验区示例 manifest（与 plugin-host/test/fixtures/valid-plugin.json 同源，
+// 来自 T-Auto/dsh-ecosystem-spec conformance fixtures，MIT）。
+const DSH_STD_SAMPLE_MANIFEST = JSON.stringify(
+  {
+    $schema: "https://dsh.community/schemas/dsh-plugin-0.15.json",
+    id: "com.example.echo",
+    name: "Echo Plugin",
+    version: "0.1.0",
+    manifestVersion: "0.15",
+    facets: { host: { entry: "dist/main.js", apiVersion: "v1alpha1" } },
+    requires: {
+      contracts: [
+        { apiVersion: "commands.dsh/v1alpha1", kind: "Command" },
+        { apiVersion: "storage.dsh/v1alpha1", kind: "LocalStorage" },
+      ],
+    },
+    permissions: [
+      { name: "commands.invoke", scope: "com.example.echo.ping", reason: "invoke the declared action" },
+      { name: "storage.local.read", scope: "com.example.echo", reason: "read stored state" },
+      { name: "storage.local.write", scope: "com.example.echo", reason: "write stored state" },
+    ],
+    contributes: { commands: [{ id: "com.example.echo.ping", title: "Ping" }] },
+    subscriptions: [],
+    license: "MIT",
+  },
+  null,
+  2,
+);
 
 function presetInitial(p: { id: string; name?: string }): string {
   const n = (p.name ?? p.id).trim();
@@ -336,6 +365,18 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
   const [suiteMsg, setSuiteMsg] = useState<string | null>(null);
   const [suiteConfirm, setSuiteConfirm] = useState(false);
 
+  // dsh-std 宿主 sidecar（实验，默认关闭）
+  const [phStatus, setPhStatus] = useState<PluginHostStatus | null>(null);
+  const [phBusy, setPhBusy] = useState(false);
+  const [phMsg, setPhMsg] = useState<string | null>(null);
+  const [phManifestText, setPhManifestText] = useState(DSH_STD_SAMPLE_MANIFEST);
+  const [phResult, setPhResult] = useState<DshStdAdmission | null>(null);
+  const [phCommands, setPhCommands] = useState<DshStdCommandEntry[] | null>(null);
+  const [phActiveId, setActiveId] = useState<string | null>(null);
+  const [phExecInputs, setPhExecInputs] = useState<Record<string, string>>({});
+  const [phExecResults, setPhExecResults] = useState<Record<string, string>>({});
+  const [phPluginDir, setPhPluginDir] = useState("");
+
   const [providers, setProviders] = useState<ConfigurableProviderView[] | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [edit, setEdit] = useState<ProviderEdit | null>(null);
@@ -510,6 +551,148 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
     } finally {
       setSuiteBusy(false);
       setSuiteConfirm(false);
+    }
+  };
+
+  // ---- dsh-std 宿主 sidecar（实验）----
+  const refreshPh = useCallback(async () => {
+    try {
+      const s = await dshStdHost.status();
+      setPhStatus(s);
+      if (s.state === "running") {
+        const c = await dshStdHost.commands().catch(() => ({ commands: [] as DshStdCommandEntry[] }));
+        setPhCommands(c.commands);
+        const active = c.commands.find((x) => x.active);
+        setActiveId(active ? active.pluginId : null);
+        if (!phPluginDir) {
+          void dshStdHost.exampleRoot().then((p) => setPhPluginDir((cur) => cur || p)).catch(() => {});
+        }
+      } else {
+        setPhCommands(null);
+        setActiveId(null);
+      }
+    } catch (e) {
+      setPhMsg(String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshPh();
+  }, [refreshPh]);
+
+  const phToggle = async () => {
+    setPhBusy(true);
+    setPhMsg(null);
+    try {
+      if (phStatus?.state === "running") {
+        await dshStdHost.stop();
+        setPhMsg("sidecar 已停止。");
+      } else {
+        setPhMsg("正在拉起 plugin-host sidecar…");
+        await dshStdHost.start();
+        setPhMsg("sidecar 已就绪（stdio 握手通过）。");
+      }
+      await refreshPh();
+    } catch (e) {
+      setPhMsg(String(e));
+      await refreshPh();
+    } finally {
+      setPhBusy(false);
+    }
+  };
+
+  const phAdmit = async () => {
+    setPhBusy(true);
+    setPhMsg(null);
+    try {
+      const r = await dshStdHost.admit(phManifestText);
+      setPhResult(r);
+      await refreshPh();
+    } catch (e) {
+      setPhMsg(String(e));
+    } finally {
+      setPhBusy(false);
+    }
+  };
+
+  /** 授权全部待授权权限 → 重新准入 → 激活（真实 import entry） */
+  const phGrantAndActivate = async () => {
+    if (!phResult?.deniedPermissions?.length || !phResult.manifest) return;
+    setPhBusy(true);
+    setPhMsg("正在授权并激活插件…");
+    try {
+      const pluginId = phResult.manifest.id;
+      await dshStdHost.grantSet(pluginId, phResult.deniedPermissions);
+      const r = await dshStdHost.admit(phManifestText);
+      setPhResult(r);
+      if (r.decision === "compatible" || r.decision === "compatible_degraded") {
+        const a = await dshStdHost.activate(pluginId, phPluginDir || undefined);
+        setPhMsg(`已激活（实例 ${a.activationInstance}）。`);
+      } else {
+        setPhMsg(`授权后决策仍为 ${r.decision}，未激活。`);
+      }
+      await refreshPh();
+    } catch (e) {
+      setPhMsg(String(e));
+      await refreshPh();
+    } finally {
+      setPhBusy(false);
+    }
+  };
+
+  const phActivate = async () => {
+    const id = phResult?.manifest?.id;
+    if (!id) return;
+    setPhBusy(true);
+    setPhMsg(null);
+    try {
+      const a = await dshStdHost.activate(id, phPluginDir || undefined);
+      setPhMsg(`已激活（实例 ${a.activationInstance}）。`);
+      await refreshPh();
+    } catch (e) {
+      setPhMsg(String(e));
+    } finally {
+      setPhBusy(false);
+    }
+  };
+
+  const phExec = async (commandId: string) => {
+    const pluginId = phActiveId;
+    if (!pluginId) return;
+    setPhBusy(true);
+    try {
+      const r = await dshStdHost.execute(pluginId, commandId, phExecInputs[commandId] ?? "");
+      setPhExecResults((prev) => ({
+        ...prev,
+        [commandId]: r.kind === "success" ? `✔ ${r.text ?? ""}` : `✘ ${r.text ?? "error"}`,
+      }));
+    } catch (e) {
+      setPhExecResults((prev) => ({ ...prev, [commandId]: `✘ ${String(e)}` }));
+    } finally {
+      setPhBusy(false);
+    }
+  };
+
+  const phLifecycle = async (op: "deactivate" | "uninstall") => {
+    const pluginId = phActiveId ?? phResult?.manifest?.id;
+    if (!pluginId) return;
+    setPhBusy(true);
+    setPhMsg(null);
+    try {
+      if (op === "uninstall") {
+        await dshStdHost.uninstall(pluginId, false);
+        setPhResult(null);
+        setPhMsg("已卸载（授权撤销、storage 保留）。");
+      } else {
+        const r = await dshStdHost.deactivate(pluginId);
+        setPhMsg(r.cleanupError ? `已停用（清理异常：${r.cleanupError}）` : "已停用（效果撤销，授权与 storage 保留）。");
+      }
+      await refreshPh();
+    } catch (e) {
+      setPhMsg(String(e));
+      await refreshPh();
+    } finally {
+      setPhBusy(false);
     }
   };
 
@@ -1041,6 +1224,127 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
               </div>
             </>
           )}
+        </div>
+
+        <div className="card wide">
+          <div className="card-head">
+            <span className="card-title">实验：dsh-std 宿主（独立 sidecar 进程）</span>
+            {phBusy && <span className="badge orange">处理中…</span>}
+            {!phBusy && phStatus && (
+              <span className={`badge ${phStatus.state === "running" ? "active" : phStatus.state === "error" ? "off" : "cond"}`}>
+                {{ stopped: "未启动", starting: "启动中", running: "运行中", error: "错误" }[phStatus.state]}
+                {phStatus.pid ? ` · pid ${phStatus.pid}` : ""}
+              </span>
+            )}
+          </div>
+          <div className="hint" style={{ margin: "8px 0" }}>
+            实验适配声明：基于社区规范 dsh-std community-consensus v0.15（wui-admission/0.1，Experimental）。插件代码在
+            独立 Node 子进程内执行（trusted-in-process，<b>不构成 OS/进程安全边界</b>）；无应用 IPC、无监听端口；
+            权限默认拒绝。默认关闭，不影响任何现有功能。
+          </div>
+          <div className="row" style={{ marginTop: 8 }}>
+            <button className="btn sm primary" disabled={phBusy || phStatus?.state === "running"} onClick={() => void phToggle()}>
+              启动 sidecar
+            </button>
+            <button className="btn sm danger-o" disabled={phBusy || phStatus?.state !== "running"} onClick={() => void phToggle()}>
+              停止 sidecar
+            </button>
+            <button className="btn sm" disabled={phBusy} onClick={() => void refreshPh()}>刷新状态</button>
+          </div>
+          {phStatus && (
+            <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>{phStatus.message}</div>
+          )}
+          {phStatus?.state === "running" && (
+            <>
+              <div className="f-label" style={{ marginTop: 12 }}>插件目录（须含 dsh-plugin.json 与 entry；留空 = 内置示例）</div>
+              <input
+                type="text"
+                value={phPluginDir}
+                placeholder="例如 D:\\plugins\\my-dsh-plugin"
+                onChange={(e) => setPhPluginDir(e.currentTarget.value)}
+                spellCheck={false}
+              />
+              <div className="f-label" style={{ marginTop: 12 }}>插件 manifest（dsh-plugin.json，community v0.15）</div>
+              <textarea
+                value={phManifestText}
+                onChange={(e) => setPhManifestText(e.currentTarget.value)}
+                spellCheck={false}
+                rows={10}
+                style={{ fontFamily: "monospace", fontSize: 12 }}
+              />
+              <div className="row" style={{ marginTop: 8 }}>
+                <button className="btn sm primary" disabled={phBusy} onClick={() => void phAdmit()}>校验准入</button>
+              </div>
+              {phResult && (
+                <div className="hint" style={{ marginTop: 8 }}>
+                  <div>
+                    准入结果：<b>{phResult.decision}</b>
+                    {phResult.reasonCode ? `（${phResult.reasonCode}）` : ""}
+                    {phResult.manifest ? ` · ${phResult.manifest.id}@${phResult.manifest.version}` : ""}
+                  </div>
+                  {phResult.errors?.length ? <div>错误：{phResult.errors.join("；")}</div> : null}
+                  {phResult.deniedPermissions?.length ? <div>待授权权限：{phResult.deniedPermissions.join("、")}</div> : null}
+                  {phResult.missingOptional?.length ? <div>缺失的可选协议：{phResult.missingOptional.join("、")}</div> : null}
+                  {phResult.unknownContracts?.length ? <div>未知协议版本：{phResult.unknownContracts.join("、")}</div> : null}
+                  <details style={{ marginTop: 4 }}>
+                    <summary>原始 JSON</summary>
+                    <pre style={{ whiteSpace: "pre-wrap", fontSize: 11 }}>{JSON.stringify(phResult, null, 2)}</pre>
+                  </details>
+                  <div className="row" style={{ marginTop: 8 }}>
+                    {phResult.decision === "waiting_authorization" && phResult.deniedPermissions?.length ? (
+                      <button className="btn sm primary" disabled={phBusy} onClick={() => void phGrantAndActivate()}>
+                        授权以上权限并激活
+                      </button>
+                    ) : null}
+                    {(phResult.decision === "compatible" || phResult.decision === "compatible_degraded") && !phActiveId ? (
+                      <button className="btn sm primary" disabled={phBusy} onClick={() => void phActivate()}>激活插件</button>
+                    ) : null}
+                  </div>
+                </div>
+              )}
+              {phCommands && (
+                <div style={{ marginTop: 10 }}>
+                  <div className="f-label">
+                    命令目录（{phCommands.filter((c) => c.active).length} 激活 / {phCommands.length} 准入）
+                    {phActiveId ? ` · 运行中：${phActiveId}` : ""}
+                  </div>
+                  {phCommands.length === 0 && <div className="muted">暂无（先校验一个可兼容的 manifest）</div>}
+                  {phCommands.map((c) => (
+                    <div key={`${c.pluginId}:${c.id}`} style={{ margin: "6px 0", opacity: c.active ? 1 : 0.55 }}>
+                      <div className="row" style={{ marginBottom: 4 }}>
+                        <span className="plug-nm">{c.id}<span className="plug-mod">{c.title}{c.active ? "" : "（未激活）"}</span></span>
+                        <span className={`badge ${c.active ? "active" : "cond"}`}>{c.pluginId}</span>
+                      </div>
+                      {c.active && (
+                        <div className="row">
+                          <input
+                            type="text"
+                            placeholder="rawInput（可选参数文本）"
+                            value={phExecInputs[c.id] ?? ""}
+                            onChange={(e) => setPhExecInputs((prev) => ({ ...prev, [c.id]: e.currentTarget.value }))}
+                            style={{ maxWidth: 320 }}
+                          />
+                          <button className="btn sm" disabled={phBusy || phActiveId !== c.pluginId} onClick={() => void phExec(c.id)}>
+                            执行
+                          </button>
+                          {phExecResults[c.id] && <span className="muted">{phExecResults[c.id]}</span>}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {(phActiveId || (phResult?.manifest?.id && phCommands?.some((c) => c.pluginId === phResult.manifest?.id))) && (
+                <div className="row" style={{ marginTop: 8 }}>
+                  {phActiveId && (
+                    <button className="btn sm" disabled={phBusy} onClick={() => void phLifecycle("deactivate")}>停用</button>
+                  )}
+                  <button className="btn sm danger-o" disabled={phBusy} onClick={() => void phLifecycle("uninstall")}>卸载（撤销授权）</button>
+                </div>
+              )}
+            </>
+          )}
+          {phMsg && <div className="hint" style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{phMsg}</div>}
         </div>
           </>
         )}

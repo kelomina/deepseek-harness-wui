@@ -505,7 +505,7 @@ fn check_health(port: u16) -> bool {
     String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.")
 }
 
-fn kill_tree(pid: u32) {
+pub(crate) fn kill_tree(pid: u32) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
