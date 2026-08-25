@@ -14,7 +14,6 @@
 //! 校验失败 → 禁止安装（不落任何运行时目录）。
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
-use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 use std::collections::BTreeMap;
@@ -244,16 +243,6 @@ fn download_and_verify(client: &reqwest::blocking::Client, meta: &RegistryMeta, 
     Ok(())
 }
 
-fn extract_tarball(tarball: &Path, staging: &Path) -> Result<(), String> {
-    let file = std::fs::File::open(tarball).map_err(|e| format!("打开 tarball 失败: {e}"))?;
-    let gz = GzDecoder::new(file);
-    let mut archive = tar::Archive::new(gz);
-    archive
-        .unpack(staging)
-        .map_err(|e| format!("解包 tarball 失败: {e}"))?;
-    Ok(())
-}
-
 fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dst).map_err(|e| format!("创建目录失败: {e}"))?;
     for entry in std::fs::read_dir(src).map_err(|e| format!("读取目录失败: {e}"))? {
@@ -316,6 +305,11 @@ pub fn install(app: &tauri::AppHandle, version: &str) -> Result<RuntimeView, Str
 
 /// 安装到指定根目录（可测试）。全流程可回滚：任何失败都会清理 staging 与半成品，
 /// 不会留下不完整运行时；已存在同版本时拒绝（需先移除）。
+///
+/// 2026-08-24 修复（mac ERR_MODULE_NOT_FOUND）：此前只解压 `@deepseek-ai/dsh` 单个 tarball，
+/// 不解析依赖树；而 bin.js 依赖的 `@deepseek-ai/dsh-app-boot` 等包以 peerDependencies 声明
+/// （npm≥7 才会自动安装）。现改为在 staging 内真实执行 `npm install`（Node 自带 npm CLI），
+/// 并以「bin.js 可执行冒烟」作为安装成功门禁——缺依赖类问题在安装期即被拦截。
 pub fn install_at(root: &Path, version: &str) -> Result<RuntimeView, String> {
     let version = version.trim();
     if !is_exact_version(version) {
@@ -335,20 +329,144 @@ pub fn install_at(root: &Path, version: &str) -> Result<RuntimeView, String> {
     std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
 
     let result = (|| -> Result<RuntimeView, String> {
+        // 1. 下载主包 tarball 并以 registry dist.integrity（sha512）强校验（自控门禁）
         download_and_verify(&client, &meta, &tmp_tarball)?;
-        extract_tarball(&tmp_tarball, &staging)?;
-        let pkg_staging = staging.join("package");
-        let staged_version = read_pkg_version(&pkg_staging)?;
+
+        // 2. npm 安装（两阶段 + peer 闭包迭代，全部走 --legacy-peer-deps）：
+        //    实测（2026-08-24，Windows）：npm≥7 自动 peer 解析对本依赖图病态慢（>25min）；
+        //    legacy 模式 41s 装完 430 包，再按扫描结果显式补 peers（增量 7s），冒烟通过。
+        //    staging 必须写显式 package.json 锁定项目根，否则 npm 会向上查找到
+        //    祖先 package.json 并装进别人的树（本机复现过）。
+        let node = crate::dsh::prereq::find_node()
+            .ok_or_else(|| "未找到 Node.js，无法执行 npm install".to_string())?;
+        let npm_cli = find_npm_cli(&node)?;
+        let tarball_dep = format!("file:{}", tmp_tarball.to_string_lossy().replace('\\', "/"));
+        write_staging_manifest(&staging, version, &[("@deepseek-ai/dsh", &tarball_dep)])?;
+
+        let run_npm_install = |extra_note: &str| -> Result<(), String> {
+            let output = run_with_timeout(
+                &node,
+                &[
+                    npm_cli.to_string_lossy().as_ref(),
+                    "install",
+                    "--omit=dev",
+                    "--legacy-peer-deps",
+                    "--no-audit",
+                    "--no-fund",
+                    "--loglevel=error",
+                    "--no-progress",
+                ],
+                &staging,
+                900_000,
+                None,
+            )
+            .map_err(|e| format!("npm install 失败: {e}"))?;
+            if !output.success {
+                // 直连失败（ENOTFOUND/ECONN* 等）时带系统代理重试一次
+                if looks_like_network_error(&output.combined) {
+                    if let Some(proxy) = crate::dsh::config::detect_system_proxy() {
+                        eprintln!("[runtime] npm install 直连失败，改用系统代理 {proxy} 重试");
+                        let mut envs: Vec<(String, String)> = Vec::new();
+                        for key in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
+                            envs.push((key.to_string(), proxy.clone()));
+                        }
+                        envs.push(("NO_PROXY".to_string(), "localhost,127.0.0.1,::1".to_string()));
+                        let retried = run_with_timeout(
+                            &node,
+                            &[
+                                npm_cli.to_string_lossy().as_ref(),
+                                "install",
+                                "--omit=dev",
+                                "--legacy-peer-deps",
+                                "--no-audit",
+                                "--no-fund",
+                                "--loglevel=error",
+                                "--no-progress",
+                            ],
+                            &staging,
+                            900_000,
+                            Some(&envs),
+                        )
+                        .map_err(|e| format!("npm install(代理重试) 失败: {e}"))?;
+                        if retried.success {
+                            return Ok(());
+                        }
+                        return Err(format!(
+                            "npm install{extra_note} 非零退出（code={:?}，含代理重试）:\n{}",
+                            retried.code,
+                            truncate_tail(&retried.combined, 2_000)
+                        ));
+                    }
+                }
+                return Err(format!(
+                    "npm install{extra_note} 非零退出（code={:?}）:\n{}",
+                    output.code,
+                    truncate_tail(&output.combined, 2_000)
+                ));
+            }
+            Ok(())
+        };
+
+        run_npm_install("（主包）")?;
+
+        // 3. peer 闭包迭代：把已安装包声明的非可选 peerDependencies 显式补齐。
+        //    （legacy-peer-deps 不自动装 peer；其中部分是运行时真实 import 需求，
+        //    如 dsh-app-boot → cordis-plugin-group。每轮增量安装为秒级。）
+        for round in 1..=5u32 {
+            let node_modules = staging.join("node_modules");
+            let missing = scan_missing_peers(&node_modules);
+            if missing.is_empty() {
+                break;
+            }
+            eprintln!("[runtime] peer 闭包第 {round} 轮：补装 {} 个缺失 peer", missing.len());
+            let refs: Vec<(&str, &str)> =
+                missing.iter().map(|(n, r)| (n.as_str(), r.as_str())).collect();
+            write_staging_manifest(&staging, version, &refs)?;
+            run_npm_install(&format!("（peer 第 {round} 轮）"))?;
+            if round == 5 {
+                return Err("peer 闭包 5 轮仍未收敛（依赖图异常），已中止".to_string());
+            }
+        }
+
+        // 4. 校验主包：版本精确匹配 + lib/bin.js 存在
+        let pkg_dir = staging.join(PKG_REL);
+        let staged_version = read_pkg_version(&pkg_dir)?;
         if staged_version != version {
             return Err(format!(
-                "tarball 内 package.json 版本 {staged_version} 与请求版本 {version} 不一致"
+                "npm 安装产物版本 {staged_version} 与请求版本 {version} 不一致"
             ));
         }
-        let target_pkg = pkg_dir_of(&version_dir);
-        copy_dir_all(&pkg_staging, &target_pkg)?;
+        let staged_bin = pkg_dir.join("lib").join("bin.js");
+        if !staged_bin.exists() {
+            return Err(format!("安装产物缺少 lib/bin.js（版本 {version} 不可用）"));
+        }
+
+        // 5. 启动冒烟：任何残余依赖缺失（ERR_MODULE_NOT_FOUND）在此暴露并中止安装
+        let smoke = run_with_timeout(
+            &node,
+            &[staged_bin.to_string_lossy().as_ref(), "--version"],
+            &pkg_dir,
+            60_000,
+            None,
+        );
+        match smoke {
+            Ok(out) if out.success => {}
+            Ok(out) => {
+                return Err(format!(
+                    "bin.js 启动冒烟失败（依赖不完整或不可执行，code={:?}）:\n{}",
+                    out.code,
+                    truncate_tail(&out.combined, 2_000)
+                ));
+            }
+            Err(e) => return Err(format!("bin.js 启动冒烟超时/失败: {e}")),
+        }
+
+        // 6. 搬运完整依赖树 + 记录（integrity 取 registry dist.integrity 作为版本指纹）
+        let target_node_modules = version_dir.join("node_modules");
+        copy_dir_all(&staging.join("node_modules"), &target_node_modules)?;
         let bin = bin_path_of(&version_dir);
         if !bin.exists() {
-            return Err(format!("安装产物缺少 lib/bin.js（版本 {version} 不可用）"));
+            return Err(format!("搬运后缺少 lib/bin.js（版本 {version}）"));
         }
         let bin_bytes = std::fs::read(&bin).map_err(|e| format!("读取 bin.js 失败: {e}"))?;
         let bin_sha256 = sha256_hex(&bin_bytes);
@@ -380,6 +498,197 @@ pub fn install_at(root: &Path, version: &str) -> Result<RuntimeView, String> {
             Err(e)
         }
     }
+}
+
+/// staging 内写入显式 package.json：锁定 npm 项目根（防止向上查找到祖先
+/// package.json 把依赖装进别人的树），并声明当前需要补装的精确依赖集。
+fn write_staging_manifest(staging: &Path, version: &str, deps: &[(&str, &str)]) -> Result<(), String> {
+    use serde_json::Value;
+    let mut dep_map = serde_json::Map::new();
+    for (name, range) in deps {
+        dep_map.insert((*name).to_string(), Value::String((*range).to_string()));
+    }
+    // 保留既有 dependencies（增量合并），避免每轮覆盖已装 peer 声明
+    let manifest_path = staging.join("package.json");
+    let mut root: serde_json::Map<String, Value> = match std::fs::read_to_string(&manifest_path) {
+        Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+        Err(_) => serde_json::Map::new(),
+    };
+    if !root.contains_key("name") {
+        root.insert("name".to_string(), Value::String("dsh-runtime-staging".to_string()));
+    }
+    root.insert("private".to_string(), Value::Bool(true));
+    let existing = root.entry("dependencies").or_insert_with(|| Value::Object(Default::default()));
+    if let Some(obj) = existing.as_object_mut() {
+        for (k, v) in dep_map {
+            obj.insert(k, v);
+        }
+    }
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&Value::Object(root)).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("写入 staging package.json 失败: {e}"))
+}
+
+/// 遍历 node_modules（含 scope 包），收集所有非可选 peerDependencies 中
+/// 尚未存在于树内的 (name, requestedRange)。存在性检查 scope-aware。
+fn scan_missing_peers(node_modules: &Path) -> Vec<(String, String)> {
+    let mut peers: BTreeMap<String, String> = BTreeMap::new();
+    fn scan_pkg(dir: &Path, peers: &mut BTreeMap<String, String>) {
+        let manifest_path = dir.join("package.json");
+        let Ok(text) = std::fs::read_to_string(&manifest_path) else { return };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+        let Some(peer_deps) = value.get("peerDependencies").and_then(|v| v.as_object()) else { return };
+        let optional_meta = value.get("peerDependenciesMeta").and_then(|v| v.as_object());
+        for (name, range) in peer_deps {
+            let optional = optional_meta
+                .and_then(|m| m.get(name))
+                .and_then(|m| m.get("optional"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if !optional {
+                peers.insert(name.clone(), range.as_str().unwrap_or("*").to_string());
+            }
+        }
+    }
+    let Ok(entries) = std::fs::read_dir(node_modules) else { return Vec::new() };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') || name.starts_with('@') {
+            // scope 目录：遍历其下每个包
+            if let Ok(scope_entries) = std::fs::read_dir(&path) {
+                for scoped in scope_entries.flatten() {
+                    scan_pkg(&scoped.path(), &mut peers);
+                }
+            }
+            continue;
+        }
+        scan_pkg(&path, &mut peers);
+    }
+    peers
+        .into_iter()
+        .filter(|(name, _)| !node_modules.join(name).exists())
+        .collect()
+}
+
+/// 粗判 npm 输出是否为网络类失败（用于决定是否带系统代理重试）。
+fn looks_like_network_error(output: &str) -> bool {
+    const MARKERS: [&str; 8] = [
+        "ENOTFOUND", "ECONNREFUSED", "ETIMEDOUT", "ECONNRESET", "EAI_AGAIN",
+        "fetch failed", "network", "getaddrinfo",
+    ];
+    let lower = output.to_ascii_lowercase();
+    MARKERS.iter().any(|m| lower.contains(&m.to_ascii_lowercase()))
+}
+
+/// 定位随 Node 分发的 npm CLI 入口（npm-cli.js），多候选回退：
+/// Windows `<node>/node_modules/npm/bin/npm-cli.js`；unix `<node>/../lib/node_modules/npm/bin/npm-cli.js`；
+/// 兜底 PATH 中的 npm（macOS/Linux）。
+fn find_npm_cli(node: &Path) -> Result<PathBuf, String> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = node.parent() {
+        candidates.push(dir.join("node_modules").join("npm").join("bin").join("npm-cli.js"));
+        candidates.push(dir.join("..").join("lib").join("node_modules").join("npm").join("bin").join("npm-cli.js"));
+    }
+    for cand in candidates {
+        if cand.is_file() {
+            return Ok(cand);
+        }
+    }
+    // 兜底：PATH 中可执行的 npm（unix 直接可用；Windows 的 npm.cmd 由调用方经 node 规避）
+    #[cfg(unix)]
+    {
+        let out = std::process::Command::new("which")
+            .arg("npm")
+            .output()
+            .map_err(|e| format!("查找 npm 失败: {e}"))?;
+        let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !p.is_empty() && PathBuf::from(&p).exists() {
+            // which 命中的可能是 shim；优先其指向的真实 cli 由 npm 自身处理，直接返回 shim 路径交给系统执行器
+            return Ok(PathBuf::from(p));
+        }
+    }
+    Err("未找到 npm CLI（npm-cli.js）；请确认 Node.js 安装完整（npm 随 Node 分发）".to_string())
+}
+
+struct ProcOutput {
+    success: bool,
+    code: Option<i32>,
+    combined: String,
+}
+
+/// 带超时的同步进程执行（stdout+stderr 合并截断）；超时强杀。
+fn run_with_timeout(
+    program: &Path,
+    args: &[&str],
+    cwd: &Path,
+    timeout_ms: u64,
+    envs: Option<&[(String, String)]>,
+) -> Result<ProcOutput, String> {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(envs) = envs {
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("启动 {} 失败: {e}", program.display()))?;
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stdout = child.stdout.take().map(|mut s| {
+                    let mut buf = String::new();
+                    let _ = std::io::Read::read_to_string(&mut s, &mut buf);
+                    buf
+                }).unwrap_or_default();
+                let stderr = child.stderr.take().map(|mut s| {
+                    let mut buf = String::new();
+                    let _ = std::io::Read::read_to_string(&mut s, &mut buf);
+                    buf
+                }).unwrap_or_default();
+                stdout.push_str(&stderr);
+                return Ok(ProcOutput {
+                    success: status.success(),
+                    code: status.code(),
+                    combined: stdout,
+                });
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("超时（{timeout_ms}ms）已终止"));
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(e) => return Err(format!("等待进程失败: {e}")),
+        }
+    }
+}
+
+fn truncate_tail(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let cut = &s[s.len() - max..];
+    format!("…（前文截断）{cut}")
 }
 
 /// 列出所有已安装运行时（正式入口）。
@@ -560,9 +869,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "live: 需要网络访问 npm registry，手动运行 cargo test -- --ignored runtime_live_install_and_verify"]
+    #[ignore = "live: 需要网络访问 npm registry + npm install，手动运行 cargo test -- --ignored runtime_live_install_and_verify"]
     fn runtime_live_install_and_verify() {
-        // 端到端：从 npm registry 下载 @deepseek-ai/dsh@0.1.1-rc.2，校验 integrity，解包，复验。
+        // 端到端：下载 @deepseek-ai/dsh@0.1.1-rc.2 → sha512 校验 → npm install 全依赖树
+        // → bin.js 启动冒烟（依赖缺失在此暴露）→ 复验。
         let dir = std::env::temp_dir().join(format!("dsh-runtime-e2e-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -573,5 +883,74 @@ mod tests {
         let list = list_at(&dir, Some("0.1.1-rc.2")).expect("list");
         assert!(list.iter().any(|r| r.version == "0.1.1-rc.2" && r.active));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn find_npm_cli_resolves_bundled_npm() {
+        let node = crate::dsh::prereq::find_node().expect("node should exist in dev/CI env");
+        let cli = find_npm_cli(&node).expect("npm-cli.js ships with Node");
+        assert!(cli.is_file(), "cli path: {}", cli.display());
+    }
+
+    #[test]
+    fn run_with_timeout_captures_output_and_exit_code() {
+        let node = crate::dsh::prereq::find_node().unwrap();
+        let cwd = std::env::temp_dir();
+        let out = run_with_timeout(
+            &node,
+            &["-e", "process.stdout.write('ok-marker')"],
+            &cwd,
+            10_000,
+            None,
+        )
+        .unwrap();
+        assert!(out.success);
+        assert_eq!(out.code, Some(0));
+        assert!(out.combined.contains("ok-marker"), "combined: {}", out.combined);
+    }
+
+    #[test]
+    fn run_with_timeout_kills_hanging_process() {
+        let node = crate::dsh::prereq::find_node().unwrap();
+        let cwd = std::env::temp_dir();
+        let started = std::time::Instant::now();
+        let result = run_with_timeout(
+            &node,
+            &["-e", "setInterval(() => {}, 1000)"],
+            &cwd,
+            1_500,
+            None,
+        );
+        assert!(result.is_err(), "expected timeout error");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "should return promptly after timeout"
+        );
+    }
+
+    #[test]
+    fn run_with_timeout_injects_env() {
+        let node = crate::dsh::prereq::find_node().unwrap();
+        let cwd = std::env::temp_dir();
+        let envs = vec![("HTTPS_PROXY".to_string(), "http://probe-host:1".to_string())];
+        let out = run_with_timeout(
+            &node,
+            &["-e", "process.stdout.write(String(process.env.HTTPS_PROXY))"],
+            &cwd,
+            5_000,
+            Some(&envs),
+        )
+        .unwrap();
+        assert!(out.combined.contains("http://probe-host:1"), "combined: {}", out.combined);
+    }
+
+    #[test]
+    fn truncate_tail_keeps_tail_and_marks_cut() {
+        let long = format!("{}tail-marker", "a".repeat(3_000));
+        let cut = truncate_tail(&long, 100);
+        assert!(cut.starts_with('…'));
+        assert!(cut.contains("tail-marker"), "tail must be preserved: {cut}");
+        assert!(cut.chars().count() < 3_000);
+        assert_eq!(truncate_tail("short", 100), "short");
     }
 }
