@@ -1,18 +1,10 @@
 import { dsh } from "../lib/tauri";
-import { appStore, useAppState } from "../lib/dsh/store";
+import { useAppState } from "../lib/dsh/store";
+import { LogPanel } from "../components/LogPanel";
 
 export function StatusPage() {
-  const { status, host, connected, logs } = useAppState();
+  const { status, host, connected } = useAppState();
   const running = status?.state === "running";
-
-  const refreshLogs = async () => {
-    try {
-      const list = await dsh.getLogs(200);
-      appStore.set({ logs: list });
-    } catch (e) {
-      appStore.set({ error: String(e) });
-    }
-  };
 
   return (
     <section className="view active" id="view-status">
@@ -49,11 +41,11 @@ export function StatusPage() {
           <div className="kv"><span className="k">附加会话数</span><span className="v">{host?.attachedSessions ?? "-"}</span></div>
         </div>
 
-        <div className="card">
-          <div className="card-head"><span className="card-title">dsh 日志</span><button className="btn sm" onClick={() => void refreshLogs()}>刷新</button></div>
-          <div className="term">
-            {logs.length === 0 ? "(暂无日志)" : logs.join("\n")}
+        <div className="card wide">
+          <div className="card-head">
+            <span className="card-title">系统与 DSH 运行日志</span>
           </div>
+          <LogPanel />
         </div>
       </div>
     </section>

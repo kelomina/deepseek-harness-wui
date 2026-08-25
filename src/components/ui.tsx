@@ -51,11 +51,24 @@ export function Modal({
   );
 }
 
-export function ErrorBanner({ message, onDismiss }: { message: string; onDismiss: () => void }) {
-  const shown = message.length > 400 ? `${message.slice(0, 400)}…（已截断，详见日志）` : message;
+export function ErrorBanner({
+  message,
+  onDismiss,
+  onViewLogs,
+}: {
+  message: string;
+  onDismiss: () => void;
+  onViewLogs?: () => void;
+}) {
+  const shown = message.length > 300 ? `${message.slice(0, 300)}…（已截断）` : message;
   return (
     <div className="error-banner" title={message}>
-      <span>{shown}</span>
+      <span style={{ flex: 1 }}>{shown}</span>
+      {onViewLogs && (
+        <button className="btn sm" onClick={onViewLogs} style={{ marginRight: 6, whiteSpace: "nowrap" }}>
+          查看日志
+        </button>
+      )}
       <button className="btn sm subtle" onClick={onDismiss}>关闭</button>
     </div>
   );

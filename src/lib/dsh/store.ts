@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { dsh, onDshLog, onDshStatus, type DshConfig, type DshStatus } from "../tauri";
+import { logger } from "../logger";
 import { DshApiClient } from "./client";
 import { computeRevertInfo, type RevertInfo } from "./revert";
 import { sessionTitle } from "./sessionTitle";
@@ -207,6 +208,12 @@ class AppStore {
   };
 
   set(partial: Partial<AppState>): void {
+    if (partial.error) {
+      logger.error("ui", partial.error);
+    }
+    if (partial.notice) {
+      logger.info("ui", partial.notice);
+    }
     this.state = { ...this.state, ...partial };
     this.listeners.forEach((fn) => fn());
   }
@@ -214,6 +221,8 @@ class AppStore {
   async init(): Promise<void> {
     if (this.started) return;
     this.started = true;
+    logger.initSubscriptions();
+    logger.info("system", "应用状态初始化中...");
     const [status, config] = await Promise.all([dsh.status(), dsh.getConfig()]);
     let hiddenPresets: string[] = [];
     let pinnedSessions: SessionId[] = [];

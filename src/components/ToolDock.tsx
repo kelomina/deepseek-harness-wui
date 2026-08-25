@@ -4,8 +4,10 @@ import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import { useConversationItems } from "./Conversation";
 import { ToolViews } from "./ToolViews";
 import { GoalBar, QueueDock, SubagentPanel } from "./SessionExtras";
+import { LogPanel } from "./LogPanel";
+import { useUnreadErrors } from "../lib/logger";
 
-export type ToolTab = "files" | "terminal" | "web" | "git" | "session";
+export type ToolTab = "files" | "terminal" | "web" | "git" | "session" | "logs";
 export type SessionSubTab = "goal" | "queue" | "subagents" | "skills";
 
 const TAB_LABELS: Record<ToolTab, string> = {
@@ -14,6 +16,7 @@ const TAB_LABELS: Record<ToolTab, string> = {
   web: "浏览器",
   git: "Git",
   session: "会话",
+  logs: "日志",
 };
 
 const SUB_TAB_LABELS: { id: SessionSubTab; label: string; icon: string }[] = [
@@ -111,6 +114,7 @@ export function ToolDock({
   onSessionSubTabChange: (t: SessionSubTab) => void;
 }) {
   const { host, activeWorkspaceId, workspaces, selectedSessionId } = useAppState();
+  const unreadErrors = useUnreadErrors();
   const items = useConversationItems();
   const activeWs = workspaces.find((w) => w.workspaceId === activeWorkspaceId) ?? null;
 
@@ -118,20 +122,25 @@ export function ToolDock({
     <div className="tool-dock">
       <div className="td-head">
         <div className="td-tabs">
-          {(["files", "terminal", "web", "git", "session"] as ToolTab[]).map((t) => (
+          {(["files", "terminal", "web", "git", "session", "logs"] as ToolTab[]).map((t) => (
             <span
               key={t}
               className={`t-tab${tab === t ? " on" : ""}`}
               onClick={() => onTabChange(t)}
             >
               {TAB_LABELS[t]}
+              {t === "logs" && unreadErrors > 0 && (
+                <span className="t-badge error">{unreadErrors}</span>
+              )}
             </span>
           ))}
         </div>
         <button className="td-close" title="关闭" onClick={onClose}>×</button>
       </div>
       <div className="td-body">
-        {tab === "session" ? (
+        {tab === "logs" ? (
+          <LogPanel compact />
+        ) : tab === "session" ? (
           <SessionPanel
             subTab={sessionSubTab}
             onSubTabChange={onSessionSubTabChange}

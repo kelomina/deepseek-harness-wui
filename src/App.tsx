@@ -118,7 +118,13 @@ export default function App() {
           <button className="btn sm subtle" onClick={() => appStore.setNotice(null)}>关闭</button>
         </div>
       )}
-      {error && <ErrorBanner message={error} onDismiss={() => appStore.setError(null)} />}
+      {error && (
+        <ErrorBanner
+          message={error}
+          onDismiss={() => appStore.setError(null)}
+          onViewLogs={() => openToolDock("logs")}
+        />
+      )}
     </>
   );
 }

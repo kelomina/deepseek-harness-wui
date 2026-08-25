@@ -21,7 +21,10 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use tauri::Manager;
 
-const REGISTRY: &str = "https://registry.npmjs.org/@deepseek-ai/dsh";
+const REGISTRIES: &[(&str, &str)] = &[
+    ("npm-official", "https://registry.npmjs.org/@deepseek-ai/dsh"),
+    ("npm-mirror", "https://registry.npmmirror.com/@deepseek-ai/dsh"),
+];
 const PKG_REL: &str = "node_modules/@deepseek-ai/dsh";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +64,7 @@ pub struct VerifyReport {
 struct RegistryDist {
     tarball: String,
     integrity: String,
+    #[serde(default)]
     #[allow(dead_code)] // 备用 sha1 校验信息，主校验为 dist.integrity (sha512)
     shasum: Option<String>,
 }
@@ -74,8 +78,10 @@ struct RegistryMeta {
 
 #[derive(Debug, Clone, Deserialize)]
 struct RegistryDoc {
+    #[serde(rename = "dist-tags", default)]
     #[allow(dead_code)] // dist-tags（latest/next 等），备用展示
-    dist_tags: BTreeMap<String, String>,
+    dist_tags: Option<BTreeMap<String, String>>,
+    #[serde(default)]
     versions: BTreeMap<String, serde_json::Value>,
 }
 
@@ -196,21 +202,39 @@ pub(crate) fn try_clients<T>(
 }
 
 fn fetch_meta(client: &reqwest::blocking::Client, version: &str) -> Result<RegistryMeta, String> {
-    let url = format!("{REGISTRY}/{version}");
+    let mut failures: Vec<String> = Vec::new();
+    for (name, base_url) in REGISTRIES {
+        let url = format!("{base_url}/{version}");
+        match fetch_meta_from(client, &url, version) {
+            Ok(meta) => return Ok(meta),
+            Err(e) => failures.push(format!("[{name}] {e}")),
+        }
+    }
+    Err(format!("获取版本元数据失败:\n{}", failures.join("\n")))
+}
+
+fn fetch_meta_from(client: &reqwest::blocking::Client, url: &str, version: &str) -> Result<RegistryMeta, String> {
     let resp = client
-        .get(&url)
+        .get(url)
+        .header(reqwest::header::USER_AGENT, "deepseek-harness-wui")
+        .header(reqwest::header::ACCEPT, "application/json, */*")
         .send()
-        .map_err(|e| format!("获取 npm registry 元数据失败: {}", err_chain(&e)))?;
-    if !resp.status().is_success() {
+        .map_err(|e| format!("请求失败: {}", err_chain(&e)))?;
+    let status = resp.status();
+    if !status.is_success() {
         return Err(format!(
-            "npm registry 返回 {}（版本 {} 不存在或已被移除）",
-            resp.status().as_u16(),
+            "registry 返回 HTTP {}（版本 {} 不存在或已被移除）",
+            status.as_u16(),
             version
         ));
     }
-    let meta: RegistryMeta = resp
-        .json()
-        .map_err(|e| format!("解析 npm 元数据失败: {e}"))?;
+    let body_bytes = resp
+        .bytes()
+        .map_err(|e| format!("读取响应体失败: {}", err_chain(&e)))?;
+    let meta: RegistryMeta = serde_json::from_slice(&body_bytes).map_err(|e| {
+        let snippet = String::from_utf8_lossy(&body_bytes[..body_bytes.len().min(120)]);
+        format!("解析元数据失败: {e} (前文: {snippet}...)")
+    })?;
     if meta.name != "@deepseek-ai/dsh" || meta.version != version {
         return Err(format!(
             "registry 元数据与请求不一致：name={} version={}（期望 @deepseek-ai/dsh@{version}）",
@@ -221,15 +245,38 @@ fn fetch_meta(client: &reqwest::blocking::Client, version: &str) -> Result<Regis
 }
 
 fn fetch_remote_versions(client: &reqwest::blocking::Client) -> Result<Vec<String>, String> {
-    let resp = client
-        .get(REGISTRY)
-        .send()
-        .map_err(|e| format!("获取 npm registry 版本列表失败: {}", err_chain(&e)))?;
-    if !resp.status().is_success() {
-        return Err(format!("npm registry 返回 {}", resp.status().as_u16()));
+    let mut failures: Vec<String> = Vec::new();
+    for (name, base_url) in REGISTRIES {
+        match fetch_remote_versions_from(client, base_url) {
+            Ok(versions) => return Ok(versions),
+            Err(e) => failures.push(format!("[{name}] {e}")),
+        }
     }
-    let doc: RegistryDoc = resp.json().map_err(|e| format!("解析版本列表失败: {e}"))?;
+    Err(format!("获取版本列表失败:\n{}", failures.join("\n")))
+}
+
+fn fetch_remote_versions_from(client: &reqwest::blocking::Client, registry_url: &str) -> Result<Vec<String>, String> {
+    let resp = client
+        .get(registry_url)
+        .header(reqwest::header::USER_AGENT, "deepseek-harness-wui")
+        .header(reqwest::header::ACCEPT, "application/json, */*")
+        .send()
+        .map_err(|e| format!("请求失败: {}", err_chain(&e)))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("registry 返回 HTTP {}", status.as_u16()));
+    }
+    let body_bytes = resp
+        .bytes()
+        .map_err(|e| format!("读取响应体失败: {}", err_chain(&e)))?;
+    let doc: RegistryDoc = serde_json::from_slice(&body_bytes).map_err(|e| {
+        let snippet = String::from_utf8_lossy(&body_bytes[..body_bytes.len().min(120)]);
+        format!("解析版本列表失败: {e} (前文: {snippet}...)")
+    })?;
     let mut versions: Vec<String> = doc.versions.keys().cloned().collect();
+    if versions.is_empty() {
+        return Err("版本列表为空".to_string());
+    }
     versions.sort();
     Ok(versions)
 }
@@ -1001,4 +1048,29 @@ mod tests {
         assert!(cut.chars().count() < 3_000);
         assert_eq!(truncate_tail("short", 100), "short");
     }
+
+    #[test]
+    fn registry_doc_deserializes_official_and_mirror_formats() {
+        let official_json = r#"{
+            "name": "@deepseek-ai/dsh",
+            "dist-tags": { "latest": "0.1.1-rc.2" },
+            "versions": {
+                "0.1.0-rc.6": { "version": "0.1.0-rc.6" },
+                "0.1.1-rc.2": { "version": "0.1.1-rc.2" }
+            }
+        }"#;
+        let doc: RegistryDoc = serde_json::from_str(official_json).expect("should parse official json with dist-tags");
+        assert_eq!(doc.versions.len(), 2);
+        assert!(doc.dist_tags.is_some());
+
+        let mirror_json = r#"{
+            "name": "@deepseek-ai/dsh",
+            "versions": {
+                "0.1.1-rc.2": { "version": "0.1.1-rc.2" }
+            }
+        }"#;
+        let doc2: RegistryDoc = serde_json::from_str(mirror_json).expect("should parse mirror json without dist-tags");
+        assert_eq!(doc2.versions.len(), 1);
+    }
 }
+

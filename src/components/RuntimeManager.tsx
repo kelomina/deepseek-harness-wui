@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { dsh, runtime, type RuntimeView, type VerifyReport } from "../lib/tauri";
 import { appStore } from "../lib/dsh/store";
+import { logger } from "../lib/logger";
 
 const REPO_VERSION = "0.1.0-rc.6";
 
@@ -18,6 +19,7 @@ export function RuntimeManager({ running }: { running: boolean }) {
       setList(await runtime.list());
     } catch (e) {
       setMsg(String(e));
+      logger.error("runtime", `获取已安装运行时列表失败: ${String(e)}`, e);
     }
   }, []);
 
@@ -28,10 +30,15 @@ export function RuntimeManager({ running }: { running: boolean }) {
   const fetchRemote = async () => {
     setBusy("remote");
     setMsg(null);
+    logger.info("runtime", "正在获取远程可用版本列表...");
     try {
-      setRemote(await runtime.remoteVersions());
+      const versions = await runtime.remoteVersions();
+      setRemote(versions);
+      logger.info("runtime", `成功获取远程版本列表，共 ${versions.length} 个版本: ${versions.slice(-5).join(", ")}等`);
     } catch (e) {
-      setMsg(`获取远程版本失败: ${String(e)}`);
+      const err = `获取远程版本失败: ${String(e)}`;
+      setMsg(err);
+      logger.error("runtime", err, e);
     } finally {
       setBusy(null);
     }
@@ -42,13 +49,16 @@ export function RuntimeManager({ running }: { running: boolean }) {
     if (!v) return;
     setBusy(`install-${v}`);
     setMsg(null);
+    logger.info("runtime", `开始下载并安装受管运行时 ${v}...`);
     try {
       const view = await runtime.install(v);
       setMsg(`已安装 ${view.version}（integrity 校验通过）`);
+      logger.info("runtime", `已安装 ${view.version}（integrity 校验通过）`);
       setInstallVersion("");
       await refresh();
     } catch (e) {
       setMsg(String(e));
+      logger.error("runtime", `安装 ${v} 失败: ${String(e)}`, e);
     } finally {
       setBusy(null);
     }
@@ -57,11 +67,18 @@ export function RuntimeManager({ running }: { running: boolean }) {
   const verify = async (version: string) => {
     setBusy(`verify-${version}`);
     setMsg(null);
+    logger.info("runtime", `正在复验版本 ${version} 的完整性...`);
     try {
       const report = await runtime.verify(version);
       setVerifyMap((m) => ({ ...m, [version]: report }));
+      if (report.ok) {
+        logger.info("runtime", `版本 ${version} 复验通过: ${report.detail}`);
+      } else {
+        logger.warn("runtime", `版本 ${version} 复验未通过: ${report.detail}`, report);
+      }
     } catch (e) {
       setMsg(String(e));
+      logger.error("runtime", `复验版本 ${version} 失败: ${String(e)}`, e);
     } finally {
       setBusy(null);
     }
@@ -70,14 +87,18 @@ export function RuntimeManager({ running }: { running: boolean }) {
   const setActive = async (version: string | null) => {
     setBusy(`active-${version ?? "none"}`);
     setMsg(null);
+    logger.info("runtime", `切换激活受管版本为: ${version ?? "仓库 bundled"}`);
     try {
       await runtime.setActive(version);
       await refresh();
       const cfg = await dsh.getConfig();
       appStore.set({ config: cfg });
-      setMsg(version ? `已启用受管运行时 ${version}（下次启动 dsh 生效）` : "已恢复仓库 bundled 运行时（下次启动 dsh 生效）");
+      const m = version ? `已启用受管运行时 ${version}（下次启动 dsh 生效）` : "已恢复仓库 bundled 运行时（下次启动 dsh 生效）";
+      setMsg(m);
+      logger.info("runtime", m);
     } catch (e) {
       setMsg(String(e));
+      logger.error("runtime", `切换运行时失败: ${String(e)}`, e);
     } finally {
       setBusy(null);
     }
@@ -86,13 +107,17 @@ export function RuntimeManager({ running }: { running: boolean }) {
   const remove = async (version: string) => {
     setBusy(`remove-${version}`);
     setMsg(null);
+    logger.info("runtime", `正在移除运行时 ${version}...`);
     try {
       const backup = await runtime.remove(version);
-      setMsg(`已移除 ${version}（可回滚，备份位于 ${backup}）`);
+      const m = `已移除 ${version}（可回滚，备份位于 ${backup}）`;
+      setMsg(m);
+      logger.info("runtime", m);
       setConfirmRemove(null);
       await refresh();
     } catch (e) {
       setMsg(String(e));
+      logger.error("runtime", `移除 ${version} 失败: ${String(e)}`, e);
     } finally {
       setBusy(null);
     }
@@ -101,12 +126,16 @@ export function RuntimeManager({ running }: { running: boolean }) {
   const rollback = async (version: string) => {
     setBusy(`rollback-${version}`);
     setMsg(null);
+    logger.info("runtime", `正在回滚运行时 ${version}...`);
     try {
       await runtime.rollback(version);
-      setMsg(`已回滚 ${version}`);
+      const m = `已回滚 ${version}`;
+      setMsg(m);
+      logger.info("runtime", m);
       await refresh();
     } catch (e) {
       setMsg(String(e));
+      logger.error("runtime", `回滚 ${version} 失败: ${String(e)}`, e);
     } finally {
       setBusy(null);
     }

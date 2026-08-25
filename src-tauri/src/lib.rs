@@ -274,9 +274,13 @@ fn web_fetch(url: String) -> Result<WebFetchResult, String> {
     if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
         return Err("URL 必须以 http:// 或 https:// 开头".to_string());
     }
-    let resp = reqwest::blocking::Client::builder()
+    let mut builder = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) DeepSeekHarnessWUI/0.1")
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) DeepSeekHarnessWUI/0.1");
+    if trimmed.contains("://127.0.0.1") || trimmed.contains("://localhost") {
+        builder = builder.no_proxy();
+    }
+    let resp = builder
         .build()
         .map_err(|e| format!("HTTP 客户端初始化失败: {e}"))?
         .get(trimmed)
@@ -975,6 +979,13 @@ mod tool_panel_tests {
                 );
                 let _ = stream.write_all(resp.as_bytes());
                 let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+                let mut discard = [0u8; 512];
+                while let Ok(n) = stream.read(&mut discard) {
+                    if n == 0 {
+                        break;
+                    }
+                }
             }
         });
         let r = web_fetch(format!("http://127.0.0.1:{port}/")).unwrap();
