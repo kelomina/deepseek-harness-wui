@@ -1,6 +1,6 @@
 # 风险与已知问题
 
-最后更新：2026-08-23（dsh **0.1.1-rc.2**；升级兼容性验证通过，见文末专段）
+最后更新：2026-08-24（dsh **0.1.1-rc.2**；新增 @dsh-std 生态观察条目，见文末 2026-08-24 段）
 
 ## 高风险
 
@@ -29,6 +29,21 @@
 
 ## 变更记录
 
+- 2026-08-25：**[已修复] mac 受管运行时启动 ERR_MODULE_NOT_FOUND（@deepseek-ai/dsh-app-boot 缺失）**
+  ——根因：受管安装只解压主包 tarball 不装依赖树；npm 自动 peer 解析又病态慢（>25min）。
+  改为「显式 manifest 锁根 + --legacy-peer-deps + peer 闭包迭代 + bin 冒烟门禁」，
+  live E2E 132s 全流程 PASS。**mac 用户需重装一次运行时**（见文末专段）。
+- 2026-08-24：dsh-std 宿主 **P3 准入与证据收口**：wui-admission-v0.1.md profile 文档、
+  上游 fixtures 交叉比对 12/12 PASS（evidence/dsh-std-fixtures-crosscheck-*.md）、
+  任意本地插件目录激活、README/CHANGELOG 收口与措辞审计。详见文末 P3 段。
+- 2026-08-24：dsh-std 宿主 **P2 执行接入落地**：插件 entry 真实激活/执行、grants 持久化（Rust 侧权威）、
+  TUI-OBS-002 对标清理语义、崩溃自愈（≤2 次自动重启）、打包资源接入、E2E 证据
+  evidence/dsh-std-p2-e2e-2026-08-24T14-30-29.md（20 断言 PASS）。详见文末 P2 段。
+- 2026-08-24：dsh-std 宿主 **P1 最小宿主落地**（feature flag 语义：sidecar 仅显式启动，默认 stopped）：
+  新增 `plugin-host/`（@dsh-std/*@0.1.0-rc1 精确锁定，node:test 24/24 绿）+ `src-tauri/src/dsh/plugin_host.rs`
+  看护（cargo test --lib 34 过）+ 设置页插件 Tab 实验区。详见文末 P1 段。
+- 2026-08-24：dsh-std / dsh-ecosystem-spec 生态评估 P0 spike 完成（GO），新增文末观察条目；
+  实施契约见 docs/DSH_STD_HOST_PLAN.md，spike 报告见 docs/DSH_STD_SPIKE.md。
 - 2026-08-14：spike 实证 Origin 围栏行为（403）；确认 0.1.0-rc.6 客户端包可安装；
   确认浏览器 bundle 不可直接 import，采用 AbstractApiClient 子类方案。
 
@@ -457,3 +472,136 @@ DSH_HOME=用户真实 `~/.dsh`，测试后 taskkill /T 清理）。输出：`evi
 - 验证 [事实]：cargo test --lib 32 passed；ignored live E2E `runtime_live_install_and_verify`
   （真实 npm registry 下载 @deepseek-ai/dsh@0.1.1-rc.2 + integrity 校验）修复后通过。
   CI 双平台构建通过。待用户在 mac 上复测「获取可用版本 / 安装运行时」确认闭环。
+
+## 2026-08-24：dsh-std / dsh-ecosystem-spec 社区生态观察（P0 spike 完成，GO）
+
+- 背景：评估接入 https://github.com/T-Auto/dsh-ecosystem-spec（dsh-TUI 团队社区规范，锚定 Yan-Zero/dsh-std
+  元协议）。决策：WUI 以 **Node sidecar** 形态成为 dsh-std 实验宿主，v1 协议面 = command + storage，
+  全程 feature flag `dshStdHost` 隔离。契约见 docs/DSH_STD_HOST_PLAN.md。
+- [事实] spike 全链路验证通过（2026-08-24）：standalone conformance 全绿（exit 0）、validate:manifest CLI
+  compatible、npm 独立依赖路径可用、协商原型正反例断言全过。证据见 docs/DSH_STD_SPIKE.md。
+- 风险与缓解：
+  - 规范状态 Draft/Experimental，允许 breaking；`@dsh-std/core` 0.1.0→0.1.1 兼容线切换发生于 2026-08-23
+    → 目标线锁定 **community-v0.15 坐标 + @dsh-std/*@0.1.0-rcN 包线**（spec pinned revision 同期），0.1.1-rc.N 仅观察；
+    引入依赖时精确锁定（沿用 save-exact）并在本文件记录版本+验证日期。
+  - 生态成熟度低（spec 18 stars / dsh-std 10 stars / 单团队维护），存在熄火风险 → feature flag 隔离，
+    废弃成本=移除 sidecar 模块；不进 dsh-TUI 市场，无准入绑定。
+  - 第三方插件代码执行安全面 → 独立 Node 进程、无 Tauri IPC、stdio NDJSON + token 握手、权限默认 deny。
+  - Windows standalone conformance 对 corepack 有硬编码依赖（Node ≥25 不捆绑 corepack）→ CI 复跑需预装
+    corepack 或打补丁；可向上游提 issue。
+- 边界：不改动 client.ts/proxy.rs/plugins.rs 既有语义；不宣称 Stable/官方认证（治理规则禁止），
+  对外措辞仅"实验适配"。
+
+## 2026-08-24：dsh-std 宿主 P1 落地（最小宿主，实验）
+
+- 交付 [事实]：
+  - `plugin-host/`：独立 npm 工程（仿 runtime/ 先例），`@dsh-std/{core,manifest,command,storage}@0.1.0-rc1`
+    精确锁定（save-exact）。stdio NDJSON + token 握手；admission 管道
+    parse→结构校验→坐标分类→ProtocolCatalog 协商→权限门禁→准入投影
+    （compatible / compatible_degraded / waiting_authorization / rejected / unknown）。
+  - `src-tauri/src/dsh/plugin_host.rs`：进程看护（spawn/stdin+stdout 读线程/kill_tree/幂等 stop/Drop 兜底），
+    镜像 DshManager 模式；RunEvent::Exit 统一清理。
+  - 设置页「插件」Tab 新增实验区卡片：sidecar 启停、manifest 准入校验（grants 输入默认空=全拒）、命令目录展示。
+- 测试证据 [事实]：
+  - plugin-host：node:test **24/24 通过**——含上游 conformance fixtures 正反例
+    （valid→waiting/degraded 投影、unknown service/kind/coordinate、重复契约/命令、facet 版本、provides/client/worker 拒绝）、
+    真实子进程 stdio 握手+admit E2E、storage 配额与命名空间隔离。
+  - Rust：cargo check 干净（仅既有 CollectSink dead_code warning）；cargo test --lib **34 过 / 0 失败**（2 ignored 为既有 live-E2E）。
+  - 前端：npm run build 通过（chunk 体积警告为既有）。
+- 语义决策 [推断]：
+  - waiting_authorization 优先于 compatible_degraded（授权未给前不进入降级运行态）；
+  - group+kind 完全未知 → rejected（INVALID_MANIFEST）；已知 family 但 apiVersion 未注册 → unknown（对齐上游 conformance CHANGELOG v0.15 语义）；
+  - P1 不执行插件 entry（激活驱动仅聚合 contributes.commands），执行路径留 P2。
+- 剩余风险：
+  - 打包分发未接：tauri.conf.json resources 尚不含 plugin-host/node_modules，打包产物内 sidecar 启动会报"找不到目录"；
+    P2 接入资源打包。dev 模式经 cwd 回退定位不受影响。
+  - 应用级验收（npm run tauri dev 手动四步 + 无残留进程确认）待用户执行。
+
+## 2026-08-24：dsh-std 宿主 P2 执行接入（实验）
+
+- 交付 [事实]：
+  - **插件真实执行**：sidecar 新增 activation driver（wui 私有，规范允许宿主自定义）——`activate(ctx)` 导出契约、
+    `ctx.registerCommand({id,title,handler})`（handler 形状对齐 @dsh-std/command CommandHandler：
+    `execute({rawInput},{signal}) → {kind,text}`，经 assertCommandHandler 校验）、`ctx.storage` 插件私有无参句柄
+    （按 manifest.id 派生命名空间 + grant 门禁）、activate 5s/execute 10s 超时（AbortController）。
+  - **授权持久化**：grants 权威在 Rust 侧（app_config_dir/plugin-host-grants.json，原子写），启动后自动重同步到
+    sidecar；协议升级 revision=2：`grants.set` 独立方法、admit 不再接受请求级 grants（消除越权面）。
+  - **清理语义（TUI-OBS-002 对标）**：deactivate=效果撤销（命令注册移除+deactivate() 钩子，保授权/storage）；
+    uninstall=停用+撤准入/授权；purge=额外删除 namespaced storage 文件。
+  - **effect ledger**（C-060 最小版）：append-only JSONL（plugin-host-ledger.jsonl），仅记生命周期/执行元数据
+    （kind/pluginId/activationInstance/generationId/outcome/durationMs），E2E 断言无 payload 泄漏。
+  - **崩溃自愈**：ensure_alive 在每个入口 try_wait；意外退出自动重启 ≤2 次（重启后 grants 自动恢复，
+    准入/激活需重做——fail-closed），超限转 Error 态。
+  - **打包接入**：tauri.conf.json resources 增加 ../plugin-host；示例插件 examples/echo-plugin 作为激活演示与参考实现。
+  - **UI**：实验区完整流程——校验准入 → waiting 时「授权以上权限并激活」→ compatible 时「激活」→ 命令执行
+    （每命令 rawInput 输入 + 结果回显）→ 停用/卸载。
+- 测试证据 [事实]：
+  - node:test **26/26 绿**（新增：全生命周期 stdio E2E——grant→admit(waiting)→fail-closed 拒激活→compatible→
+    activate(真实 import)→execute(ping/remember 经 storage)→deactivate 后 execute=NOT_ACTIVE→uninstall+purge
+    撤权删文件→ledger 无正文泄漏；handler 错误不杀宿主；per-plugin grant 隔离）。
+  - cargo test --lib 34 过 / 0 败；npm run build 通过。
+  - **E2E 存证：evidence/dsh-std-p2-e2e-2026-08-24T14-30-29.md（20 断言 PASS）**，脚本 scripts/dsh-std-p2-e2e.mjs 可复现。
+- 语义决策 [推断]：waiting_authorization 态禁止 activate（未授权不得进入运行态）；sidecar 重启后 admitted 集合
+  不恢复（内存态），要求重新准入+激活——安全上优于持久化运行态。
+- 剩余风险 / 待办：
+  - 非示例插件的目录选择 UI 未做（当前实验区仅内置 com.example.echo 一键激活）；P3 连同 wui-admission 文档一并补。
+  - handler 同步死循环无法被 AbortController 中断（只能靠超时返回错误），进程级防护依赖 ensure_alive 自愈——已记录。
+  - 应用级验收（tauri dev 手动走一遍授权→激活→执行→卸载）待用户执行。
+
+## 2026-08-24：dsh-std 宿主 P3 收口（准入文档 + 机器证据 + 目录激活）
+
+- 交付 [事实]：
+  - **`docs/wui-admission-v0.1.md`**：wui 宿主准入 profile 文档——坐标/权限/决策次序（fail-closed）、
+    声明完整性规则、信任模型（trusted-in-process 如实披露）、activation driver 契约、
+    TUI-OBS-002 对标清理表、验证证据索引。不倒灌 TUI 规则，仅声明"实验适配"。
+  - **上游 fixtures 交叉比对**：`scripts/dsh-std-fixtures-crosscheck.mjs` →
+    **evidence/dsh-std-fixtures-crosscheck-2026-08-24T15-00-00.md（12/12 PASS）**——
+    上游 conformance suite 对同一批 fixtures 的期望 × 本宿主 admission 引擎实际决策全对齐；
+    valid 清单的投影差异（TUI compatible vs 本宿主 waiting→degraded）确认为宿主能力面差异而非语义偏差。
+    过程中修复一个真实缺陷：字符串订阅按名称解析（byName），此前 unsupported_version+event 分支漏判。
+  - **任意插件目录激活**：`plugin_host_activate_cmd` 参数化 plugin_root + 新增 example_root 查询命令；
+    实验区新增"插件目录"输入（留空=内置示例），非示例插件可本地目录激活。
+  - README 特性列表与 CHANGELOG [Unreleased] 收口；措辞审计：全部 dsh-std 相关文案仅"实验适配"表述，
+    "官方认证"等词只出现于禁止性声明。
+- 测试证据 [事实]：node:test 26/26；cargo test --lib 34 过/0 败；npm run build 通过；
+  P2 E2E 复跑 PASS（evidence/dsh-std-p2-e2e-2026-08-24T15-04-47.md，20 断言）。
+- 剩余风险：
+  - 上游规范仍 Experimental：升级 `@dsh-std/*` 或 vendor revision 时必须复跑 crosscheck+单测+E2E 并在本文件记录。
+  - handler 同步死循环限制同 P2（超时报错 + 进程自愈兜底）。
+  - 应用级验收（tauri dev 手动全流程）仍待用户执行——这是唯一未闭环的验证项。
+
+## 2026-08-25：[已修复] mac 受管运行时 ERR_MODULE_NOT_FOUND——单包解压缺依赖树 + npm peer 解析病态慢
+
+- 现象（mac 实报）：受管安装 0.1.1-rc.2 后启动 dsh 即
+  `ERR_MODULE_NOT_FOUND: Cannot find package '@deepseek-ai/dsh-app-boot' imported from .../runtimes/0.1.1-rc.2/node_modules/@deepseek-ai/dsh/lib/bin.js`。
+- 根因 [事实]（两层）：
+  1. `runtime.rs install_at` 只下载解压**主包** tarball 到 node_modules，从不解析依赖树；
+     而 bin.js 的依赖链需要 `@deepseek-ai/dsh-app-boot` 等 400+ 包。此前 live E2E 只验
+     「下载+integrity+bin 存在」未验「可执行」，属假绿；Windows 开发机一直走 bundled 模式
+    （repo 内完整 npm install）故未暴露。
+  2. 直接改用 npm 自动解析又遇第二层坑：npm≥7 对该依赖图的 **peerDependencies 自动解析病态慢**
+    （本机实测 >25min 不收敛，placeDep 串行推进）；且 staging 无 package.json 时 npm 会向上
+    查找祖先 package.json 把依赖装进别人的树（本机复现）。
+- 修复 [事实]（`runtime.rs` 重写 install_at 安装管线）：
+  1. 保留自控门禁：主包 tarball 下载后先做 dist.integrity sha512 强校验；
+  2. staging 写**显式 package.json** 锁定项目根（防 npm 向上遍历）；
+  3. `npm install --omit=dev --legacy-peer-deps`（实测 41s 装 430 包；legacy 跳过自动 peer）；
+  4. **peer 闭包迭代**（≤5 轮）：扫描树内全部包的非可选 peerDependencies，缺失者以声明范围
+     显式并入 manifest 增量安装（首轮 21 个 peers 仅 7s；optional peers 如 cordis-plugin-hmr 正确跳过）；
+  5. 版本精确匹配校验 + **bin.js 启动冒烟门禁**（`node bin.js --version` 必须成功，
+     任何残余依赖缺失在安装期即中止并回滚）；
+  6. npm 直连失败（ENOTFOUND/ECONN* 特征）时自动带系统代理重试一次（npm 与 Node 同样默认不读系统代理）。
+- 验证 [事实]：
+  - 单测 39 过/0 败（新增 find_npm_cli、run_with_timeout 超时杀进程、env 注入探针、truncate_tail）；
+  - live ignored E2E `runtime_live_install_and_verify` **PASS（132s 全流程）**：
+    真实 registry 下载 → 校验 → legacy 安装 → peer 补装 → 冒烟 → verify_at ok；
+  - 手动复现链完整：坏产物冒烟失败可复现用户报错签名（ERR_MODULE_NOT_FOUND cordis-plugin-group）→
+    闭包补齐后冒烟 exit=0 输出 0.1.1-rc.2。
+- **mac 用户操作指引**：升级到含本修复的版本后，进 设置 → DSH 运行时 →
+  先「移除」0.1.1-rc.2（自动备份为 .trash-* 可回滚）→ 再「安装」0.1.1-rc.2（约 1-3 分钟，
+  结束前会自动完成启动冒烟）。旧坏产物不重装无法自愈（bin hash 记录仍一致，verify 无法感知缺依赖）。
+- 剩余风险：
+  - verify_at 仍只做 hash 复验不做冒烟（避免 VerifyReport 结构变更牵动前端）；冒烟门禁在安装期一次性把关，
+    后续文件损坏场景维持既有 hash 语义。
+  - npm 解析耗时随上游依赖图变化波动；900s/轮超时 + 失败信息带 stderr 尾部，可诊断。
+  - flate2/tar crate 已无调用方（tarball 不再手动解包），留在 Cargo.toml 待后续清理。

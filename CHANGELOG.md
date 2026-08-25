@@ -4,6 +4,14 @@ All notable user-visible changes are aggregated here. / 本项目重要变更按
 
 ## [Unreleased]
 
+### Fixed / 修复
+
+- **[mac] Managed-runtime launch crashed with `ERR_MODULE_NOT_FOUND: @deepseek-ai/dsh-app-boot`**: the managed installer extracted only the main `@deepseek-ai/dsh` tarball without its dependency tree. The pipeline now (1) keeps the sha512 integrity gate on the downloaded tarball, (2) pins npm's project root via an explicit staging manifest, (3) installs with `--legacy-peer-deps` (auto peer resolution was pathologically slow, >25min), (4) iteratively closes non-optional peerDependencies gaps by explicit incremental installs, (5) gates success on a real `bin.js --version` smoke so any missing dependency aborts and rolls back at install time, with automatic system-proxy retry for direct-connection failures. Live E2E: full install in ~132s, smoke prints 0.1.1-rc.2 — **受管运行时启动缺依赖修复**：安装管线改为「sha512 校验 → 显式 manifest 锁根 → legacy 安装 → peer 闭包补齐 → 启动冒烟门禁（失败即回滚）」，live 全流程 132s 通过。**已装过坏产物的用户需在 设置 → DSH 运行时 先移除再重装一次**（旧产物会自动备份可回滚）。
+
+### Added / 新增
+
+- **Experimental dsh-std plugin host (off by default)**: a pinned-`@dsh-std/*@0.1.0-rc1` Node sidecar (`plugin-host/`) implements community-consensus v0.15 admission (command + LocalStorage), honest Host Descriptor, per-plugin deny-by-default grants persisted Rust-side, real entry activation/execution, effect ledger without payloads, crash self-heal (≤2 restarts), and TUI-OBS-002-aligned deactivate/uninstall/purge. Gated behind Settings → 插件 → 实验区; upstream fixtures cross-check 12/12 and full lifecycle E2E 20 assertions PASS — **实验性 dsh-std 插件宿主（默认关闭）**：独立 Node sidecar 实现 community v0.15 准入（command+storage）、诚实 Host Descriptor、Rust 侧持久化授权（默认全拒）、插件真实激活/执行、无 payload 的 effect ledger、崩溃自愈与三段清理语义；设置 → 插件 → 实验区显式启用，上游 fixtures 交叉比对 12/12、生命周期 E2E 20 断言 PASS（仅声明"实验适配"，见 docs/wui-admission-v0.1.md）。
+
 ### Changed / 变更
 
 - Upgraded pinned dsh runtime `0.1.0-rc.6` → **`0.1.1-rc.2`** (runtime + root, exact lock; Npx mode and WSL provisioning defaults synced). RPC surface (52 methods) and event frames unchanged — verified by type-contract diff and full live smoke re-run against the real dsh. Upstream removed `@deepseek-ai/dsh-client-ui-slots`; the routing-suite installer already tolerates missing link targets, and boot-time healing no longer spins on permanently absent targets — 升级精确锁定 dsh 至 0.1.1-rc.2；52 方法与事件面零变化，live 冒烟全量复验通过；上游移除 dsh-client-ui-slots 的兼容处置已落地（安装器容错 + 自愈信号修正）。
