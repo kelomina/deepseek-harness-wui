@@ -123,26 +123,76 @@ pub fn is_exact_version(v: &str) -> bool {
 }
 
 pub(crate) fn client_with_proxy() -> Result<reqwest::blocking::Client, String> {
+    let first_proxy = candidate_labels().into_iter().next().and_then(|(_, u)| u);
+    build_client(first_proxy.as_deref())
+}
+
+/// 候选代理序列（按优先级）：环境变量代理 → 平台系统探测代理 → 直连。
+/// 返回 (标签, Option<代理url>)；调用方按序尝试并在全败时聚合错误。
+fn candidate_labels() -> Vec<(&'static str, Option<String>)> {
+    let env_proxy = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok().filter(|s| !s.trim().is_empty()));
+    let sys_proxy = crate::dsh::config::detect_system_proxy();
+    let mut out: Vec<(&'static str, Option<String>)> = Vec::new();
+    if let Some(p) = env_proxy {
+        out.push(("env-proxy", Some(p)));
+    }
+    if let Some(p) = sys_proxy {
+        // 与 env 相同则合并为一路
+        if !out.iter().any(|(_, u)| u.as_deref() == Some(p.as_str())) {
+            out.push(("system-proxy", Some(p)));
+        }
+    }
+    out.push(("direct", None));
+    out
+}
+
+fn build_client(proxy: Option<&str>) -> Result<reqwest::blocking::Client, String> {
     let mut b = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .connect_timeout(std::time::Duration::from_secs(20));
-    // 代理优先级：环境变量（与 Node 行为一致）→ 平台系统代理探测。
-    // 注意：reqwest 启用了 rustls-tls-native-roots（加载系统根证书，兼容自装 MITM CA）。
-    let proxy = std::env::var("HTTPS_PROXY")
-        .or_else(|_| std::env::var("https_proxy"))
-        .or_else(|_| std::env::var("HTTP_PROXY"))
-        .or_else(|_| std::env::var("http_proxy"))
-        .or_else(|_| std::env::var("ALL_PROXY"))
-        .or_else(|_| std::env::var("all_proxy"))
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(crate::dsh::config::detect_system_proxy);
+    // reqwest 启用了 rustls-tls-native-roots（加载系统根证书，兼容自装 MITM CA）。
     if let Some(p) = proxy {
-        if let Ok(px) = reqwest::Proxy::all(&p) {
-            b = b.proxy(px);
+        if !p.trim().is_empty() {
+            if let Ok(px) = reqwest::Proxy::all(p) {
+                b = b.proxy(px);
+            }
         }
     }
     b.build().map_err(|e| format!("HTTP 客户端初始化失败: {e}"))
+}
+
+/// 多路回退执行：依次以「env 代理 / 系统代理 / 直连」构建客户端尝试同一操作，
+/// 第一个成功者胜出；全部失败时聚合各路错误（保留 err_chain 根因）。
+///
+/// 背景：单选策略在 mac 上脆弱——clash 关闭/换端口时直连被防火墙阻断即整体失败
+/// （RISKS 2026-08-14/08-23 实证链）。梯子化后两种环境状态都能命中可达路径。
+pub(crate) fn try_clients<T>(
+    op: &str,
+    f: impl Fn(&reqwest::blocking::Client) -> Result<T, String>,
+) -> Result<T, String> {
+    let candidates = candidate_labels();
+    let mut failures: Vec<String> = Vec::new();
+    for (label, proxy) in &candidates {
+        let client = match build_client(proxy.as_deref()) {
+            Ok(c) => c,
+            Err(e) => {
+                failures.push(format!("[{label}] 客户端构建失败: {e}"));
+                continue;
+            }
+        };
+        match f(&client) {
+            Ok(v) => return Ok(v),
+            Err(e) => failures.push(format!("[{label}] {e}")),
+        }
+    }
+    Err(format!(
+        "{op} 失败（已依次尝试 {} 路：{}）:\n{}",
+        failures.len(),
+        candidates.iter().map(|(l, _)| *l).collect::<Vec<_>>().join(" → "),
+        failures.join("\n")
+    ))
 }
 
 fn fetch_meta(client: &reqwest::blocking::Client, version: &str) -> Result<RegistryMeta, String> {
@@ -320,8 +370,7 @@ pub fn install_at(root: &Path, version: &str) -> Result<RuntimeView, String> {
     if version_dir.exists() {
         return Err(format!("版本 {version} 已安装；如需重装请先移除（可回滚）"));
     }
-    let client = client_with_proxy()?;
-    let meta = fetch_meta(&client, version)?;
+    let meta = try_clients("获取版本元数据", |c| fetch_meta(c, version))?;
 
     let tmp_tarball = std::env::temp_dir().join(format!("dsh-{version}-{}.tgz", std::process::id()));
     let staging = root.join(format!(".staging-{version}"));
@@ -330,7 +379,7 @@ pub fn install_at(root: &Path, version: &str) -> Result<RuntimeView, String> {
 
     let result = (|| -> Result<RuntimeView, String> {
         // 1. 下载主包 tarball 并以 registry dist.integrity（sha512）强校验（自控门禁）
-        download_and_verify(&client, &meta, &tmp_tarball)?;
+        try_clients("下载主包 tarball", |c| download_and_verify(c, &meta, &tmp_tarball))?;
 
         // 2. npm 安装（两阶段 + peer 闭包迭代，全部走 --legacy-peer-deps）：
         //    实测（2026-08-24，Windows）：npm≥7 自动 peer 解析对本依赖图病态慢（>25min）；
@@ -502,7 +551,7 @@ pub fn install_at(root: &Path, version: &str) -> Result<RuntimeView, String> {
 
 /// staging 内写入显式 package.json：锁定 npm 项目根（防止向上查找到祖先
 /// package.json 把依赖装进别人的树），并声明当前需要补装的精确依赖集。
-fn write_staging_manifest(staging: &Path, version: &str, deps: &[(&str, &str)]) -> Result<(), String> {
+fn write_staging_manifest(staging: &Path, _version: &str, deps: &[(&str, &str)]) -> Result<(), String> {
     use serde_json::Value;
     let mut dep_map = serde_json::Map::new();
     for (name, range) in deps {
@@ -824,8 +873,7 @@ pub fn rollback(app: &tauri::AppHandle, version: &str) -> Result<String, String>
 
 /// 远程可用版本列表（只读网络操作；失败不阻塞本地管理）。
 pub fn remote_versions() -> Result<Vec<String>, String> {
-    let client = client_with_proxy()?;
-    fetch_remote_versions(&client)
+    try_clients("获取版本列表", fetch_remote_versions)
 }
 
 #[cfg(test)]
