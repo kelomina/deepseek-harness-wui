@@ -481,15 +481,12 @@ fn finish_response(method: &str, value: serde_json::Value) -> Result<serde_json:
 }
 
 fn push_log(logs: &Arc<Mutex<VecDeque<String>>>, message: String) {
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
+    let stamped = format!("[{}] [plugin-host] {}", crate::dsh::manager::log_stamp(), message);
     let mut buf = lock(logs.lock());
     if buf.len() > 500 {
         buf.pop_front();
     }
-    buf.push_back(format!("[{ts}] [plugin-host] {message}"));
+    buf.push_back(stamped);
 }
 
 fn unique_nanos() -> u128 {

@@ -796,6 +796,7 @@ dependencies = [
  "arboard",
  "axum",
  "base64 0.22.1",
+ "chrono",
  "dirs",
  "flate2",
  "futures-util",

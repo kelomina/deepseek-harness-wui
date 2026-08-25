@@ -219,6 +219,10 @@ impl DshManager {
         self.started_at = Some(Instant::now());
         self.health_failures = 0;
         self.emit(&sink);
+        self.push_log(
+            format!("── dsh 启动（pid {pid}，模式 {:?}）──", self.config.exec_mode),
+            &sink,
+        );
         spawn_log_reader(stdout, "out", shared.clone(), sink.clone());
         spawn_log_reader(stderr, "err", shared.clone(), sink.clone());
         spawn_exit_watcher(shared, sink.clone(), pid);
@@ -352,16 +356,23 @@ exec dsh --profile web --port {port}"#,
     }
 
     fn push_log<S: EventSink>(&mut self, line: String, sink: &S) {
+        // 生成时间打戳（本地时间）：多轮启动的新旧日志可区分，见 RISKS 2026-08-25
+        let stamped = format!("[{}] {}", log_stamp(), line);
         while self.logs.len() >= self.config.log_max_lines {
             self.logs.pop_front();
         }
-        self.logs.push_back(line.clone());
-        sink.emit("dsh://log", &line);
+        self.logs.push_back(stamped.clone());
+        sink.emit("dsh://log", &stamped);
     }
 
     fn emit<S: EventSink>(&self, sink: &S) {
         sink.emit("dsh://status", &self.status_view());
     }
+}
+
+/// 日志时间戳（本地时区，`MM-DD HH:MM:SS`），供 dsh 与 plugin-host 两处日志统一使用。
+pub(crate) fn log_stamp() -> String {
+    chrono::Local::now().format("%m-%d %H:%M:%S").to_string()
 }
 
 fn spawn_log_reader<T: Read + Send + 'static, S: EventSink>(
@@ -455,6 +466,9 @@ fn spawn_exit_watcher<S: EventSink>(shared: Arc<Mutex<DshManager>>, sink: S, wat
         let exited = mgr.child.as_mut().and_then(|c| c.try_wait().ok()).flatten();
         if let Some(status) = exited {
             let was_expected = mgr.state == DshState::Stopped;
+            let uptime = mgr.started_at.map(|t| t.elapsed().as_secs());
+            // 退出诊断基于已落日志的尾部（stderr 堆栈在此前已被 reader 线程写入）
+            let tail: Vec<String> = mgr.logs.iter().rev().take(40).cloned().collect();
             mgr.child = None;
             mgr.pid = None;
             mgr.started_at = None;
@@ -463,6 +477,7 @@ fn spawn_exit_watcher<S: EventSink>(shared: Arc<Mutex<DshManager>>, sink: S, wat
             if was_expected {
                 mgr.state = DshState::Stopped;
                 mgr.message = "stopped".to_string();
+                mgr.push_log("── dsh 已停止 ──".to_string(), &sink);
             } else {
                 mgr.state = DshState::Error;
                 mgr.message = format!("dsh process exited: {status}");
@@ -470,6 +485,14 @@ fn spawn_exit_watcher<S: EventSink>(shared: Arc<Mutex<DshManager>>, sink: S, wat
                 if restart {
                     mgr.note_restart();
                     mgr.message = format!("restarting (attempt {})", mgr.restart_attempts.len());
+                }
+                let secs = uptime.map(|s| format!("，运行 {s}s")).unwrap_or_default();
+                mgr.push_log(
+                    format!("── dsh 进程异常退出（{status}{secs}）──",),
+                    &sink,
+                );
+                if let Some(diag) = diagnose_exit(&tail) {
+                    mgr.push_log(format!("诊断: {diag}"), &sink);
                 }
             }
             mgr.emit(&sink);
@@ -482,6 +505,34 @@ fn spawn_exit_watcher<S: EventSink>(shared: Arc<Mutex<DshManager>>, sink: S, wat
             break;
         }
     });
+}
+
+/// 从退出前的日志尾部提炼已知故障签名，产出一句可行动的诊断。
+/// 纯函数，便于单测；未命中已知签名时返回 None（保留原始堆栈供回报）。
+fn diagnose_exit(log_tail: &[String]) -> Option<String> {
+    const KNOWN: [&str; 4] = ["ERR_MODULE_NOT_FOUND", "Cannot find module", "EADDRINUSE", "MODULE_NOT_FOUND"];
+    if !log_tail.iter().any(|l| KNOWN.iter().any(|k| l.contains(k))) {
+        return None;
+    }
+    // 提取缺失包名：`Cannot find package '<pkg>' imported from <path>`
+    for line in log_tail {
+        if let Some(idx) = line.find("Cannot find package '") {
+            let rest = &line[idx + "Cannot find package '".len()..];
+            if let Some(end) = rest.find('\'') {
+                let pkg = &rest[..end];
+                return Some(format!(
+                    "依赖不完整：缺少包 `{pkg}`。若使用受管运行时（runtimes/ 目录），请到 设置→DSH 运行时 \
+                     将该版本「移除」后重新「安装」（安装结束时会自动做启动冒烟）；npx 模式可改用 Bundled 模式绕过。"
+                ));
+            }
+        }
+    }
+    if log_tail.iter().any(|l| l.contains("EADDRINUSE")) {
+        return Some(
+            "监听端口被其他进程占用。可在 设置→DSH 设置 更换 Web 端口，或结束占用该端口的旧 dsh 进程。".to_string(),
+        );
+    }
+    Some("Node 模块解析失败（模块/依赖缺失）。建议回报完整错误日志；受管运行时可尝试移除后重装当前版本。".to_string())
 }
 
 fn check_health(port: u16) -> bool {
@@ -719,6 +770,46 @@ fn is_dsh_cmdline(cmd: &str, port: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_stamp_format_is_mmdd_hhmmss() {
+        let s = log_stamp();
+        // 形如 "08-25 20:31:07"：5 位日期 + 空格 + 8 位时间
+        assert_eq!(s.len(), 14, "stamp: {s}");
+        let bytes = s.as_bytes();
+        assert_eq!(bytes[2], b'-');
+        assert_eq!(bytes[5], b' ');
+        assert_eq!(bytes[8], b':');
+        assert_eq!(bytes[11], b':');
+        assert!(s[..2].chars().all(|c| c.is_ascii_digit()));
+        assert!(s[9..].chars().all(|c| c.is_ascii_digit() || c == ':'));
+    }
+
+    #[test]
+    fn diagnose_exit_extracts_missing_package_with_actionable_hint() {
+        let tail = vec![
+            "[08-25 20:31:07] [err] node:internal/modules/package_json_reader:314".to_string(),
+            "[08-25 20:31:07] [err]   throw new ERR_MODULE_NOT_FOUND(packageName, fileURLToPath(base), null);".to_string(),
+            "[08-25 20:31:07] [err] Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@deepseek-ai/dsh-app-boot' imported from /Users/x/runtimes/0.1.1-rc.2/node_modules/@deepseek-ai/dsh/lib/bin.js".to_string(),
+            "[08-25 20:31:07] [err]   code: 'ERR_MODULE_NOT_FOUND'".to_string(),
+        ];
+        let diag = diagnose_exit(&tail).expect("should diagnose");
+        assert!(diag.contains("@deepseek-ai/dsh-app-boot"), "diag: {diag}");
+        assert!(diag.contains("移除"), "must contain actionable reinstall hint: {diag}");
+    }
+
+    #[test]
+    fn diagnose_exit_port_conflict_and_unknown_and_clean() {
+        let port = vec!["Error: listen EADDRINUSE: address already in use 127.0.0.1:3080".to_string()];
+        assert!(diagnose_exit(&port).unwrap().contains("端口"));
+
+        let unknown = vec!["Some totally novel failure mode".to_string(), "line two".to_string()];
+        assert!(diagnose_exit(&unknown).is_none(), "unknown signatures stay raw");
+
+        let module = vec!["Cannot find module './x.js' from y".to_string()];
+        assert!(diagnose_exit(&module).is_some());
+    }
+
 
     #[test]
     fn wsl_launch_user_parses_root_and_home() {
