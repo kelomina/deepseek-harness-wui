@@ -438,6 +438,8 @@ pub fn install_at(root: &Path, version: &str) -> Result<RuntimeView, String> {
         let npm_cli = find_npm_cli(&node)?;
         let tarball_dep = format!("file:{}", tmp_tarball.to_string_lossy().replace('\\', "/"));
         write_staging_manifest(&staging, version, &[("@deepseek-ai/dsh", &tarball_dep)])?;
+        let cache_dir = staging.join(".npm-cache");
+        let cache_arg = format!("--cache={}", cache_dir.display());
 
         let run_npm_install = |extra_note: &str| -> Result<(), String> {
             let output = run_with_timeout(
@@ -451,6 +453,8 @@ pub fn install_at(root: &Path, version: &str) -> Result<RuntimeView, String> {
                     "--no-fund",
                     "--loglevel=error",
                     "--no-progress",
+                    "--scripts-prepend-node-path=true",
+                    &cache_arg,
                 ],
                 &staging,
                 900_000,
@@ -478,6 +482,8 @@ pub fn install_at(root: &Path, version: &str) -> Result<RuntimeView, String> {
                                 "--no-fund",
                                 "--loglevel=error",
                                 "--no-progress",
+                                "--scripts-prepend-node-path=true",
+                                &cache_arg,
                             ],
                             &staging,
                             900_000,
@@ -734,6 +740,10 @@ fn run_with_timeout(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // 始终补充完整的 PATH，避免子命令（如 npm lifecycle script 中的 node）报 command not found
+    let prog_parent = program.parent();
+    let full_path = crate::dsh::prereq::augmented_path(prog_parent);
+    cmd.env("PATH", full_path);
     if let Some(envs) = envs {
         for (k, v) in envs {
             cmd.env(k, v);

@@ -84,9 +84,33 @@ fn known_node_candidates() -> Vec<PathBuf> {
                 list.push(PathBuf::from(base).join("nodejs").join("node.exe"));
             }
         }
+        if let Some(home) = dirs::home_dir() {
+            list.push(home.join("AppData").join("Local").join("Programs").join("node").join("node.exe"));
+            list.push(home.join(".volta").join("bin").join("node.exe"));
+            list.push(home.join(".fnm").join("current").join("bin").join("node.exe"));
+        }
     } else {
-        for p in ["/usr/local/bin/node", "/opt/homebrew/bin/node", "/usr/bin/node"] {
+        for p in [
+            "/opt/homebrew/bin/node",
+            "/usr/local/bin/node",
+            "/usr/bin/node",
+            "/opt/local/bin/node",
+        ] {
             list.push(PathBuf::from(p));
+        }
+        if let Some(home) = dirs::home_dir() {
+            // NVM 常见目录：~/.nvm/versions/node/*/bin/node
+            let nvm_root = home.join(".nvm").join("versions").join("node");
+            if let Ok(entries) = std::fs::read_dir(nvm_root) {
+                let mut vers: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+                vers.sort();
+                for v in vers.into_iter().rev() {
+                    list.push(v.join("bin").join("node"));
+                }
+            }
+            list.push(home.join(".volta").join("bin").join("node"));
+            list.push(home.join(".local").join("bin").join("node"));
+            list.push(home.join(".fnm").join("current").join("bin").join("node"));
         }
     }
     list
@@ -114,6 +138,67 @@ pub fn find_node() -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// 构造包含系统常用目录与 Node 所在目录的完整 PATH，避免 macOS/Linux GUI 模式下 PATH 缺失导致子进程 `command not found`。
+pub fn augmented_path(extra_dir: Option<&Path>) -> String {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(d) = extra_dir {
+        if d.is_dir() {
+            dirs.push(d.to_path_buf());
+        }
+    }
+    // 探测当前可用的 node 路径，将其所在目录加入 PATH 首位
+    if let Some(node) = find_node() {
+        if let Some(parent) = node.parent() {
+            if !dirs.contains(&parent.to_path_buf()) {
+                dirs.push(parent.to_path_buf());
+            }
+        }
+    }
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let sep = if cfg!(windows) { ';' } else { ':' };
+    for part in current_path.split(sep) {
+        let trimmed = part.trim();
+        if !trimmed.is_empty() {
+            let p = PathBuf::from(trimmed);
+            if !dirs.contains(&p) {
+                dirs.push(p);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        for sys in [
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+            "/opt/local/bin",
+        ] {
+            let pb = PathBuf::from(sys);
+            if !dirs.contains(&pb) {
+                dirs.push(pb);
+            }
+        }
+        if let Some(home) = dirs::home_dir() {
+            for user_bin in [
+                home.join(".cargo/bin"),
+                home.join(".local/bin"),
+                home.join(".volta/bin"),
+                home.join(".fnm/current/bin"),
+            ] {
+                if !dirs.contains(&user_bin) {
+                    dirs.push(user_bin);
+                }
+            }
+        }
+    }
+    let str_list: Vec<String> = dirs.iter().map(|p| p.to_string_lossy().to_string()).collect();
+    str_list.join(if cfg!(windows) { ";" } else { ":" })
 }
 
 /// 当前平台对应的 nodejs.org 发行文件名。

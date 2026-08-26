@@ -182,6 +182,7 @@ impl DshManager {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
+        cmd.env("PATH", crate::dsh::prereq::augmented_path(std::path::Path::new(&program).parent()));
         if let Some(home) = &self.config.dsh_home {
             cmd.env("DSH_HOME", home);
         }
