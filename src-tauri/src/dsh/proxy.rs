@@ -53,15 +53,22 @@ pub async fn start_proxy(dsh_port: u16) -> Result<ProxyHandle, String> {
 }
 
 pub fn is_allowed_origin(origin: &str) -> bool {
-    let lower = origin.trim().to_ascii_lowercase();
-    // macOS WKWebView（WebKit）从自定义协议（tauri://localhost）发起跨协议（http://127.0.0.1）请求时，
-    // 标准行为会将 Origin 标记为 "null"。
-    if lower == "null" {
+    let lower = origin.trim().trim_end_matches('/').to_ascii_lowercase();
+    // macOS WKWebView（WebKit）从自定义协议发起跨协议（http://127.0.0.1）请求时，
+    // 标准行为会将 Origin 标记为 "null" 或 "tauri://localhost"。
+    if lower.is_empty() || lower == "null" || lower == "about:blank" {
         return true;
     }
-    if lower == "tauri://localhost" || lower.starts_with("tauri://") {
+    // 放行所有非公网域名的本地/应用协议
+    if lower.starts_with("tauri://")
+        || lower.starts_with("file://")
+        || lower.starts_with("applewebdata://")
+        || lower.starts_with("app://")
+        || lower.starts_with("vscode-webview://")
+    {
         return true;
     }
+    // 放行所有本地回环地址及 localhost 端口
     for prefix in [
         "http://localhost",
         "https://localhost",
@@ -71,6 +78,8 @@ pub fn is_allowed_origin(origin: &str) -> bool {
         "https://tauri.localhost",
         "http://ipc.localhost",
         "https://ipc.localhost",
+        "http://[::1]",
+        "https://[::1]",
     ] {
         if lower == prefix || lower.starts_with(&format!("{prefix}:")) || lower.starts_with(&format!("{prefix}/")) {
             return true;
@@ -82,21 +91,34 @@ pub fn is_allowed_origin(origin: &str) -> bool {
 fn origin_allowed(headers: &HeaderMap) -> bool {
     match headers.get(header::ORIGIN) {
         None => true,
-        Some(v) => v.to_str().map(is_allowed_origin).unwrap_or(false),
+        Some(v) => v
+            .to_str()
+            .map(|s| {
+                // 如果包含多个 token（例如 WebKit 多 origin），逐一校验
+                s.split([' ', ',']).all(|token| {
+                    let t = token.trim();
+                    t.is_empty() || is_allowed_origin(t)
+                })
+            })
+            .unwrap_or(false),
     }
 }
 
 fn apply_cors(resp: &mut Response, headers: &HeaderMap) {
     if let Some(origin_str) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
-        if is_allowed_origin(origin_str) {
+        let trimmed = origin_str.trim();
+        if is_allowed_origin(trimmed) {
             let h = resp.headers_mut();
-            if origin_str == "null" {
-                h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
-            } else if let Ok(hv) = HeaderValue::from_str(origin_str) {
+            if let Ok(hv) = HeaderValue::from_str(trimmed) {
                 h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, hv);
+            } else {
+                h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
             }
             h.insert(header::VARY, HeaderValue::from_static("Origin"));
-            h.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, PUT, DELETE, PATCH, OPTIONS"));
+            h.insert(
+                header::ACCESS_CONTROL_ALLOW_METHODS,
+                HeaderValue::from_static("GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD"),
+            );
             if let Some(req_h) = headers.get("access-control-request-headers") {
                 h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, req_h.clone());
             } else {
@@ -119,6 +141,12 @@ async fn proxy_api(State(ctx): State<Arc<ProxyContext>>, req: Request) -> Respon
         return resp;
     }
     if !origin_allowed(&headers) {
+        eprintln!(
+            "[proxy] 403 Forbidden: method={} path={} origin={:?}",
+            method,
+            req.uri().path(),
+            headers.get(header::ORIGIN)
+        );
         return (StatusCode::FORBIDDEN, "forbidden").into_response();
     }
     let path = req
@@ -173,6 +201,11 @@ async fn proxy_api(State(ctx): State<Arc<ProxyContext>>, req: Request) -> Respon
 
 async fn proxy_ws(State(ctx): State<Arc<ProxyContext>>, ws: WebSocketUpgrade, req: Request) -> Response {
     if !origin_allowed(req.headers()) {
+        eprintln!(
+            "[proxy_ws] 403 Forbidden: ws path={} origin={:?}",
+            req.uri().path(),
+            req.headers().get(header::ORIGIN)
+        );
         return (StatusCode::FORBIDDEN, "forbidden").into_response();
     }
     let path = req.uri().path().to_string();
@@ -242,11 +275,15 @@ mod tests {
 
     #[test]
     fn allowed_origin_validation() {
-        // macOS WKWebView null origin
+        // macOS WKWebView null & custom schemes
         assert!(is_allowed_origin("null"));
         assert!(is_allowed_origin("NULL"));
-        // Tauri & local origins
+        assert!(is_allowed_origin("about:blank"));
+        assert!(is_allowed_origin("applewebdata://12345"));
+        assert!(is_allowed_origin("file:///Applications/App.app/Contents/Resources/index.html"));
+        // Tauri & local origins (with and without trailing slashes)
         assert!(is_allowed_origin("tauri://localhost"));
+        assert!(is_allowed_origin("tauri://localhost/"));
         assert!(is_allowed_origin("tauri://deepseek.wui"));
         assert!(is_allowed_origin("http://tauri.localhost"));
         assert!(is_allowed_origin("https://tauri.localhost"));
@@ -254,6 +291,11 @@ mod tests {
         assert!(is_allowed_origin("http://127.0.0.1:1420"));
         assert!(is_allowed_origin("http://localhost:5173"));
         assert!(is_allowed_origin("http://ipc.localhost"));
+        assert!(is_allowed_origin("http://[::1]:1420"));
+        // Multi-origin headers
+        let mut h = HeaderMap::new();
+        h.insert(header::ORIGIN, HeaderValue::from_static("tauri://localhost null"));
+        assert!(origin_allowed(&h));
         // External unauthorized origins must be rejected
         assert!(!is_allowed_origin("http://evil.example.com"));
         assert!(!is_allowed_origin("https://attacker.org"));
