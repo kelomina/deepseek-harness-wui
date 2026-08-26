@@ -16,7 +16,6 @@ const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 pub struct ProxyContext {
     pub dsh_port: Arc<AtomicU16>,
     client: reqwest::Client,
-    allowed_origins: Vec<String>,
 }
 
 pub struct ProxyHandle {
@@ -27,16 +26,13 @@ pub struct ProxyHandle {
 }
 
 pub async fn start_proxy(dsh_port: u16) -> Result<ProxyHandle, String> {
+    let client = reqwest::Client::builder()
+        .no_proxy() // proxy 转发到本地 127.0.0.1:{dsh_port}，绝不能走系统外部代理
+        .build()
+        .map_err(|e| e.to_string())?;
     let ctx = Arc::new(ProxyContext {
         dsh_port: Arc::new(AtomicU16::new(dsh_port)),
-        client: reqwest::Client::builder().build().map_err(|e| e.to_string())?,
-        allowed_origins: vec![
-            "http://localhost:1420".to_string(),
-            "http://127.0.0.1:1420".to_string(),
-            "http://tauri.localhost".to_string(),
-            "https://tauri.localhost".to_string(),
-            "tauri://localhost".to_string(),
-        ],
+        client,
     });
     let app = Router::new()
         .route("/api/events.mux", any(proxy_ws))
@@ -56,35 +52,60 @@ pub async fn start_proxy(dsh_port: u16) -> Result<ProxyHandle, String> {
     })
 }
 
-fn origin_allowed(headers: &HeaderMap, allowed: &[String]) -> bool {
+pub fn is_allowed_origin(origin: &str) -> bool {
+    let lower = origin.trim().to_ascii_lowercase();
+    // macOS WKWebView（WebKit）从自定义协议（tauri://localhost）发起跨协议（http://127.0.0.1）请求时，
+    // 标准行为会将 Origin 标记为 "null"。
+    if lower == "null" {
+        return true;
+    }
+    if lower == "tauri://localhost" || lower.starts_with("tauri://") {
+        return true;
+    }
+    for prefix in [
+        "http://localhost",
+        "https://localhost",
+        "http://127.0.0.1",
+        "https://127.0.0.1",
+        "http://tauri.localhost",
+        "https://tauri.localhost",
+        "http://ipc.localhost",
+        "https://ipc.localhost",
+    ] {
+        if lower == prefix || lower.starts_with(&format!("{prefix}:")) || lower.starts_with(&format!("{prefix}/")) {
+            return true;
+        }
+    }
+    false
+}
+
+fn origin_allowed(headers: &HeaderMap) -> bool {
     match headers.get(header::ORIGIN) {
         None => true,
-        Some(v) => v
-            .to_str()
-            .map(|s| allowed.iter().any(|a| a == s))
-            .unwrap_or(false),
+        Some(v) => v.to_str().map(is_allowed_origin).unwrap_or(false),
     }
 }
 
-fn apply_cors(resp: &mut Response, headers: &HeaderMap, allowed: &[String]) {
-    if let Some(origin) = headers
-        .get(header::ORIGIN)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .filter(|s| allowed.iter().any(|a| a == s))
-    {
-        let h = resp.headers_mut();
-        h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_str(&origin).unwrap());
-        h.insert(header::VARY, HeaderValue::from_static("Origin"));
-        h.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, OPTIONS"));
-        if let Some(req_h) = headers.get("access-control-request-headers") {
-            h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, req_h.clone());
+fn apply_cors(resp: &mut Response, headers: &HeaderMap) {
+    if let Some(origin_str) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        if is_allowed_origin(origin_str) {
+            let h = resp.headers_mut();
+            if origin_str == "null" {
+                h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+            } else if let Ok(hv) = HeaderValue::from_str(origin_str) {
+                h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, hv);
+            }
+            h.insert(header::VARY, HeaderValue::from_static("Origin"));
+            h.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, PUT, DELETE, PATCH, OPTIONS"));
+            if let Some(req_h) = headers.get("access-control-request-headers") {
+                h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, req_h.clone());
+            } else {
+                h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("*"));
+            }
+            h.insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("86400"));
         } else {
-            h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("Content-Type"));
+            resp.headers_mut().insert(header::VARY, HeaderValue::from_static("Origin"));
         }
-        h.insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("86400"));
-    } else if headers.contains_key(header::ORIGIN) {
-        resp.headers_mut().insert(header::VARY, HeaderValue::from_static("Origin"));
     }
 }
 
@@ -94,10 +115,10 @@ async fn proxy_api(State(ctx): State<Arc<ProxyContext>>, req: Request) -> Respon
     if method == Method::OPTIONS {
         let mut resp = Response::new(Body::empty());
         *resp.status_mut() = StatusCode::NO_CONTENT;
-        apply_cors(&mut resp, &headers, &ctx.allowed_origins);
+        apply_cors(&mut resp, &headers);
         return resp;
     }
-    if !origin_allowed(&headers, &ctx.allowed_origins) {
+    if !origin_allowed(&headers) {
         return (StatusCode::FORBIDDEN, "forbidden").into_response();
     }
     let path = req
@@ -146,12 +167,12 @@ async fn proxy_api(State(ctx): State<Arc<ProxyContext>>, req: Request) -> Respon
         }
         resp.headers_mut().insert(k.clone(), v.clone());
     }
-    apply_cors(&mut resp, &headers, &ctx.allowed_origins);
+    apply_cors(&mut resp, &headers);
     resp
 }
 
 async fn proxy_ws(State(ctx): State<Arc<ProxyContext>>, ws: WebSocketUpgrade, req: Request) -> Response {
-    if !origin_allowed(req.headers(), &ctx.allowed_origins) {
+    if !origin_allowed(req.headers()) {
         return (StatusCode::FORBIDDEN, "forbidden").into_response();
     }
     let path = req.uri().path().to_string();
@@ -218,6 +239,26 @@ async fn tunnel(ctx: Arc<ProxyContext>, mut client: WebSocket, path: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allowed_origin_validation() {
+        // macOS WKWebView null origin
+        assert!(is_allowed_origin("null"));
+        assert!(is_allowed_origin("NULL"));
+        // Tauri & local origins
+        assert!(is_allowed_origin("tauri://localhost"));
+        assert!(is_allowed_origin("tauri://deepseek.wui"));
+        assert!(is_allowed_origin("http://tauri.localhost"));
+        assert!(is_allowed_origin("https://tauri.localhost"));
+        assert!(is_allowed_origin("http://localhost:1420"));
+        assert!(is_allowed_origin("http://127.0.0.1:1420"));
+        assert!(is_allowed_origin("http://localhost:5173"));
+        assert!(is_allowed_origin("http://ipc.localhost"));
+        // External unauthorized origins must be rejected
+        assert!(!is_allowed_origin("http://evil.example.com"));
+        assert!(!is_allowed_origin("https://attacker.org"));
+        assert!(!is_allowed_origin("http://localhost.evil.com"));
+    }
 
     #[tokio::test]
     #[ignore = "live: 需要本地网络栈，手动运行 cargo test -- --ignored proxy_binds_loopback"]
