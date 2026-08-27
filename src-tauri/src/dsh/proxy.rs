@@ -36,6 +36,7 @@ pub async fn start_proxy(dsh_port: u16) -> Result<ProxyHandle, String> {
             "http://tauri.localhost".to_string(),
             "https://tauri.localhost".to_string(),
             "tauri://localhost".to_string(),
+            "null".to_string(), // Tauri v2 webview may send Origin: null for custom protocol
         ],
     });
     let app = Router::new()
@@ -108,23 +109,20 @@ async fn proxy_api(State(ctx): State<Arc<ProxyContext>>, req: Request) -> Respon
     let port = ctx.dsh_port.load(Ordering::Relaxed);
     let upstream = format!("http://127.0.0.1:{port}{path}");
     let mut rb = ctx.client.request(method, &upstream);
+    // Allowlist: only forward headers the upstream API actually needs.
+    // Drop all browser-specific headers (sec-fetch-*, user-agent, accept-language,
+    // priority, etc.) because dsh rejects non-loopback requests based on them.
     for (k, v) in headers.iter() {
         let name = k.as_str().to_ascii_lowercase();
         if matches!(
             name.as_str(),
-            "host"
-                | "origin"
-                | "connection"
-                | "upgrade"
-                | "sec-websocket-key"
-                | "sec-websocket-version"
-                | "sec-websocket-extensions"
-                | "content-length"
-                | "accept-encoding"
+            "content-type"
+                | "accept"
+                | "authorization"
+                | "x-requested-with"
         ) {
-            continue;
+            rb = rb.header(k, v);
         }
-        rb = rb.header(k, v);
     }
     let body = axum::body::to_bytes(req.into_body(), MAX_BODY_BYTES)
         .await
@@ -132,7 +130,10 @@ async fn proxy_api(State(ctx): State<Arc<ProxyContext>>, req: Request) -> Respon
     rb = rb.body(body);
     let up = match rb.send().await {
         Ok(r) => r,
-        Err(e) => return (StatusCode::BAD_GATEWAY, format!("proxy error: {e}")).into_response(),
+        Err(e) => {
+            eprintln!("[proxy] ✗ upstream send error: {e}");
+            return (StatusCode::BAD_GATEWAY, format!("proxy error: {e}")).into_response();
+        }
     };
     let up_status = up.status();
     let up_headers = up.headers().clone();
