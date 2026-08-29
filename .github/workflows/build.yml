@@ -3,6 +3,8 @@ name: build
 on:
   push:
     branches: [main]
+    tags:
+      - 'v*'
   pull_request:
   workflow_dispatch:
 
@@ -38,13 +40,18 @@ jobs:
       - name: Build app bundle (app + dmg)
         run: npm run tauri build -- --config src-tauri/tauri.macos.conf.json
 
+      - name: Package .app archive
+        run: |
+          cd src-tauri/target/release/bundle/macos
+          tar -czf ../dmg/DeepSeek-Harness-Desktop-macos-aarch64.app.tar.gz "DeepSeek Harness Desktop.app"
+
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
           name: deepseek-harness-desktop-macos
           path: |
             src-tauri/target/release/bundle/dmg/*.dmg
-            src-tauri/target/release/bundle/macos/*.app
+            src-tauri/target/release/bundle/dmg/*.app.tar.gz
           if-no-files-found: error
 
   windows:
@@ -82,3 +89,66 @@ jobs:
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release (macOS & Windows)
+    needs: [macos, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: deepseek-harness-desktop-macos
+          path: release-assets/macos
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: deepseek-harness-desktop-windows
+          path: release-assets/windows
+
+      - name: Flatten assets for Release
+        run: |
+          mkdir -p release-dist
+          find release-assets -type f -exec cp {} release-dist/ \;
+          ls -la release-dist/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: DeepSeek Harness Desktop ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: |
+            release-dist/*
+          body: |
+            ## DeepSeek Harness Desktop ${{ github.ref_name }}
+
+            本版本在同一个 Release 中包含 **macOS** 与 **Windows** 两大操作系统的安装包。
+
+            ### 📦 下载与安装指南
+
+            #### 🍏 macOS 版本 (Apple Silicon / aarch64)
+            - **DMG 安装镜像（推荐）**：下载 `.dmg` 文件后双击打开，将应用拖拽入 Applications 文件夹。
+            - **独立压缩包**：`.app.tar.gz` 解压即用。
+            > 注：macOS 首次打开如遇 Gatekeeper 提示未签名开发者，可在系统设置中允许打开，或终端执行 `xattr -cr "/Applications/DeepSeek Harness Desktop.app"`。
+
+            #### 🪟 Windows 版本 (x64)
+            - **NSIS 安装程序（推荐）**：下载 `.exe` 安装程序一键安装。
+            - **MSI 安装包**：下载 `.msi` 安装包，适用于企业批量部署及标准 Windows Installer 环境。
+
+            ---
+
+            ### 🚀 0.3.0 主要变更概览
+
+            - **首启环境自动安装**：检测并支持一键自动配置 Node.js 运行时与 DSH 核心，支持 UAC 静默安装与哈希安全校验。
+            - **macOS 平台支持落地**：支持系统代理自动嗅探 (`scutil`)、进程智能清理、原生 `pbcopy` 剪贴板。
+            - **实验性 dsh-std 插件宿主**：独立 Node sidecar 实现 v0.15 准入、全生命周期管理与崩溃自愈。
+            - **受管运行时强化**：解决 macOS 下受管运行时启动缺依赖问题（sha512 校验 + legacy-peer-deps + 冒烟自愈回滚）。
+            - **模型与设置体验优化**：新增默认模型与推理深度配置卡片，状态页新增宿主主目录，会话重命名与视图入口优化。

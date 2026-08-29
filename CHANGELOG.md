@@ -4,6 +4,8 @@ All notable user-visible changes are aggregated here. / 本项目重要变更按
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-29
+
 ### Fixed / 修复
 
 - **[mac] Managed-runtime launch crashed with `ERR_MODULE_NOT_FOUND: @deepseek-ai/dsh-app-boot`**: the managed installer extracted only the main `@deepseek-ai/dsh` tarball without its dependency tree. The pipeline now (1) keeps the sha512 integrity gate on the downloaded tarball, (2) pins npm's project root via an explicit staging manifest, (3) installs with `--legacy-peer-deps` (auto peer resolution was pathologically slow, >25min), (4) iteratively closes non-optional peerDependencies gaps by explicit incremental installs, (5) gates success on a real `bin.js --version` smoke so any missing dependency aborts and rolls back at install time, with automatic system-proxy retry for direct-connection failures. Live E2E: full install in ~132s, smoke prints 0.1.1-rc.2 — **受管运行时启动缺依赖修复**：安装管线改为「sha512 校验 → 显式 manifest 锁根 → legacy 安装 → peer 闭包补齐 → 启动冒烟门禁（失败即回滚）」，live 全流程 132s 通过。**已装过坏产物的用户需在 设置 → DSH 运行时 先移除再重装一次**（旧产物会自动备份可回滚）。
