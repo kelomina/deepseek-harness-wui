@@ -7,6 +7,8 @@ import {
   type WslStatus,
 } from "../lib/tauri";
 import { appStore, useAppState } from "../lib/dsh/store";
+import { withLoading, isDedupError, isCancelError } from "../lib/loading";
+import { logger } from "../lib/logger";
 
 export function WslPanel() {
   const { config } = useAppState();
@@ -27,7 +29,10 @@ export function WslPanel() {
     setLoading(true);
     setMsg(null);
     try {
-      const s = await wsl.status();
+      // PRD-002：可取消只读组；>800ms 必现 overlay，<800ms 仅局部“检测中…”。
+      const s = await withLoading("wsl_status_cmd", "正在检测 WSL 状态…", () => wsl.status(), {
+        stage: "正在检测…",
+      });
       setStatus(s);
       if (s.available) {
         setDistro(config?.wsl_default_distro ?? s.default_distro ?? "");
@@ -37,7 +42,8 @@ export function WslPanel() {
       setDshHome(config?.wsl_dsh_home ?? "");
       setWorkspaceDir(config?.wsl_workspace_dir ?? "");
     } catch (e) {
-      setMsg(String(e));
+      if (isDedupError(e) || isCancelError(e)) return;
+      setMsg(String(e instanceof Error ? e.message : e));
     } finally {
       setLoading(false);
     }
@@ -63,7 +69,23 @@ export function WslPanel() {
     setProvisionError(null);
     setProvisionSteps([]);
     try {
-      const report = await wsl.provision(distro || null, null);
+      // PRD-002：不可取消组 in-flight（置灰“最小化观察…”）；wsl://provision message 映射为阶段行 + 详情折叠区。
+      const report = await withLoading(
+        "wsl_provision_cmd",
+        "正在创建 WSL 发行版…",
+        async (_signal, rep) => {
+          const unlisten = await onWslProvision((s) => {
+            setProvisionSteps((prev) => [...prev, s]);
+            rep(s.message, `[${s.status}] ${s.message}`);
+          }).catch(() => undefined);
+          try {
+            return await wsl.provision(distro || null, null);
+          } finally {
+            if (typeof unlisten === "function") unlisten();
+          }
+        },
+        { stage: "正在准备…", args: { distro: distro || null } },
+      );
       if (report.ok) {
         setDistro(report.distro ?? "");
         setDshHome(report.dsh_home ?? "");
@@ -71,12 +93,14 @@ export function WslPanel() {
         const cfg = await dsh.getConfig();
         appStore.set({ config: cfg });
         setMsg("一键创建/初始化完成");
+        logger.info("wsl", "一键创建/初始化完成");
         await load();
       } else {
         setProvisionError(report.error ?? "创建失败");
       }
     } catch (e) {
-      setProvisionError(String(e));
+      if (isDedupError(e) || isCancelError(e)) return;
+      setProvisionError(String(e instanceof Error ? e.message : e));
     } finally {
       setProvisioning(false);
     }
@@ -86,13 +110,21 @@ export function WslPanel() {
     setSaving(true);
     setMsg(null);
     try {
-      await wsl.saveConfig(distro || null, dshHome || null, workspaceDir || null);
+      // PRD-002：不可取消组（写 config），tooltip 明示。
+      await withLoading(
+        "wsl_save_config_cmd",
+        "正在保存 WSL 配置…",
+        () => wsl.saveConfig(distro || null, dshHome || null, workspaceDir || null),
+        { stage: "正在准备…", args: { distro, dshHome, workspaceDir } },
+      );
       const cfg = await dsh.getConfig();
       appStore.set({ config: cfg });
       setConfirm(false);
       setMsg("WSL 配置已保存（写前已校验发行版与路径；config.json 留有备份）");
+      logger.info("wsl", "WSL 配置已保存");
     } catch (e) {
-      setMsg(String(e));
+      if (isDedupError(e) || isCancelError(e)) return;
+      setMsg(String(e instanceof Error ? e.message : e));
     } finally {
       setSaving(false);
     }
@@ -108,7 +140,7 @@ export function WslPanel() {
       </div>
 
       {status === null && !msg && <div className="empty-state">检测 WSL 状态…</div>}
-      {msg && <div className="error-banner" style={{ margin: "0 0 10px" }}>{msg}</div>}
+      {msg && <div className="error-banner" title={msg} style={{ margin: "0 0 10px", userSelect: "text" }}>{msg}</div>}
 
       {status && (
         <>
@@ -153,7 +185,7 @@ export function WslPanel() {
                 </button>
               </div>
               {provisionError && (
-                <div className="error-banner" style={{ margin: "8px 0" }}>{provisionError}</div>
+                <div className="error-banner" title={provisionError} style={{ margin: "8px 0", userSelect: "text" }}>{provisionError}</div>
               )}
               {provisionSteps.length > 0 && (
                 <div

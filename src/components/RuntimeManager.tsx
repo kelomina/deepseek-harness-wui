@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { dsh, runtime, type RuntimeView, type VerifyReport } from "../lib/tauri";
 import { appStore } from "../lib/dsh/store";
 import { logger } from "../lib/logger";
+import { withLoading, isDedupError, isCancelError } from "../lib/loading";
 
 const REPO_VERSION = "0.1.0-rc.6";
 
@@ -32,11 +33,17 @@ export function RuntimeManager({ running }: { running: boolean }) {
     setMsg(null);
     logger.info("runtime", "正在获取远程可用版本列表...");
     try {
-      const versions = await runtime.remoteVersions();
+      const versions = await withLoading("runtime_remote_versions_cmd", "正在获取远程版本…", () => runtime.remoteVersions(), {
+        stage: "正在连接源…",
+      });
       setRemote(versions);
       logger.info("runtime", `成功获取远程版本列表，共 ${versions.length} 个版本: ${versions.slice(-5).join(", ")}等`);
     } catch (e) {
-      const err = `获取远程版本失败: ${String(e)}`;
+      if (isDedupError(e) || isCancelError(e)) {
+        setBusy(null);
+        return;
+      }
+      const err = `获取远程版本失败: ${String(e instanceof Error ? e.message : e)}`;
       setMsg(err);
       logger.error("runtime", err, e);
     } finally {
@@ -51,13 +58,20 @@ export function RuntimeManager({ running }: { running: boolean }) {
     setMsg(null);
     logger.info("runtime", `开始下载并安装受管运行时 ${v}...`);
     try {
-      const view = await runtime.install(v);
+      const view = await withLoading(`runtime_install_cmd`, `正在安装 dsh 运行时 ${v}`, () => runtime.install(v), {
+        stage: "正在下载…",
+        args: { version: v },
+      });
       setMsg(`已安装 ${view.version}（integrity 校验通过）`);
       logger.info("runtime", `已安装 ${view.version}（integrity 校验通过）`);
       setInstallVersion("");
       await refresh();
     } catch (e) {
-      setMsg(String(e));
+      if (isDedupError(e) || isCancelError(e)) {
+        setBusy(null);
+        return;
+      }
+      setMsg(String(e instanceof Error ? e.message : e));
       logger.error("runtime", `安装 ${v} 失败: ${String(e)}`, e);
     } finally {
       setBusy(null);
@@ -69,7 +83,10 @@ export function RuntimeManager({ running }: { running: boolean }) {
     setMsg(null);
     logger.info("runtime", `正在复验版本 ${version} 的完整性...`);
     try {
-      const report = await runtime.verify(version);
+      const report = await withLoading(`runtime_verify_cmd`, `正在复验运行时 ${version}…`, () => runtime.verify(version), {
+        stage: "正在检测…",
+        args: { version },
+      });
       setVerifyMap((m) => ({ ...m, [version]: report }));
       if (report.ok) {
         logger.info("runtime", `版本 ${version} 复验通过: ${report.detail}`);
@@ -77,7 +94,11 @@ export function RuntimeManager({ running }: { running: boolean }) {
         logger.warn("runtime", `版本 ${version} 复验未通过: ${report.detail}`, report);
       }
     } catch (e) {
-      setMsg(String(e));
+      if (isDedupError(e) || isCancelError(e)) {
+        setBusy(null);
+        return;
+      }
+      setMsg(String(e instanceof Error ? e.message : e));
       logger.error("runtime", `复验版本 ${version} 失败: ${String(e)}`, e);
     } finally {
       setBusy(null);
@@ -89,7 +110,10 @@ export function RuntimeManager({ running }: { running: boolean }) {
     setMsg(null);
     logger.info("runtime", `切换激活受管版本为: ${version ?? "仓库 bundled"}`);
     try {
-      await runtime.setActive(version);
+      await withLoading("runtime_set_active_cmd", "正在切换运行时…", () => runtime.setActive(version), {
+        stage: "正在准备…",
+        args: { version },
+      });
       await refresh();
       const cfg = await dsh.getConfig();
       appStore.set({ config: cfg });
@@ -97,7 +121,11 @@ export function RuntimeManager({ running }: { running: boolean }) {
       setMsg(m);
       logger.info("runtime", m);
     } catch (e) {
-      setMsg(String(e));
+      if (isDedupError(e) || isCancelError(e)) {
+        setBusy(null);
+        return;
+      }
+      setMsg(String(e instanceof Error ? e.message : e));
       logger.error("runtime", `切换运行时失败: ${String(e)}`, e);
     } finally {
       setBusy(null);
@@ -109,14 +137,21 @@ export function RuntimeManager({ running }: { running: boolean }) {
     setMsg(null);
     logger.info("runtime", `正在移除运行时 ${version}...`);
     try {
-      const backup = await runtime.remove(version);
+      const backup = await withLoading(`runtime_remove_cmd`, `正在移除运行时 ${version}…`, () => runtime.remove(version), {
+        stage: "正在准备…",
+        args: { version },
+      });
       const m = `已移除 ${version}（可回滚，备份位于 ${backup}）`;
       setMsg(m);
       logger.info("runtime", m);
       setConfirmRemove(null);
       await refresh();
     } catch (e) {
-      setMsg(String(e));
+      if (isDedupError(e) || isCancelError(e)) {
+        setBusy(null);
+        return;
+      }
+      setMsg(String(e instanceof Error ? e.message : e));
       logger.error("runtime", `移除 ${version} 失败: ${String(e)}`, e);
     } finally {
       setBusy(null);
@@ -128,13 +163,20 @@ export function RuntimeManager({ running }: { running: boolean }) {
     setMsg(null);
     logger.info("runtime", `正在回滚运行时 ${version}...`);
     try {
-      await runtime.rollback(version);
+      await withLoading(`runtime_rollback_cmd`, `正在回滚运行时 ${version}…`, () => runtime.rollback(version), {
+        stage: "正在准备…",
+        args: { version },
+      });
       const m = `已回滚 ${version}`;
       setMsg(m);
       logger.info("runtime", m);
       await refresh();
     } catch (e) {
-      setMsg(String(e));
+      if (isDedupError(e) || isCancelError(e)) {
+        setBusy(null);
+        return;
+      }
+      setMsg(String(e instanceof Error ? e.message : e));
       logger.error("runtime", `回滚 ${version} 失败: ${String(e)}`, e);
     } finally {
       setBusy(null);
@@ -170,7 +212,7 @@ export function RuntimeManager({ running }: { running: boolean }) {
         </div>
       )}
 
-      {msg && <div className="error-banner" style={{ margin: "0 0 10px" }}>{msg}</div>}
+      {msg && <div className="error-banner" title={msg} style={{ margin: "0 0 10px", userSelect: "text" }}>{msg}</div>}
 
       <div className="list" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 4 }}>
         {list === null && <div className="empty-state">加载中…</div>}
