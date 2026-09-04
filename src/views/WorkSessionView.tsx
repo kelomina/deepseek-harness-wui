@@ -17,7 +17,7 @@ interface PendingImage {
   name?: string;
 }
 
-export function WorkSessionView({ onOpenSettings, onOpenToolDock, onOpenSessionDock }: { onOpenSettings?: () => void; onOpenToolDock: (tab: ToolTab) => void; onOpenSessionDock?: (sub: SessionSubTab) => void }) {
+export function WorkSessionView({ onOpenSettings, onOpenToolDock, onOpenSessionDock }: { onOpenSettings?: () => void; onOpenToolDock: (tab: ToolTab | "team") => void; onOpenSessionDock?: (sub: SessionSubTab) => void }) {
   const { connected, sessions, selectedSessionId, history, stoppingSessions, sessionTitles, projections, sessionQueues, subagentCatalogs, pendingSkillInsert } = useAppState();
   const [draft, setDraft] = useState("");
   const [images, setImages] = useState<PendingImage[]>([]);
@@ -67,6 +67,9 @@ export function WorkSessionView({ onOpenSettings, onOpenToolDock, onOpenSessionD
   const runningSubagents = selectedSessionId
     ? (subagentCatalogs.get(selectedSessionId)?.entries.filter((e) => e.kind === "child" && e.activity === "running").length ?? 0)
     : 0;
+  // PRD-003 团队入口双数：运行中绿 dot / 待审红数（与 team tab t-badge 同源同数，禁止合一；声音默认关）。
+  const runningTotal = sessions.filter((s) => s.running).length;
+  const pendingApprovals = interactives.filter((i) => i.kind === "approval").length;
 
   // 会话重命名（内联）：铅笔 → 输入框；Enter/失焦保存，Esc 取消
   const [renaming, setRenaming] = useState(false);
@@ -205,6 +208,16 @@ export function WorkSessionView({ onOpenSettings, onOpenToolDock, onOpenSessionD
             >
               <span className="ent-ico">✦</span>
               <span>技能</span>
+            </button>
+            <button
+              className="ent-btn"
+              title="团队黑板（只读聚合）"
+              onClick={() => onOpenToolDock("team")}
+            >
+              <span className="ent-ico">▦</span>
+              <span>团队</span>
+              {runningTotal > 0 && <span className="ent-dot green" title={`运行中 ${runningTotal}`} />}
+              {pendingApprovals > 0 && <span className="ent-badge red">{pendingApprovals}</span>}
             </button>
           </div>
           <HamburgerMenu onOpenTool={onOpenToolDock} />
