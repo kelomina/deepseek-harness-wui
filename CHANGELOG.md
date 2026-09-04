@@ -4,6 +4,20 @@ All notable user-visible changes are aggregated here. / 本项目重要变更按
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-05
+
+### Added / 新增
+
+- **全局Loading覆盖层（PRD-002，0.3.0唯一增量）**：>800ms必现+z-index 500+40px CSS心跳（spinner+indeterminate bar）+阶段文案+常驻“软件运行正常，请稍候”+超时“软件未卡死”+防重锁（Map去重）+三态（阶段/超时/防重），覆盖下载/加载/安装/信息收集四类；dsh 0.1.1-rc.2未变。
+
+### Changed / 变更
+
+- 无。
+
+### Fixed / 修复
+
+- 无。
+
 ## [0.3.0] - 2026-08-29
 
 ### Fixed / 修复
