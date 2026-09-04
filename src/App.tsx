@@ -12,6 +12,8 @@ import { WorkspacesPage } from "./pages/WorkspacesPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { ToolDock, type ToolTab, type SessionSubTab } from "./components/ToolDock";
 import { SetupWizard } from "./components/SetupWizard";
+import { GlobalLoading } from "./components/GlobalLoading";
+import { withLoading, isDedupError, isCancelError } from "./lib/loading";
 import type { PrereqCheck } from "./lib/tauri";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 
@@ -29,7 +31,13 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        const c = await invoke<PrereqCheck | null>("prereq_check_cmd");
+        // PRD-002：首检走全局 Loading（>800ms 必现，<800ms 不闪；可取消只读组）。
+        const c = await withLoading<PrereqCheck | null>(
+          "prereq_check_cmd",
+          "正在检测运行环境…",
+          () => invoke<PrereqCheck | null>("prereq_check_cmd"),
+          { stage: "正在检测…" },
+        );
         // c 为 null/异常（旧 mock 环境）不阻塞主流程
         if (c && typeof c === "object") {
           setPrereqInitial(c);
@@ -38,7 +46,9 @@ export default function App() {
             return;
           }
         }
-      } catch {
+      } catch (e) {
+        // 去重/取消不阻塞主流程（StrictMode 双 effect 去重 / 用户 Esc 取消等待）
+        if (isDedupError(e) || isCancelError(e)) return;
         // 忽略：探测命令不可用时不阻塞
       }
       setSetup("ready");
@@ -125,6 +135,7 @@ export default function App() {
           onViewLogs={() => openToolDock("logs")}
         />
       )}
+      <GlobalLoading />
     </>
   );
 }

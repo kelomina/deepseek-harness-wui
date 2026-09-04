@@ -1,6 +1,6 @@
 [package]
 name = "deepseek-harness-wui"
-version = "0.3.0"
+version = "0.3.1"
 description = "DeepSeek Harness Desktop - Rust + WebView2 shell (Tauri 2) with custom frontend"
 authors = ["Saika"]
 edition = "2021"
@@ -32,6 +32,8 @@ flate2 = "1"
 sha2 = "0.10"
 base64 = "0.22"
 hex = "0.4"
+rfd = "0.15"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 # 剪贴板：macOS 走原生 pbcopy（见 lib.rs clipboard_write），不引入 objc2 工具链
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]
