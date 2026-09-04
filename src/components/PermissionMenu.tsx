@@ -67,12 +67,13 @@ export function PermissionMenu({ sessionId }: { sessionId?: SessionId }) {
                 : "设置未来新会话的默认权限（立即生效）"}
             </div>
             {options.map((o) => (
-              <div key={o.value} className={`preset-row${o.value === sessionCurrent ? " selected" : ""}`} onClick={() => choose(o.value)}>
+              <div key={o.value} className={`preset-row${o.value === sessionCurrent ? " selected" : ""}${o.value === "danger-full-access" ? " locked" : ""}`} title={o.value === "danger-full-access" ? "完全访问已被 PRD-003 禁用（选即回退）" : undefined} onClick={() => choose(o.value)}>
                 <span className="preset-meta">
                   <span className="preset-nm">
                     {titleCase(o.name || o.value)}
                     {o.value === sessionCurrent && <span className="badge def">当前</span>}
                     {o.value === defaultCurrent && o.value !== sessionCurrent && <span className="badge off">默认</span>}
+                    {o.value === "danger-full-access" && <span className="badge cond">已禁用</span>}
                   </span>
                   {o.description && <span className="preset-ds">{o.description}</span>}
                 </span>

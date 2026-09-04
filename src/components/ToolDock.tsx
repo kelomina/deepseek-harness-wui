@@ -5,9 +5,10 @@ import { useConversationItems } from "./Conversation";
 import { ToolViews } from "./ToolViews";
 import { GoalBar, QueueDock, SubagentPanel } from "./SessionExtras";
 import { LogPanel } from "./LogPanel";
+import { TeamBoard, useTeamPendingCount } from "./TeamBoard";
 import { useUnreadErrors } from "../lib/logger";
 
-export type ToolTab = "files" | "terminal" | "web" | "git" | "session" | "logs";
+export type ToolTab = "files" | "terminal" | "web" | "git" | "session" | "logs" | "team";
 export type SessionSubTab = "goal" | "queue" | "subagents" | "skills";
 
 const TAB_LABELS: Record<ToolTab, string> = {
@@ -17,6 +18,7 @@ const TAB_LABELS: Record<ToolTab, string> = {
   git: "Git",
   session: "会话",
   logs: "日志",
+  team: "团队",
 };
 
 const SUB_TAB_LABELS: { id: SessionSubTab; label: string; icon: string }[] = [
@@ -115,14 +117,15 @@ export function ToolDock({
 }) {
   const { host, activeWorkspaceId, workspaces, selectedSessionId } = useAppState();
   const unreadErrors = useUnreadErrors();
+  const teamPending = useTeamPendingCount();
   const items = useConversationItems();
   const activeWs = workspaces.find((w) => w.workspaceId === activeWorkspaceId) ?? null;
 
   return (
     <div className="tool-dock">
       <div className="td-head">
-        <div className="td-tabs">
-          {(["files", "terminal", "web", "git", "session", "logs"] as ToolTab[]).map((t) => (
+        <div className="td-tabs" style={{ whiteSpace: "nowrap", overflow: "hidden" }}>
+          {(["files", "terminal", "web", "git", "session", "logs", "team"] as ToolTab[]).map((t) => (
             <span
               key={t}
               className={`t-tab${tab === t ? " on" : ""}`}
@@ -132,13 +135,18 @@ export function ToolDock({
               {t === "logs" && unreadErrors > 0 && (
                 <span className="t-badge error">{unreadErrors}</span>
               )}
+              {t === "team" && teamPending > 0 && (
+                <span className="t-badge error">{teamPending}</span>
+              )}
             </span>
           ))}
         </div>
         <button className="td-close" title="关闭" onClick={onClose}>×</button>
       </div>
       <div className="td-body">
-        {tab === "logs" ? (
+        {tab === "team" ? (
+          <TeamBoard />
+        ) : tab === "logs" ? (
           <LogPanel compact />
         ) : tab === "session" ? (
           <SessionPanel

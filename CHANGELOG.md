@@ -4,6 +4,20 @@ All notable user-visible changes are aggregated here. / 本项目重要变更按
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-05
+
+### Added / 新增
+
+- **多虚拟员工黑板 + SQUAD 4 路编排 + 权限自动三判 + 审计回滚（PRD-003，0.3.1 唯一增量）**：团队黑板（员工墙/任务卡墙/申请中心入口/运行 Trace，只读聚合）+ SQUAD≤4 路并行（超限排队，clientTaskId 去重）+ 权限策略表（deny 优先/fail-closed/完全访问禁用）+ 自动三判（自动批准/自动拒绝/转人工，60s 超时置顶不自动批）+ 审计行（命中行/天花板/时间/证据，内存 + 手动导出，reason 脱敏）+ 回滚（grant 撤销 + 会话 fork + 预设回滚）；dsh 0.1.1-rc.2 未变。
+
+### Changed / 变更
+
+- 无。
+
+### Fixed / 修复
+
+- 无。
+
 ## [0.3.1] - 2026-09-05
 
 ### Added / 新增

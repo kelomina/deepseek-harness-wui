@@ -5,6 +5,16 @@ import { logger } from "../logger";
 import { DshApiClient } from "./client";
 import { computeRevertInfo, type RevertInfo } from "./revert";
 import { sessionTitle } from "./sessionTitle";
+import { decideApproval } from "../policy";
+import {
+  APPROVAL_TIMEOUT_SECS,
+  ceilingForSession,
+  markHumanDecided,
+  noteApprovalArrival,
+  noteFork,
+  pushAuditRow,
+  redactSecrets,
+} from "../team";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {
   AgentPresetEntry,
@@ -401,7 +411,53 @@ class AppStore {
         }
         break;
       }
-      case "approval/requested":
+      case "approval/requested": {
+        // PRD-003 v1.1 域②拦截器（approval/requested → interactives 之前一层）：
+        // allow 自动 answerApproval(allowed-once)，deny 自动 rejected，余下进人工；
+        // question 不进自动审核（仅黑板计数）。超时 60s 置顶 + notice，不自动批。
+        const req = frame as unknown as { sessionId: SessionId; approvalId: string; toolName?: string; reason?: string };
+        const sess = this.state.sessions.find((s) => s.sessionId === req.sessionId);
+        const ceiling = ceilingForSession(req.sessionId);
+        const decision = decideApproval({
+          toolName: req.toolName ?? "unknown",
+          reason: req.reason,
+          workspaceRoot: sess?.cwd ?? this.state.host?.cwd ?? null,
+          ceiling,
+          preset: this.state.sessionPermissions.get(req.sessionId)?.currentValue ?? null,
+          canOpenPath: this.state.host?.canOpenPath ?? false,
+          unattended: false,
+        });
+        const redacted = redactSecrets(req.reason ?? "");
+        noteApprovalArrival(String(req.approvalId));
+        if (decision.verdict === "allow" || decision.verdict === "deny") {
+          const outcome = decision.verdict === "allow" ? "allowed-once" : "rejected";
+          const autoItem: InteractiveItem = { rpcId: envelope.rpcId, kind: "approval", sessionId: req.sessionId, frame };
+          pushAuditRow({
+            requestId: String(req.approvalId),
+            source: "dsh-approval",
+            verdict: decision.verdict === "allow" ? "auto-allow" : "auto-deny",
+            policyRowId: decision.rowId,
+            ceiling,
+            decidedAt: Date.now(),
+            evidence: { sessionId: req.sessionId, rpcId: String(envelope.rpcId) },
+            reasonRedacted: redacted,
+          });
+          void this.answerApproval(autoItem, outcome, { auto: true }).catch((e) =>
+            this.set({ error: `自动审核应答失败: ${String(e)}` }),
+          );
+          this.set({ notice: `${decision.verdict === "allow" ? "已自动批准" : "已自动拒绝"} ${req.toolName ?? ""}（${decision.rowId}）` });
+          break;
+        }
+        pushAuditRow({
+          requestId: String(req.approvalId),
+          source: "dsh-approval",
+          verdict: "to-human",
+          policyRowId: decision.rowId,
+          ceiling,
+          decidedAt: Date.now(),
+          evidence: { sessionId: req.sessionId, rpcId: String(envelope.rpcId) },
+          reasonRedacted: redacted,
+        });
         this.set({
           interactives: [
             ...this.state.interactives.filter(
@@ -410,7 +466,19 @@ class AppStore {
             { rpcId: envelope.rpcId, kind: "approval", sessionId: frame.sessionId, frame },
           ],
         });
+        window.setTimeout(() => {
+          const still = this.state.interactives.find(
+            (i) => i.kind === "approval" && i.frame.type === "approval/requested" && i.frame.approvalId === req.approvalId,
+          );
+          if (still) {
+            this.set({
+              interactives: [still, ...this.state.interactives.filter((i) => i !== still)],
+              notice: `申请 ${req.toolName ?? ""} 已等待超过 ${APPROVAL_TIMEOUT_SECS}s，仍为待判并置顶（不自动批）`,
+            });
+          }
+        }, APPROVAL_TIMEOUT_SECS * 1000);
         break;
+      }
       case "approval/resolved":
         this.set({
           interactives: this.state.interactives.filter(
@@ -882,7 +950,7 @@ class AppStore {
     await this.refreshWorkspaces();
   }
 
-  async answerApproval(item: InteractiveItem, outcome: "allowed-once" | "rejected"): Promise<void> {
+  async answerApproval(item: InteractiveItem, outcome: "allowed-once" | "rejected", opts?: { auto?: boolean }): Promise<void> {
     const api = this.requireApi();
     if (item.frame.type !== "approval/requested") return;
     const payload: ApprovalResponsePayload = {
@@ -891,6 +959,8 @@ class AppStore {
       outcome,
     };
     await api.respond({ type: "client-response", rpcId: item.rpcId, result: { ok: true, value: payload } });
+    // 人工决（非自动）回填审计行终态；自动三判已在拦截器写入 auto-allow/auto-deny。
+    if (!opts?.auto) markHumanDecided(String(item.frame.approvalId));
     this.set({ interactives: this.state.interactives.filter((i) => i !== item) });
   }
 
@@ -1126,7 +1196,12 @@ class AppStore {
         return;
       }
       const newId = r.result.value.sessionId;
-      this.set({ selectedSessionId: newId });
+      // PRD-003：fork 派生显式标注“派生自 <短id>@<seq>”（黑板 + notice，原会话保留不动）。
+      noteFork(newId, sessionId, seq);
+      this.set({
+        selectedSessionId: newId,
+        notice: `已分叉：新会话 ${newId}（派生自 ${sessionId.slice(0, 8)}@${seq}），原会话保留未动。`,
+      });
       await this.refreshSessions();
       await this.loadHistory(newId);
     } catch (e) {
@@ -1216,6 +1291,11 @@ class AppStore {
    * 外部浏览器客户端经 apiproxy 无法调用，且经 session.prompt 发送会被当作普通消息触发模型回合）。
    */
   async setDefaultPermissionPreset(preset: string): Promise<void> {
+    // PRD-003 FR-T202 冻结：完全访问本轮禁用，选即回退（不写 dsh，只出 notice）。
+    if (preset === "danger-full-access" || preset === "完全访问") {
+      this.set({ notice: "完全访问已被 PRD-003 禁用，已回退为询问审批" });
+      return;
+    }
     try {
       await this.mutateSettings("permission", [{ op: "set", path: ["defaultPreset"], value: preset }]);
     } catch (e) {
