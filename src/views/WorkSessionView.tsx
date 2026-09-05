@@ -132,7 +132,43 @@ export function WorkSessionView({ onOpenSettings, onOpenToolDock, onOpenSessionD
 
   const send = () => {
     const text = draft.trim();
-    if ((!text && images.length === 0) || !selectedSessionId || !connected) return;
+    if ((!text && images.length === 0) || !selectedSessionId) return;
+    // PRD-dispatch S0：Work 会话 composer 发前 ^/分派 拦截；无前缀=闲聊直答；空参数=用法提示；非 Work=提示去 Work。
+    const cmd = parseDispatchCommand(text);
+    if (cmd) {
+      if ("empty" in cmd) {
+        appStore.set({ notice: "用法：/分派 <需求>（如：/分派 把登录页拆成3卡分给前端/后端/测试）" });
+        return;
+      }
+      if (!isWork) {
+        appStore.set({ notice: "请到 Work 模式使用（当前为 Code 模式，不跨模式执行）" });
+        return;
+      }
+      if (!connected) {
+        appStore.set({ error: "dsh 未连接，无法拆解（请先连接后再 /分派）" });
+        return;
+      }
+      if (!modelGroups) {
+        appStore.set({ error: "模型目录不可用，无法拆解（请先在设置页加载模型目录）" });
+        return;
+      }
+      if (!defaultModel?.value?.provider || !defaultModel?.value?.model) {
+        const dispMode = appStore.get().dispatchModel?.setting?.mode ?? "follow-default";
+        const dispVal = appStore.get().dispatchModel?.setting;
+        const specifiedOk = dispMode === "specified" && dispVal?.provider && dispVal?.model;
+        if (!specifiedOk) {
+          appStore.set({ error: "默认模型未配置，无法拆解（请先在设置页配置默认模型）" });
+          return;
+        }
+      }
+      const requirement = cmd.requirement;
+      setDraft("");
+      setImages([]);
+      setSlashOpen(true);
+      void appStore.startDispatch(requirement, selectedSessionId);
+      return;
+    }
+    if (!connected) return;
     if (imageLimits && images.length > 0) {
       const total = images.reduce((n, img) => n + Math.floor((img.data.length * 3) / 4), 0);
       if (total > imageLimits.maxMessageImageBytes) {
@@ -231,10 +267,11 @@ export function WorkSessionView({ onOpenSettings, onOpenToolDock, onOpenSessionD
           {items.length === 0 && <div className="empty-state">还没有消息</div>}
           {items.map((it) => <EventRow key={it.seq} item={it} sessionId={selectedSessionId ?? undefined} />)}
           <LiveAssistantRow />
-          {stopping ? <div className="thinking-indicator">■ 正在停止生成…（2 秒内切换为已停止）</div> : running && !liveAssistant ? <div className="thinking-indicator">● 模型正在思考中…</div> : null}
+          {dispatchBusy && <div className="thinking-indicator">● 正在拆解…（隔离会话 prompt，串行一拆解一调用，60s 超时转回退）</div>}
+          {stopping ? <div className="thinking-indicator">■ 正在停止生成…（2 秒内切换为已停止）</div> : running && !liveAssistant && !dispatchBusy ? <div className="thinking-indicator">● 模型正在思考中…</div> : null}
         </div>
         <div className="composer-wrap">
-          <div className="composer">
+          <div className="composer" style={{ position: "relative" }}>
             {images.length > 0 && (
               <div className="attach-chips">
                 {images.map((img, i) => (

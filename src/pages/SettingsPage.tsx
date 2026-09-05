@@ -349,6 +349,160 @@ function AutoReviewModelCard() {
 }
 
 /** 拆解模型卡（PRD-dispatch Q2：复用 AutoReviewModelCard 样式，同 agent-default-model ns 平行 dispatchModel，一次 CAS）。
+ * 默认 follow-default 跟随默认模型；specified 未配齐回落默认+提示；零新增 invoke/事件。 */
+function DispatchModelCard() {
+  const { dispatchModel, defaultModel, modelGroups, gatewayUp, api } = useAppState();
+  const gatewayReachable = gatewayUp || api != null;
+  const [editing, setEditing] = useState(false);
+  const [mode, setMode] = useState<"follow-default" | "specified">("follow-default");
+  const [draft, setDraft] = useState<{ provider: string; model: string; reasoningEffort: string }>({ provider: "", model: "", reasoningEffort: "" });
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (gatewayReachable) void appStore.loadDefaultModel();
+  }, [gatewayReachable]);
+
+  useEffect(() => {
+    setMode(dispatchModel?.setting?.mode ?? "follow-default");
+  }, [dispatchModel?.setting?.mode]);
+
+  if (!gatewayReachable) return null;
+  if (!dispatchModel && !defaultModel) return <div className="card wide"><div className="card-head"><span className="card-title">拆解模型</span></div><div className="hint">仅用于任务拆解，不参与会话问答/审核路由</div><div className="muted">当前 dsh 未暴露 agent-default-model 命名空间</div></div>;
+  const setting = dispatchModel?.setting ?? null;
+  const value = setting?.mode === "specified" ? { provider: setting.provider ?? "", model: setting.model ?? "", reasoningEffort: setting.reasoningEffort ?? "" } : null;
+  const revision = dispatchModel?.revision ?? defaultModel?.revision;
+  const effectiveMode = setting?.mode ?? "follow-default";
+
+  const startEdit = () => {
+    setMsg(null);
+    setMode(setting?.mode ?? "follow-default");
+    setDraft({
+      provider: setting?.provider ?? modelGroups?.[0]?.id ?? "",
+      model: setting?.model ?? "",
+      reasoningEffort: setting?.reasoningEffort ?? "",
+    });
+    setEditing(true);
+  };
+  const group = modelGroups?.find((g) => g.id === draft.provider) ?? null;
+  const model = group?.models.find((m) => m.id === draft.model) ?? null;
+  const efforts = model?.reasoning?.efforts ?? [];
+  const canSave = mode === "follow-default" || (draft.provider.trim() !== "" && draft.model.trim() !== "");
+  const catalogEmpty = !modelGroups || modelGroups.length === 0 || modelGroups.every((g) => (g.models ?? []).length === 0);
+
+  const save = async () => {
+    if (!canSave) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      if (mode === "follow-default") {
+        await appStore.saveDispatchModel({ mode: "follow-default" }, revision);
+        setMsg("已保存（跟随默认模型，新拆解生效）");
+      } else {
+        const patch: { mode: "specified"; provider: string; model: string; reasoningEffort?: string } = {
+          mode: "specified",
+          provider: draft.provider,
+          model: draft.model,
+        };
+        if (draft.reasoningEffort.trim()) patch.reasoningEffort = draft.reasoningEffort.trim();
+        await appStore.saveDispatchModel(patch, revision);
+        setMsg("已保存（新拆解生效）");
+      }
+      setEditing(false);
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card wide">
+      <div className="card-head">
+        <span className="card-title">拆解模型</span>
+        {!editing && (
+          <span className="mgmt-actions">
+            <button className="mgmt-btn" onClick={startEdit}>编辑</button>
+          </span>
+        )}
+      </div>
+      <div className="hint">仅用于任务拆解，不参与会话问答/审核路由；默认跟随默认模型</div>
+      {!dispatchModel && <div className="muted">当前 dsh 未暴露 agent-default-model 命名空间</div>}
+      {dispatchModel && !editing && (
+        <div className="provider-list">
+          <div className="kv"><span className="k">模式</span><span className="v">{effectiveMode === "follow-default" ? "跟随默认（follow-default）" : "指定模型（specified）"}</span></div>
+          {effectiveMode === "specified" && value && (
+            <>
+              <div className="kv"><span className="k">Provider</span><span className="v">{value.provider || "（未配齐，回落默认+提示）"}</span></div>
+              <div className="kv"><span className="k">模型</span><span className="v">{value.model || "（未配齐，回落默认+提示）"}</span></div>
+              <div className="kv"><span className="k">思考强度</span><span className="v">{value.reasoningEffort || "跟随目录默认"}</span></div>
+            </>
+          )}
+          {effectiveMode === "follow-default" && <div className="muted">未指定即跟随默认模型；specified 未配齐时回落默认+提示（不静默禁拆）</div>}
+          <div className="kv"><span className="k">生效方式</span><span className="v">新拆解生效（已拆解沿用旧模型）</span></div>
+        </div>
+      )}
+      {dispatchModel && editing && (
+        <div className="provider-list">
+          <div className="field">
+            <label>模式</label>
+            <select value={mode} onChange={(e) => setMode(e.currentTarget.value as "follow-default" | "specified")}>
+              <option value="follow-default">跟随默认（follow-default）</option>
+              <option value="specified">指定模型（specified）</option>
+            </select>
+          </div>
+          {mode === "specified" && (
+            catalogEmpty ? (
+              <div className="muted">模型目录不可用，无法选择拆解模型（禁静默回退默认模型）</div>
+            ) : (
+              <>
+                <div className="field">
+                  <label>Provider</label>
+                  <select
+                    value={draft.provider}
+                    onChange={(e) => setDraft({ provider: e.currentTarget.value, model: "", reasoningEffort: "" })}
+                  >
+                    {(modelGroups ?? []).map((g) => (
+                      <option key={g.id} value={g.id}>{g.name || g.id}</option>
+                    ))}
+                    {value?.provider && !(modelGroups ?? []).some((g) => g.id === value.provider) && (
+                      <option value={value.provider}>{value.provider}（当前，目录未列出）</option>
+                    )}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>模型</label>
+                  <select value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.currentTarget.value, reasoningEffort: "" })}>
+                    <option value="">选择模型…</option>
+                    {(group?.models ?? []).map((m) => (
+                      <option key={m.id} value={m.id}>{m.name || m.id}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>思考强度</label>
+                  <select value={draft.reasoningEffort} onChange={(e) => setDraft({ ...draft, reasoningEffort: e.currentTarget.value })}>
+                    <option value="">跟随目录默认{model?.reasoning?.defaultEffort ? `（${model.reasoning.defaultEffort}）` : ""}</option>
+                    {efforts.map((e) => (
+                      <option key={e.id} value={e.id}>{e.name ? `${e.name} (${e.id})` : e.id}</option>
+                    ))}
+                  </select>
+                </div>
+              </>
+            )
+          )}
+          <div className="modal-row">
+            <button className="btn" disabled={busy} onClick={() => { setEditing(false); setMsg(null); }}>取消</button>
+            <button className="btn primary" disabled={!canSave || busy || (mode === "specified" && catalogEmpty)} onClick={() => void save()}>保存</button>
+          </div>
+        </div>
+      )}
+      {msg && <div className="hint" style={{ marginTop: 8 }}>{msg}</div>}
+    </div>
+  );
+}
+
+/** 标题取名模型卡（任务#15+#14：复用 DefaultModelCard 模式，同 agent-default-model ns 加平行 titleModel，一次 CAS）。
  * 下拉自 modelGroups；未配置=不自动取名，零打扰；零新增 invoke/事件。 */
 function TitleModelCard() {
   const { titleModel, defaultModel, modelGroups, gatewayUp, api } = useAppState();

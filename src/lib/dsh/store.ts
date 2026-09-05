@@ -178,12 +178,32 @@ export interface PermissionSelect {
   currentValue: string;
 }
 
+/** PRD-dispatch S3 确认态（store 持有，TeamBoard/WorkSessionView 同源渲染确认卡 modal z200 wide680）。 */
+export interface PendingDispatch {
+  id: string;
+  requirement: string;
+  sourceSessionId: SessionId | null;
+  cards: MatchedDispatchCard[];
+  directCardIds: string[];
+  dispatchModelId: string;
+  createdAt: number;
+}
+
+/** PRD-dispatch Q2 拆解模型视图（同 agent-default-model ns 平行 dispatchModel，一次 CAS；null=未加载）。 */
+export interface DispatchModelView {
+  setting: DispatchModelSetting | null;
+  revision: number;
+  applies: "live" | "restart";
+}
+
 export interface AppState {
   status: DshStatus | null;
   config: DshConfig | null;
   logs: string[];
   api: DshApiClient | null;
   connected: boolean;
+  /** 网关可达：首包 session/list 业务 ok 置 true；仅 connect 失败/disconnect 清 false（事件流中断不清）。 */
+  gatewayUp: boolean;
   host: HostDescription | null;
   workspaces: WorkspaceView[];
   sessions: SessionSummary[];
@@ -1389,6 +1409,520 @@ class AppStore {
   }
 
   /* ---------------- PRD-dispatch S1~S6 全管线（零新增 invoke/事件，仍经代理） ---------------- */
+
+  /** Q2 拆解模型解析：follow-default 跟随默认；specified 未配齐回落默认+显式提示；均无则显式空态。 */
+  resolveDispatchModel(): {
+    model: { provider: string; model: string; reasoningEffort?: string } | null;
+    modelId: string;
+    fallbackNotice: string | null;
+    empty: string | null;
+  } {
+    const disp = this.state.dispatchModel?.setting ?? null;
+    const def = this.state.defaultModel?.value ?? null;
+    const mode = disp?.mode ?? "follow-default";
+    if (mode === "specified") {
+      if (disp?.provider?.trim() && disp?.model?.trim()) {
+        const m: { provider: string; model: string; reasoningEffort?: string } = {
+          provider: disp.provider.trim(),
+          model: disp.model.trim(),
+        };
+        if (disp.reasoningEffort?.trim()) m.reasoningEffort = disp.reasoningEffort.trim();
+        return { model: m, modelId: `${m.provider}/${m.model}`, fallbackNotice: null, empty: null };
+      }
+      if (def?.provider && def?.model) {
+        const m: { provider: string; model: string; reasoningEffort?: string } = {
+          provider: def.provider,
+          model: def.model,
+        };
+        if (def.reasoningEffort) m.reasoningEffort = def.reasoningEffort;
+        return {
+          model: m,
+          modelId: `${m.provider}/${m.model}`,
+          fallbackNotice: "拆解模型未配齐，已回落默认模型（请在设置页补齐拆解模型）",
+          empty: null,
+        };
+      }
+      return { model: null, modelId: "", fallbackNotice: null, empty: "未配置拆解模型与默认模型（请先在设置页配置默认模型）" };
+    }
+    if (def?.provider && def?.model) {
+      const m: { provider: string; model: string; reasoningEffort?: string } = {
+        provider: def.provider,
+        model: def.model,
+      };
+      if (def.reasoningEffort) m.reasoningEffort = def.reasoningEffort;
+      return { model: m, modelId: `${m.provider}/${m.model}`, fallbackNotice: null, empty: null };
+    }
+    return { model: null, modelId: "", fallbackNotice: null, empty: "未配置默认模型（拆解跟随默认，请先在设置页配置）" };
+  }
+
+  /**
+   * S1 同构隔离链（复用 runAutoReviewSecondPass 结构：create+selectModel+prompt queue+page 轮询≤60s+重试≤1+串行）。
+   * 差异仅：独立 dispatchChain（防抢 autoReviewChain）+ cards 严格 JSON 解析；token 记 unknown 不伪造；reason 脱敏 ****。
+   */
+  private runDispatchDecompose(
+    prompt: string,
+    model: { provider: string; model: string; reasoningEffort?: string },
+  ): Promise<{ cards: DispatchDraftCard[]; latencyMs: number } | { cards: null; reason: string; latencyMs?: number } | null> {
+    const task = (async () => {
+      const api = this.state.api;
+      if (!api) return null;
+      const t0 = Date.now();
+      try {
+        const cr = await api.sessions.create({});
+        if (!cr.result.ok) return null;
+        const isoId = cr.result.value.sessionId;
+        try {
+          await api.sessions.selectModel({
+            sessionId: isoId,
+            provider: model.provider,
+            model: model.model,
+            reasoningEffort: model.reasoningEffort ?? undefined,
+          } as never).catch(() => undefined);
+        } catch {
+          // 选模型失败不阻断，沿用会话默认（失败则转 S6）。
+        }
+        const pr = await api.sessions.prompt({
+          sessionId: isoId,
+          mode: "queue",
+          content: [{ type: "text", text: prompt }],
+        } as never);
+        if (!pr.result.ok) return null;
+        const deadline = t0 + DISPATCH_TIMEOUT_SECS * 1000;
+        let firstBad: string | null = null;
+        while (Date.now() < deadline) {
+          await sleepMs(2000);
+          try {
+            const text = await this.isolationAssistantText(api, isoId, 20);
+            if (!text) continue;
+            const cards = parseDispatchCards(text);
+            if (cards) return { cards, latencyMs: Date.now() - t0 };
+            if (firstBad === null) {
+              firstBad = text;
+              await sleepMs(2000);
+              try {
+                const text2 = await this.isolationAssistantText(api, isoId, 20);
+                if (text2) {
+                  const cards2 = parseDispatchCards(text2);
+                  if (cards2) return { cards: cards2, latencyMs: Date.now() - t0 };
+                }
+              } catch {
+                // ignore, fall through
+              }
+              return { cards: null, reason: "拆解输出非严格 JSON，已转回退", latencyMs: Date.now() - t0 };
+            }
+          } catch {
+            return null;
+          }
+        }
+        return { cards: null, reason: "拆解超时（60s），已转回退", latencyMs: Date.now() - t0 };
+      } catch {
+        return null;
+      }
+    })();
+    const chained = dispatchChain.then(() => task);
+    dispatchChain = chained.then(() => undefined).catch(() => undefined);
+    return chained;
+  }
+
+  /**
+   * S0→S3 入口：Work 会话 composer /分派 <需求> 触发（调用方已做 ^/分派 拦截与空参/非 Work 分流）。
+   * S1 按 dispatchModel 拆 N 卡严格 JSON → S2 确定性匹配 → S3 待确认（默认确认+可信卡直派）。
+   * 失败一律 S6：拆解败→降级直答当前会话（不建分派会话）+保留原文可重拆。
+   */
+  async startDispatch(requirement: string, sourceSessionId: SessionId | null): Promise<void> {
+    const req = (requirement ?? "").trim();
+    if (!req) return;
+    if (!this.state.api || !this.state.connected) {
+      this.set({ error: "dsh 未连接，无法拆解（请先连接后再 /分派）" });
+      return;
+    }
+    if (!this.state.modelGroups) {
+      this.set({ error: "模型目录不可用，无法拆解（请先在设置页加载模型目录）" });
+      return;
+    }
+    const resolved = this.resolveDispatchModel();
+    if (!resolved.model) {
+      this.set({ error: resolved.empty ?? "未配置拆解模型" });
+      return;
+    }
+    if (resolved.fallbackNotice) this.set({ notice: resolved.fallbackNotice });
+    if (this.state.dispatchBusy) {
+      this.set({ notice: "拆解进行中，请稍候（串行一拆解一调用）" });
+      return;
+    }
+    this.set({ dispatchBusy: true });
+    try {
+      const employees = loadEmployees();
+      const teamHint =
+        employees.length > 0
+          ? employees.map((e) => `${e.name}(${(getRoleTemplate(e.role)?.name ?? e.role)}${(e.skillSnapshot ?? []).length ? `:${e.skillSnapshot.join(",")}` : ""})`).join("；")
+          : "";
+      const prompt = buildDispatchDecomposePrompt(req, teamHint);
+      const res = await this.runDispatchDecompose(prompt, resolved.model);
+      if (!res || !res.cards || res.cards.length === 0) {
+        // S6 拆解失败→降级直答当前会话（不建分派会话），原文保留可重拆。
+        const reason = res && "reason" in res && res.reason ? res.reason : "拆解失败（坏 JSON/超时/空回合）";
+        pushAuditRow({
+          requestId: `dispatch-${Date.now().toString(36)}`,
+          source: "dsh-approval",
+          verdict: "to-human",
+          policyRowId: "dispatch-decompose-fallback",
+          ceiling: sourceSessionId ? ceilingForSession(String(sourceSessionId)) : "read-only",
+          decidedAt: Date.now(),
+          evidence: { sessionId: String(sourceSessionId ?? "") },
+          reasonRedacted: redactSecrets(`${reason}；需求：${req.slice(0, 200)}`),
+          reviewVerdict: "manual",
+          reviewModelId: resolved.modelId,
+          reviewTokens: "unknown",
+          reviewReason: reason.slice(0, 200),
+          pipelineMs: res && "latencyMs" in res && res.latencyMs ? res.latencyMs : undefined,
+        });
+        if (sourceSessionId) {
+          try {
+            await this.sendPrompt(sourceSessionId, req);
+            this.set({ notice: `${reason}，已降级为直接回答（原文已发送，可重拆）` });
+          } catch (e) {
+            this.set({ error: `拆解失败且降级直答失败: ${String(e)}（原文保留：${req.slice(0, 80)}）` });
+          }
+        } else {
+          this.set({ error: `${reason}（无源会话可降级直答，原文保留可重拆）` });
+        }
+        return;
+      }
+      // S2 确定性匹配（role/skill+ceiling+canOpenPath 双查+deny 剔除注理由；LLM assignee 仅建议）。
+      const sess = sourceSessionId ? this.state.sessions.find((s) => s.sessionId === sourceSessionId) : undefined;
+      const workspaceRoot = (sess as unknown as { cwd?: string } | undefined)?.cwd ?? this.state.host?.cwd ?? this.state.workspaces[0]?.path ?? null;
+      const matched = matchDispatchCards(res.cards, employees, {
+        workspaceRoot,
+        canOpenPath: this.state.host?.canOpenPath ?? null,
+      });
+      const directIds = matched.filter((c) => c.direct).map((c) => c.clientTaskId);
+      // Q3 可信直派：仅可信无越界卡直派（先 claim 幂等领取，其余仍走确认卡；确认卡标注已直派）。
+      if (directIds.length > 0) {
+        for (const c of matched.filter((m) => m.direct)) {
+          const added = addTaskCard({
+            clientTaskId: c.clientTaskId,
+            title: c.title,
+            inputScope: c.inputScope,
+            outputTo: c.outputTo,
+            forbidden: c.forbidden,
+            approvalNote: `${c.approvalNote}（可信直派免确认：${c.assigneeName ?? ""}）`,
+            assigneeEmployeeId: c.assigneeEmployeeId ?? "",
+            status: "todo",
+            queued: c.queued,
+          });
+          if (!added.ok) {
+            this.set({ notice: `同卡重发被拒（clientTaskId 去重）：${c.title}` });
+            continue;
+          }
+          if (!c.queued) {
+            await this.dispatchOneCard(c, sourceSessionId);
+          }
+        }
+        this.set({ notice: `其中 ${directIds.length} 张可信卡已直派（免确认），其余仍需确认` });
+      }
+      const rest = matched.filter((m) => !m.direct);
+      if (rest.length === 0) {
+        // 全直派：无确认卡，直接聚合回流提示。
+        await this.refreshDispatchEvidence();
+        return;
+      }
+      this.set({
+        pendingDispatch: {
+          id: `dispatch-${Date.now().toString(36)}`,
+          requirement: req,
+          sourceSessionId,
+          // 确认卡含全部卡：直派卡顶置灰化不可编辑（badge green“已直派免确认”），其余可改派/减卡/取消。
+          cards: matched,
+          directCardIds: directIds,
+          dispatchModelId: resolved.modelId,
+          createdAt: Date.now(),
+        },
+      });
+    } finally {
+      this.set({ dispatchBusy: false });
+    }
+  }
+
+  /** S3 取消（非直派卡；直派卡已执行不可撤回，确认卡注明）。 */
+  cancelDispatch(): void {
+    if (!this.state.pendingDispatch) return;
+    this.set({ pendingDispatch: null, notice: "已取消分派（未确认卡未产生新会话；已直派卡不受影响）" });
+  }
+
+  /**
+   * S3 确认 → S4 执行（确认后才 claimClientTaskId 双域幂等领取；改派仅同团队存活员工；减卡/取消生效）。
+   * overrides: cardId→assigneeId 重绑；removedIds 减卡。
+   */
+  async confirmDispatch(overrides?: { assignee?: Record<string, string>; removedIds?: string[] }): Promise<void> {
+    const pending = this.state.pendingDispatch;
+    if (!pending) return;
+    const removed = new Set(overrides?.removedIds ?? []);
+    const assign = overrides?.assignee ?? {};
+    const direct = new Set(pending.directCardIds);
+    const employees = loadEmployees();
+    const alive = new Set(employees.map((e) => e.id));
+    // 已直派卡跳过（灰化不可编辑，不重复 claim/分派；确认卡已标注）。
+    const cards = pending.cards.filter((c) => !removed.has(c.clientTaskId) && !direct.has(c.clientTaskId)).map((c) => {
+      const want = assign[c.clientTaskId];
+      if (want && alive.has(want) && want !== c.assigneeEmployeeId) {
+        const emp = employees.find((e) => e.id === want);
+        // 改派仅允许同团队内存活员工（sessionIds 归属有效+canBindPath 真已在 S2 双查；此处再验存活）。
+        return { ...c, assigneeEmployeeId: want, assigneeName: emp?.name ?? c.assigneeName, direct: false };
+      }
+      return c;
+    });
+    if (cards.length === 0) {
+      this.set({ pendingDispatch: null, notice: "已取消分派（非直派卡全部减卡，未产生新会话；已直派卡不受影响）" });
+      return;
+    }
+    // 无确认动作不产生新会话：先清 pending 再逐卡 claim+执行（claim 失败即重发拒绝+notice）。
+    this.set({ pendingDispatch: null });
+    let okCount = 0;
+    let failCount = 0;
+    for (const c of cards) {
+      const added = addTaskCard({
+        clientTaskId: c.clientTaskId,
+        title: c.title,
+        inputScope: c.inputScope,
+        outputTo: c.outputTo,
+        forbidden: c.forbidden,
+        approvalNote: c.approvalNote,
+        assigneeEmployeeId: c.assigneeEmployeeId ?? "",
+        status: "todo",
+        queued: c.queued,
+      });
+      if (!added.ok) {
+        failCount++;
+        this.set({ notice: `同卡重发被拒（clientTaskId 去重）：${c.title}` });
+        setTaskStatus(c.clientTaskId, "review");
+        continue;
+      }
+      if (c.queued) {
+        // 超 4 路排队（按 clientTaskId 顺序；团长卡可 steer 插队，沿 PRD-003）。
+        setTaskStatus(c.clientTaskId, "todo");
+        okCount++;
+        continue;
+      }
+      const ok = await this.dispatchOneCard(c, pending.sourceSessionId);
+      if (ok) okCount++;
+      else failCount++;
+    }
+    await this.refreshDispatchEvidence();
+    // S6：单卡败→该卡转人工余卡继续；全败→整单转人工+notice+Trace 留痕。
+    if (failCount > 0 && okCount === 0) {
+      pushAuditRow({
+        requestId: pending.id,
+        source: "dsh-approval",
+        verdict: "to-human",
+        policyRowId: "dispatch-all-failed",
+        ceiling: "read-only",
+        decidedAt: Date.now(),
+        evidence: { sessionId: String(pending.sourceSessionId ?? "") },
+        reasonRedacted: redactSecrets(`整单分派失败，已转人工：${pending.requirement.slice(0, 200)}`),
+        reviewVerdict: "manual",
+        reviewModelId: pending.dispatchModelId,
+        reviewTokens: "unknown",
+        reviewReason: "全部卡片分派失败，整单转人工",
+      });
+      this.set({ error: `分派全部失败，已整单转人工（Trace 可定位，需求保留可重拆）` });
+    } else if (failCount > 0) {
+      this.set({ notice: `分派完成：${okCount} 成功，${failCount} 张已转人工（余卡继续）` });
+    } else {
+      this.set({ notice: `分派完成：${okCount} 张已下发（≤4 路并行，超限排队）` });
+    }
+  }
+
+  /**
+   * S4 双通道分派（只经 continuable/queue；jobs 只读；fork 派生标“派生自<短id>@<seq>”；cold/archived 显式禁派）。
+   * 新任务 create+prompt queue；存量子任务 promptSubagent continuable，one-shot/不可用回退父会话注明。
+   * 分派文案强制五段；返回 true=下发成功，false=该卡转人工（调用方计数）。
+   */
+  private async dispatchOneCard(card: MatchedDispatchCard, sourceSessionId: SessionId | null): Promise<boolean> {
+    const api = this.state.api;
+    if (!api) {
+      setTaskStatus(card.clientTaskId, "review");
+      this.set({ error: `分派失败（未连接）已转人工：${card.title}` });
+      return false;
+    }
+    try {
+      const employees = loadEmployees();
+      const emp = employees.find((e) => e.id === card.assigneeEmployeeId) ?? null;
+      const text = buildDispatchTaskPrompt(card);
+      // cold/archived 显式禁派（沿 -team §6 空态）。
+      const targetSid = emp?.sessionIds?.[0] ? (emp.sessionIds[0] as unknown as SessionId) : null;
+      if (targetSid && this.state.archivedSessionIds.includes(targetSid)) {
+        setTaskStatus(card.clientTaskId, "review");
+        pushAuditRow({
+          requestId: card.clientTaskId,
+          source: "dsh-approval",
+          verdict: "to-human",
+          policyRowId: "dispatch-archived-blocked",
+          ceiling: emp?.ceiling ?? "read-only",
+          decidedAt: Date.now(),
+          evidence: { sessionId: String(targetSid) },
+          reasonRedacted: redactSecrets(`该会话已归档（已自动解绑，仅可读），禁派转人工：${card.title}`),
+          reviewTokens: "unknown",
+          reviewReason: "已归档禁派转人工",
+        });
+        this.set({ notice: `该会话已归档禁派，已转人工：${card.title}` });
+        return false;
+      }
+      // 存量子任务优先：assignee 名下有 continuable 子代理即走 promptSubagent；否则新任务链。
+      if (targetSid) {
+        try {
+          const catalog = this.state.subagentCatalogs.get(targetSid);
+          const cont = catalog?.entries.find((e) => e.kind === "child" && (e as unknown as { mode?: string }).mode !== "one-shot");
+          if (cont) {
+            const childId = (cont as unknown as { childSessionId?: string; sessionId?: string }).childSessionId ?? (cont as unknown as { sessionId: string }).sessionId;
+            if (childId) {
+              const r = await (api as unknown as {
+                subagents: { prompt: (a: unknown, s?: AbortSignal) => Promise<{ result: { ok: boolean; error?: { code: string; message: string } } }> };
+              }).subagents.prompt(
+                {
+                  parentSessionId: targetSid,
+                  childSessionId: childId,
+                  mode: "continuable",
+                  content: [{ type: "text", text }],
+                },
+                new AbortController().signal,
+              );
+              if (r.result.ok) {
+                setTaskStatus(card.clientTaskId, "running", { sessionId: String(targetSid), seq: 0 });
+                return true;
+              }
+              // one-shot/不可用回退父会话 prompt queue 并注明（S4）。
+              const fb = await api.sessions.prompt({
+                sessionId: targetSid,
+                mode: "queue",
+                content: [{ type: "text", text: `${text}\n（注：子代理 continuable 不可用，已回退父会话 queue）` }],
+              } as never);
+              if (fb.result.ok) {
+                setTaskStatus(card.clientTaskId, "running", { sessionId: String(targetSid), seq: 0 });
+                return true;
+              }
+            }
+          }
+        } catch {
+          //  fall through to 新任务链
+        }
+      }
+      // 新任务链：create(workspaceId)+selectModel+prompt queue（select 空白才可否则复用明示：沿 createSession 语义）。
+      const wid = this.state.activeWorkspaceId ?? undefined;
+      const cr = await api.sessions.create({ workspaceId: wid ?? undefined });
+      if (!cr.result.ok) throw new Error(`${cr.result.error.code}: ${cr.result.error.message}`);
+      const newId = cr.result.value.sessionId;
+      // fork 派生标注（派生自<短id>@<seq>；seq 取源会话历史长度兜底 0）。
+      if (sourceSessionId) {
+        try {
+          const hist = this.state.history.get(sourceSessionId);
+          noteFork(String(newId), String(sourceSessionId), Array.isArray(hist) ? hist.length : 0);
+        } catch {
+          // 留痕失败不阻断分派
+        }
+      }
+      // 归属到 assignee（1:N；会话→员工 1:1 双归属拒绝沿 team.ts；此处 best-effort，不抛）。
+      if (emp) {
+        try {
+          const list = loadEmployees();
+          const owner = employeeBySession(list, String(newId));
+          if (!owner) {
+            const { saveEmployees } = await import("../team");
+            saveEmployees(list.map((e) => (e.id === emp.id ? { ...e, sessionIds: [...e.sessionIds, String(newId)] } : e)));
+          }
+        } catch {
+          // ignore
+        }
+      }
+      const sel = this.state.selectedModel;
+      if (sel) {
+        try {
+          await api.sessions.selectModel({
+            sessionId: newId,
+            provider: sel.provider,
+            model: sel.model,
+            reasoningEffort: this.state.selectedReasoning ?? undefined,
+          });
+        } catch {
+          // 模型选择失败不阻断分派
+        }
+      }
+      const pr = await api.sessions.prompt({
+        sessionId: newId,
+        mode: "queue",
+        content: [{ type: "text", text }],
+      } as never);
+      if (!pr.result.ok) throw new Error(`${pr.result.error.code}: ${pr.result.error.message}`);
+      setTaskStatus(card.clientTaskId, "running", { sessionId: String(newId), seq: 0 });
+      void this.refreshSessions().catch(() => {});
+      return true;
+    } catch (e) {
+      // S6 单卡失败→该卡转人工（进申请中心计数即 audit+notice+Trace，余卡继续）。
+      setTaskStatus(card.clientTaskId, "review");
+      pushAuditRow({
+        requestId: card.clientTaskId,
+        source: "dsh-approval",
+        verdict: "to-human",
+        policyRowId: "dispatch-card-failed",
+        ceiling: "read-only",
+        decidedAt: Date.now(),
+        evidence: { sessionId: String(sourceSessionId ?? "") },
+        reasonRedacted: redactSecrets(`单卡分派失败转人工：${card.title}：${String(e).slice(0, 200)}`),
+        reviewTokens: "unknown",
+        reviewReason: String(e).slice(0, 200),
+      });
+      this.set({ notice: `单卡分派失败已转人工（余卡继续）：${card.title}` });
+      return false;
+    }
+  }
+
+  /**
+   * S5 回流（只读 history/projection/queue/jobs 合并；通过/打回必须挂 sessionId+seq 证据；聚合≤5s 窗口）。
+   * N 会话逐个 loadHistory 合并（节流：失败不抛，证据缺失即无证据禁通过由 UI disabled 强制）。
+   */
+  async refreshDispatchEvidence(): Promise<void> {
+    const api = this.state.api;
+    if (!api) return;
+    const cards = listTaskCards().filter((c) => c.status === "running" || c.status === "todo");
+    for (const c of cards) {
+      const ev = c.evidence;
+      if (!ev?.sessionId) continue;
+      try {
+        await this.loadHistory(ev.sessionId as unknown as SessionId, { maxMessages: 20 });
+        const hist = this.state.history.get(ev.sessionId as unknown as SessionId);
+        const seq = Array.isArray(hist) && hist.length > 0 ? hist.length : 0;
+        if (seq > 0 && ev.seq === 0) setTaskStatus(c.clientTaskId, "review", { sessionId: ev.sessionId, seq });
+        else if (seq > 0 && c.status === "running") setTaskStatus(c.clientTaskId, "review", { sessionId: ev.sessionId, seq });
+      } catch {
+        // 回流失败不抛（下次 5s 窗口重试；无证据卡不可标通过）。
+      }
+    }
+  }
+
+  /** S5 验收门：无证据禁通过（沿 PRD-003 FR-T106；question 仅计数不自动判）。 */
+  passDispatchCard(clientTaskId: string): void {
+    const card = listTaskCards().find((c) => c.clientTaskId === clientTaskId);
+    if (!card) return;
+    if (!card.evidence?.sessionId || typeof card.evidence.seq !== "number") {
+      this.set({ error: "无证据不可标通过（需挂 sessionId+seq 回流证据）" });
+      return;
+    }
+    setTaskStatus(clientTaskId, "passed", card.evidence);
+    this.set({ notice: `任务卡已通过（证据 ${card.evidence.sessionId.slice(0, 8)}@${card.evidence.seq}）` });
+  }
+
+  /** S5 打回同样必须挂证据（无证据禁打回，避免幽灵验收）。 */
+  rejectDispatchCard(clientTaskId: string): void {
+    const card = listTaskCards().find((c) => c.clientTaskId === clientTaskId);
+    if (!card) return;
+    if (!card.evidence?.sessionId || typeof card.evidence.seq !== "number") {
+      this.set({ error: "无证据不可打回（需挂 sessionId+seq 回流证据）" });
+      return;
+    }
+    setTaskStatus(clientTaskId, "rejected", card.evidence);
+    this.set({ notice: `任务卡已打回（证据 ${card.evidence.sessionId.slice(0, 8)}@${card.evidence.seq}）` });
+  }
+
   async answerApproval(item: InteractiveItem, outcome: "allowed-once" | "rejected", opts?: { auto?: boolean }): Promise<void> {
     const api = this.requireApi();
     if (item.frame.type !== "approval/requested") return;
@@ -2146,6 +2680,23 @@ class AppStore {
   }
 
   /** PRD-dispatch Q2：保存拆解模型（同 ns 加平行 dispatchModel 字段，一次 updateSettings CAS；默认 follow-default）。 */
+  async saveDispatchModel(
+    patch: DispatchModelSetting,
+    expectedRevision?: number,
+  ): Promise<void> {
+    const clean: DispatchModelSetting =
+      patch.mode === "specified"
+        ? {
+            mode: "specified",
+            ...(patch.provider?.trim() ? { provider: patch.provider.trim() } : {}),
+            ...(patch.model?.trim() ? { model: patch.model.trim() } : {}),
+            ...(patch.reasoningEffort?.trim() ? { reasoningEffort: patch.reasoningEffort.trim() } : {}),
+          }
+        : { mode: "follow-default" };
+    await this.updateSettings("agent-default-model", { dispatchModel: clean }, expectedRevision);
+    await this.loadDefaultModel();
+  }
+
   /** 整体替换命名空间用户层（settings.replace；section={} 即恢复默认）。 */
   async replaceSettings(ns: string, section: object, expectedRevision?: number): Promise<void> {
     const api = this.requireApi();
