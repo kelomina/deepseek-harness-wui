@@ -186,9 +186,13 @@ export function ApprovalCenter({ onClose }: { onClose: () => void }) {
                 <span className={`badge ${r.verdict === "auto-allow" ? "green" : r.verdict === "auto-deny" ? "cond" : "gray"}`}>
                   {r.verdict === "auto-allow" ? "自动批准" : r.verdict === "auto-deny" ? "自动拒绝" : r.verdict === "to-human" ? "转人工" : r.verdict === "human-decided" ? "人工已决" : "已过期"}
                 </span>
+                {r.reviewVerdict && <span className="badge off" title={r.reviewReason ?? ""}>二判 {r.reviewVerdict}</span>}
                 <span className="log-msg">
                   {r.policyRowId} · 天花板 {r.ceiling} · {new Date(r.decidedAt).toLocaleTimeString()} · 证据 {shortId(r.evidence.sessionId)}
                   {r.evidence.seq !== undefined ? `@${r.evidence.seq}` : ""} · {r.reasonRedacted.slice(0, 100)}
+                  {r.reviewModelId ? ` · 模型 ${r.reviewModelId}` : ""}
+                  {r.reviewLatencyMs !== undefined ? ` · ${r.reviewLatencyMs}ms` : ""}
+                  {r.reviewReason ? ` · ${r.reviewReason.slice(0, 200)}` : ""}
                 </span>
                 <span className="log-row-ops">
                   {r.source === "plugin-admit" && r.verdict === "auto-allow" && (

@@ -8,12 +8,37 @@ import { sessionTitle } from "./sessionTitle";
 import { decideApproval } from "../policy";
 import {
   APPROVAL_TIMEOUT_SECS,
+  AUTO_REVIEW_TIMEOUT_SECS,
+  DISPATCH_TIMEOUT_SECS,
+  type AutoReviewRuling,
+  type DispatchDraftCard,
+  type DispatchModelSetting,
+  type MatchedDispatchCard,
+  addTaskCard,
+  buildAutoReviewPrompt,
+  buildDispatchDecomposePrompt,
+  buildDispatchTaskPrompt,
+  buildTitlePrompt,
   ceilingForSession,
+  employeeBySession,
+  fileClassForTool,
+  getRoleTemplate,
+  isAutoReviewEnabled,
+  isAutoReviewValue,
+  listTaskCards,
+  loadEmployees,
   markHumanDecided,
+  matchDispatchCards,
   noteApprovalArrival,
   noteFork,
+  normalizePermissionValue,
+  parseAutoReviewJson,
+  parseDispatchCards,
+  parseTitleText,
   pushAuditRow,
   redactSecrets,
+  setAutoReviewEnabled,
+  setTaskStatus,
 } from "../team";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {
@@ -41,6 +66,74 @@ import type {
   WorkspaceId,
   WorkspaceView,
 } from "@deepseek-ai/dsh-host-apiproxy/api";
+
+/** PRD-004 v1.1：自动审核串行一申请一调用（禁 SQUAD 扇出调用），链式排队。 */
+let autoReviewChain: Promise<void> = Promise.resolve();
+/** 任务#15+#14：取名串行一会话一调用（禁扇出），链式排队；pending 去重防并发重取。 */
+let titleChain: Promise<void> = Promise.resolve();
+const pendingTitles = new Set<string>();
+/** PRD-dispatch S1：拆解串行一拆解一调用（独立于 autoReviewChain，防抢占二判链），链式排队。 */
+let dispatchChain: Promise<void> = Promise.resolve();
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((r) => window.setTimeout(r, ms));
+}
+
+/** 17:30Z HANDOVER：session/page 返回 records（非 value.events），过滤 type=event 取 .event（view 已无，chunks 为在-flight 分片）。 */
+function pageRecordsToHistoryEntries(records: unknown): Array<{ event: unknown }> {
+  const arr = Array.isArray(records) ? (records as Array<Record<string, unknown>>) : [];
+  const out: Array<{ event: unknown }> = [];
+  for (const rec of arr) {
+    if (rec && typeof rec === "object" && (rec as { type?: unknown }).type === "event" && "event" in rec) {
+      out.push({ event: (rec as { event: unknown }).event });
+    }
+  }
+  return out;
+}
+
+function assistantTextFromPageRecords(records: unknown): string {
+  return assistantTextFromEvents(pageRecordsToHistoryEntries(records) as unknown[]);
+}
+
+/** 17:30Z page 错误 hint（重试/退避沿用 connect 语义：仅 401/403/502 退避；404/信封错直给指引）。 */
+function pageErrorHint(msg: string): string {
+  if (msg.includes("HTTP 401")) return "（dsh 401：代理已透传上游详情至 Rust 日志，或尝试设置页“重启 dsh”）";
+  if (msg.includes("HTTP 403")) return "（dsh 403 围栏：确保经 Rust 代理访问，勿直连 dsh 端口）";
+  if (msg.includes("HTTP 502")) return "（dsh 502：服务 starting 或不可用，600/1200/2000ms 退避后重试）";
+  if (msg.includes("HTTP 404")) return "（dsh 404：旧 session/history 已移除（未 claim），现用 session/page；确认运行时为 0.1.2-rc.1 且经 Rust 代理）";
+  if (msg.includes('missing "request"') || (msg.includes("missing") && msg.includes("request")) || msg.includes("arguments-invalid"))
+    return "（信封形状错：session/page 的 args 缺 request 键；最小合法 payload.args={\"request\":{\"address\":{\"kind\":\"session\",\"sessionId\":\"<sid>\"},\"throughSeq\":<cursor/-1>,\"maxMessages\":50}}，wire 键 request 非 _request）";
+  if (msg.includes("bad-request") || (msg.includes("throughSeq") && msg.includes("cursor")))
+    return "（游标错：throughSeq 须≤snapshot.cursor（空日志-1），超 cursor 即 gateway/bad-request；本轮 throughSeq 取自 session/list 行投影 asOfSeq，缺失时先 refresh 后按 -1 探活）";
+  if (msg.includes("signature-invalid") || msg.includes("session/follow") || msg.includes("session/control"))
+    return "（stream 误调：follow/control 禁 callUnary 直调（须走 connection.rpc.open，物理疑 /api/remote.mux），误调即 signature-invalid；历史冷读走 session/page）";
+  return "";
+}
+
+function assistantTextFromEvents(events: unknown[]): string {
+  const texts: string[] = [];
+  for (const e of events as Array<{
+    event?: { type?: string; data?: { message?: { content?: unknown }; content?: unknown } };
+  }>) {
+    const t = e?.event?.type;
+    if (t !== "assistant/message") continue;
+    const data = e?.event?.data as { message?: { content?: unknown }; content?: unknown } | undefined;
+    const content = data?.message?.content ?? data?.content;
+    if (typeof content === "string") {
+      if (content.trim()) texts.push(content);
+    } else if (Array.isArray(content)) {
+      const s = content
+        .map((b) =>
+          b && typeof b === "object" && (b as { type?: string }).type === "text"
+            ? String((b as { text?: unknown }).text ?? "")
+            : "",
+        )
+        .join("");
+      if (s.trim()) texts.push(s);
+    }
+  }
+  return texts.join("\n").trim();
+}
 
 export interface HostDescription {
   version: string;
@@ -106,11 +199,23 @@ export interface AppState {
   modelGroups: ModelProviderGroup[] | null;
   /** 全局默认模型（agent-default-model 命名空间；null=命名空间不存在或未加载）。 */
   defaultModel: DefaultModelView | null;
+  /** PRD-004 v1.1 自动审核模型（同 agent-default-model ns 平行 autoReview 字段；value null=容忍关闭）。 */
+  autoReviewModel: DefaultModelView | null;
+  /** 任务#15+#14 标题取名模型（同 agent-default-model ns 平行 titleModel 字段；value null=不自动取名，零打扰）。 */
+  titleModel: DefaultModelView | null;
+  /** PRD-dispatch Q2 拆解模型（同 ns 平行 dispatchModel；setting null=跟随默认；mode 默认 follow-default）。 */
+  dispatchModel: DispatchModelView | null;
+  /** PRD-dispatch S3 待确认分派单（null=无待确认；确认后才 claimClientTaskId 幂等领取）。 */
+  pendingDispatch: PendingDispatch | null;
+  /** PRD-dispatch S1 拆解中（串行一拆解一调用，禁扇出）。 */
+  dispatchBusy: boolean;
   history: Map<SessionId, unknown[]>;
   streams: Map<SessionId, LiveStream>;
   archivedSessionIds: SessionId[];
   agentPresets: AgentPresetEntry[] | null;
   agentPresetsMeta: AgentPresetMeta | null;
+  /** agentPresets/list 独立错误（与“未连接”区分，设置页重试用）。 */
+  agentPresetsError: string | null;
   pendingAgentPreset: string | null;
   sessionPermissions: Map<SessionId, PermissionSelect>;
   /** 会话当前模型 id 缓存（用于 V4-Pro 思维链检测等按会话功能）。 */
@@ -156,6 +261,7 @@ const initialState: AppState = {
   logs: [],
   api: null,
   connected: false,
+  gatewayUp: false,
   host: null,
   workspaces: [],
   sessions: [],
@@ -170,11 +276,17 @@ const initialState: AppState = {
   selectedReasoning: null,
   modelGroups: null,
   defaultModel: null,
+  autoReviewModel: null,
+  titleModel: null,
+  dispatchModel: null,
+  pendingDispatch: null,
+  dispatchBusy: false,
   history: new Map(),
   streams: new Map(),
   archivedSessionIds: [],
   agentPresets: null,
   agentPresetsMeta: null,
+  agentPresetsError: null,
   pendingAgentPreset: null,
   sessionPermissions: new Map(),
   sessionModels: new Map(),
@@ -296,27 +408,72 @@ class AppStore {
     const api = new DshApiClient(`http://127.0.0.1:${proxyPort}`);
     const abort = new AbortController();
     this.abort = abort;
-    this.set({ api, connected: false, error: null });
-    try {
-      const desc = await api.host.describe({});
-      if (desc.result.ok) this.set({ host: desc.result.value as HostDescription });
-      const ws = await api.workspace.list({});
-      if (ws.result.ok) this.set({ workspaces: ws.result.value.items, archivedSessionIds: ws.result.value.archivedSessionIds });
-      const sess = await api.sessions.list({});
-      if (sess.result.ok) {
+    this.set({ api, connected: false, gatewayUp: false, error: null });
+    // 0.1.2-rc.1 Typert 网关：host 命名空间已移除（host.describe→404），首包改用
+    // session/list 探活（slash + {args:{_request:{}}} 由 client.ts 垫片翻译；仍经 Rust 代理，
+    // BrowserAuth cookie 由代理注入）。Starting 窗口 401 仍指数退避重试；404 为
+    // 确定性版本错位，不重试直给指引；missing _request 归信封形状错（15:30Z）。
+    const maxAttempts = 3;
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (abort.signal.aborted) break;
+      try {
+        const sess = await api.sessions.list({});
+        if (!sess.result.ok) throw new Error(`session/list 业务失败: ${sess.result.error.code}: ${sess.result.error.message}`);
         this.set({ sessions: sess.result.value.items, sessionTitles: this.seedSessionTitles(sess.result.value.items) });
+        // host.describe 已移除：置 null（UI 均为 nullable-safe，回退到 session.cwd）。
+        this.set({ host: null });
+        // workspace/list 在新网关未 claim（404）：best-effort，不阻断 connected。
+        try {
+          const ws = await api.workspace.list({});
+          if (ws.result.ok) this.set({ workspaces: ws.result.value.items, archivedSessionIds: ws.result.value.archivedSessionIds });
+        } catch {
+          // workspace 降级：保持空列表，后续 refreshWorkspaces 重试
+        }
+        void this.loadAgentPresets();
+        void this.loadDefaultModel();
+        this.set({ connected: true, gatewayUp: true, agentPresetsError: null });
+        void this.loadModels();
+        if (this.state.selectedSessionId) {
+          void this.loadHistory(this.state.selectedSessionId).catch((e) => this.set({ error: `历史加载失败: ${String(e)}` }));
+        }
+        void this.pump(api.events.mux({}, abort.signal), "mux");
+        void this.pump(api.events.host({}, abort.signal), "host");
+        return;
+      } catch (e) {
+        lastError = e;
+        const msg = String(e);
+        const isNotFound = msg.includes("HTTP 404");
+        const isTransport = !isNotFound && (msg.includes("transport failure") || msg.includes("HTTP 401") || msg.includes("HTTP 403") || msg.includes("HTTP 502"));
+        if (abort.signal.aborted) break;
+        if (isTransport && attempt < maxAttempts) {
+          const delay = attempt === 1 ? 600 : attempt === 2 ? 1200 : 2000;
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
+        const hint = msg.includes("HTTP 401")
+          ? `（dsh 返回 401：代理已透传上游 401 详情至 Rust 日志；请在设置页查看“代理端口 ${proxyPort} / dsh 端口 ${this.state.status?.port ?? "?"}”并检查 %USERPROFILE%\\.dsh\\logs\\harness.log 尾部，或尝试设置页“重启 dsh”）`
+          : msg.includes("HTTP 403")
+            ? `（dsh 403 围栏：确保经 Rust 代理访问，勿直连 dsh 端口；代理 ${proxyPort}→dsh ${this.state.status?.port ?? "?"}}）`
+            : (msg.includes('missing "_request"') || (msg.includes("missing") && msg.includes("_request")) || msg.includes("arguments-invalid"))
+              ? `（信封形状错：session/list 的 args 缺 _request 键（网关 assertExactArguments）；最小合法信封 payload.args={"_request":{}}（cursor 可选），前端垫片已补，仍报错请抓包核对 wire；仍经 Rust 代理，勿直连 dsh 端口）`
+              : isNotFound
+              ? `（dsh 返回 404 not found：方法不存在/版本错位；前端已切 slash + {args}（0.1.2-rc.1 Typert 网关），首包现用 session/list 探活（host.describe 已移除）；请确认运行时为 0.1.2-rc.1 且经 Rust 代理访问（代理 ${proxyPort}→dsh ${this.state.status?.port ?? "?"}），勿直连 dsh 端口）`
+              : "";
+        this.set({ error: `连接失败: ${msg}${hint}`, connected: false, gatewayUp: false, api: null });
+        // 同步写前端内存环形日志，便于 LogPanel 导出复查（BUG-13 已定性仅内存，此处补一句落盘提示由用户手动导出）
+        try {
+          const { logger } = await import("../logger");
+          logger.error("ui", `connect 失败（attempt ${attempt}/${maxAttempts}）：${msg}${hint}`, e);
+        } catch {
+          // ignore logger import failure
+        }
+        return;
       }
-      void this.loadAgentPresets();
-      void this.loadDefaultModel();
-      this.set({ connected: true });
-      void this.loadModels();
-      if (this.state.selectedSessionId) {
-        void this.loadHistory(this.state.selectedSessionId).catch((e) => this.set({ error: `历史加载失败: ${String(e)}` }));
-      }
-      void this.pump(api.events.mux({}, abort.signal), "mux");
-      void this.pump(api.events.host({}, abort.signal), "host");
-    } catch (e) {
-      this.set({ error: `连接失败: ${String(e)}`, connected: false, api: null });
+    }
+    // 理论不可达：循环内已 return；兜底
+    if (lastError !== null) {
+      this.set({ error: `连接失败: ${String(lastError)}`, connected: false, gatewayUp: false, api: null });
     }
   }
 
@@ -326,6 +483,7 @@ class AppStore {
     this.set({
       api: null,
       connected: false,
+      gatewayUp: false,
       host: null,
       workspaces: [],
       sessions: [],
@@ -339,6 +497,11 @@ class AppStore {
       stopEvidence: {},
       notice: null,
       defaultModel: null,
+      autoReviewModel: null,
+      titleModel: null,
+      dispatchModel: null,
+      pendingDispatch: null,
+      dispatchBusy: false,
       searchResults: null,
       searchDisabled: false,
       searching: false,
@@ -363,7 +526,8 @@ class AppStore {
     } catch (e) {
       this.set({ error: `事件流中断: ${String(e)}` });
     } finally {
-      if (this.abort) this.set({ connected: false });
+      // 事件流结束不清 connected/gatewayUp：单路 WS 中断≠网关不可达（unary 仍可用）；
+      // 真停机由 status 轮询 syncConnection→disconnect 清理，避免会话正常时设置页误报“未连接”。
     }
   }
 
@@ -412,9 +576,9 @@ class AppStore {
         break;
       }
       case "approval/requested": {
-        // PRD-003 v1.1 域②拦截器（approval/requested → interactives 之前一层）：
-        // allow 自动 answerApproval(allowed-once)，deny 自动 rejected，余下进人工；
-        // question 不进自动审核（仅黑板计数）。超时 60s 置顶 + notice，不自动批。
+        // PRD-003 v1.1 域②拦截器 + PRD-004 v1.1 FR-M203 裁决管线：
+        // deny 先行（不进模型）→ ask灰带/allow复核进模型二判（隔离会话降级）→ fail-closed 转人工。
+        // 仅 autoReview.enabled 才进二判，否则走 PRD-003 原三判；question 仍不进管线。
         const req = frame as unknown as { sessionId: SessionId; approvalId: string; toolName?: string; reason?: string };
         const sess = this.state.sessions.find((s) => s.sessionId === req.sessionId);
         const ceiling = ceilingForSession(req.sessionId);
@@ -429,54 +593,151 @@ class AppStore {
         });
         const redacted = redactSecrets(req.reason ?? "");
         noteApprovalArrival(String(req.approvalId));
-        if (decision.verdict === "allow" || decision.verdict === "deny") {
-          const outcome = decision.verdict === "allow" ? "allowed-once" : "rejected";
+        const autoReviewOn = isAutoReviewEnabled();
+        // deny 先行：任何模式不进模型，直接拒绝（FR-M203 第一段）。
+        if (decision.verdict === "deny") {
           const autoItem: InteractiveItem = { rpcId: envelope.rpcId, kind: "approval", sessionId: req.sessionId, frame };
           pushAuditRow({
             requestId: String(req.approvalId),
             source: "dsh-approval",
-            verdict: decision.verdict === "allow" ? "auto-allow" : "auto-deny",
+            verdict: "auto-deny",
             policyRowId: decision.rowId,
             ceiling,
             decidedAt: Date.now(),
             evidence: { sessionId: req.sessionId, rpcId: String(envelope.rpcId) },
             reasonRedacted: redacted,
+            reviewVerdict: "deny-auto",
+            pipelineMs: 0,
           });
-          void this.answerApproval(autoItem, outcome, { auto: true }).catch((e) =>
+          void this.answerApproval(autoItem, "rejected", { auto: true }).catch((e) =>
             this.set({ error: `自动审核应答失败: ${String(e)}` }),
           );
-          this.set({ notice: `${decision.verdict === "allow" ? "已自动批准" : "已自动拒绝"} ${req.toolName ?? ""}（${decision.rowId}）` });
+          this.set({ notice: `已自动拒绝 ${req.toolName ?? ""}（${decision.rowId}）` });
           break;
         }
-        pushAuditRow({
-          requestId: String(req.approvalId),
-          source: "dsh-approval",
-          verdict: "to-human",
+        // 非 auto-review：沿 PRD-003 原三判（allow 自动批，其余转人工）。
+        if (!autoReviewOn) {
+          if (decision.verdict === "allow") {
+            const autoItem: InteractiveItem = { rpcId: envelope.rpcId, kind: "approval", sessionId: req.sessionId, frame };
+            pushAuditRow({
+              requestId: String(req.approvalId),
+              source: "dsh-approval",
+              verdict: "auto-allow",
+              policyRowId: decision.rowId,
+              ceiling,
+              decidedAt: Date.now(),
+              evidence: { sessionId: req.sessionId, rpcId: String(envelope.rpcId) },
+              reasonRedacted: redacted,
+            });
+            void this.answerApproval(autoItem, "allowed-once", { auto: true }).catch((e) =>
+              this.set({ error: `自动审核应答失败: ${String(e)}` }),
+            );
+            this.set({ notice: `已自动批准 ${req.toolName ?? ""}（${decision.rowId}）` });
+            break;
+          }
+          this.enterHumanApproval(req, frame, envelope, decision, ceiling, redacted, null);
+          break;
+        }
+        // auto-review 二判：ask 灰带 + allow 复核进模型；未配置模型即降级人工（禁静默顶替）。
+        const autoVal = this.state.autoReviewModel?.value ?? null;
+        if (!autoVal || !autoVal.provider || !autoVal.model) {
+          this.enterHumanApproval(req, frame, envelope, decision, ceiling, redacted, {
+            reviewVerdict: "manual",
+            reviewReason: "未配置审核模型，已降级人工",
+          });
+          this.set({ notice: "未配置审核模型，已降级人工" });
+          break;
+        }
+        // Windows 边界双查已在 decideApproval 覆盖（deny 先行不浪费模型调用）。
+        const toolName = req.toolName ?? "unknown";
+        const workspaceRoot = sess?.cwd ?? this.state.host?.cwd ?? null;
+        const owner = employeeBySession(loadEmployees(), String(req.sessionId));
+        const prompt = buildAutoReviewPrompt({
+          tool: toolName,
+          scope: workspaceRoot ? "工作区内" : "未知",
+          fileClass: fileClassForTool(toolName),
           policyRowId: decision.rowId,
           ceiling,
-          decidedAt: Date.now(),
-          evidence: { sessionId: req.sessionId, rpcId: String(envelope.rpcId) },
-          reasonRedacted: redacted,
+          role: owner ? `${owner.name}(${owner.role})` : "unassigned",
+          reasonSnippet: req.reason ?? "",
         });
-        this.set({
-          interactives: [
-            ...this.state.interactives.filter(
-              (i) => !(i.kind === "approval" && i.frame.type === "approval/requested" && i.frame.approvalId === frame.approvalId),
-            ),
-            { rpcId: envelope.rpcId, kind: "approval", sessionId: frame.sessionId, frame },
-          ],
-        });
-        window.setTimeout(() => {
-          const still = this.state.interactives.find(
-            (i) => i.kind === "approval" && i.frame.type === "approval/requested" && i.frame.approvalId === req.approvalId,
-          );
-          if (still) {
-            this.set({
-              interactives: [still, ...this.state.interactives.filter((i) => i !== still)],
-              notice: `申请 ${req.toolName ?? ""} 已等待超过 ${APPROVAL_TIMEOUT_SECS}s，仍为待判并置顶（不自动批）`,
+        const modelId = `${autoVal.provider}/${autoVal.model}`;
+        const started = Date.now();
+        this.set({ notice: `自动审核中 ${toolName}（${modelId}）…` });
+        void this.runAutoReviewSecondPass(prompt, autoVal).then((res) => {
+          const pipelineMs = Date.now() - started;
+          if (!res || !res.ruling) {
+            // abstain/超时60s/空回合/错误一律转人工（fail-closed，不自动批）。
+            this.enterHumanApproval(req, frame, envelope, decision, ceiling, redacted, {
+              reviewVerdict: res?.abstain ? "abstain" : "manual",
+              reviewModelId: modelId,
+              reviewLatencyMs: res?.latencyMs,
+              reviewTokens: "unknown",
+              reviewReason: res?.abstain ? res.rulingReason ?? "abstain，转人工" : "二判失败，已转人工",
+              pipelineMs,
+            });
+            return;
+          }
+          const { ruling, latencyMs } = res;
+          const reasonClean = redactSecrets(ruling.reason ?? "").slice(0, 200);
+          if (ruling.verdict === "allow") {
+            const autoItem: InteractiveItem = { rpcId: envelope.rpcId, kind: "approval", sessionId: req.sessionId, frame };
+            pushAuditRow({
+              requestId: String(req.approvalId),
+              source: "dsh-approval",
+              verdict: "auto-allow",
+              policyRowId: decision.rowId,
+              ceiling,
+              decidedAt: Date.now(),
+              evidence: { sessionId: req.sessionId, rpcId: String(envelope.rpcId) },
+              reasonRedacted: redacted,
+              reviewVerdict: "allow",
+              reviewModelId: modelId,
+              reviewLatencyMs: latencyMs,
+              reviewTokens: "unknown",
+              reviewReason: reasonClean,
+              reviewRisk: ruling.risk,
+              pipelineMs,
+            });
+            void this.answerApproval(autoItem, "allowed-once", { auto: true }).catch((e) =>
+              this.set({ error: `自动审核应答失败: ${String(e)}` }),
+            );
+            this.set({ notice: `自动审核已批准 ${toolName}（${modelId}）` });
+          } else if (ruling.verdict === "reject") {
+            const autoItem: InteractiveItem = { rpcId: envelope.rpcId, kind: "approval", sessionId: req.sessionId, frame };
+            pushAuditRow({
+              requestId: String(req.approvalId),
+              source: "dsh-approval",
+              verdict: "auto-deny",
+              policyRowId: decision.rowId,
+              ceiling,
+              decidedAt: Date.now(),
+              evidence: { sessionId: req.sessionId, rpcId: String(envelope.rpcId) },
+              reasonRedacted: redacted,
+              reviewVerdict: "reject",
+              reviewModelId: modelId,
+              reviewLatencyMs: latencyMs,
+              reviewTokens: "unknown",
+              reviewReason: reasonClean,
+              reviewRisk: ruling.risk,
+              pipelineMs,
+            });
+            void this.answerApproval(autoItem, "rejected", { auto: true }).catch((e) =>
+              this.set({ error: `自动审核应答失败: ${String(e)}` }),
+            );
+            this.set({ notice: `自动审核已拒绝 ${toolName}（${modelId}）` });
+          } else {
+            this.enterHumanApproval(req, frame, envelope, decision, ceiling, redacted, {
+              reviewVerdict: "abstain",
+              reviewModelId: modelId,
+              reviewLatencyMs: latencyMs,
+              reviewTokens: "unknown",
+              reviewReason: reasonClean,
+              reviewRisk: ruling.risk,
+              pipelineMs,
             });
           }
-        }, APPROVAL_TIMEOUT_SECS * 1000);
+        });
         break;
       }
       case "approval/resolved":
@@ -673,7 +934,7 @@ class AppStore {
       const preset = this.state.pendingAgentPreset;
       if (preset) {
         try {
-          await api.agentPresets.select({ sessionId: id, agentPreset: preset });
+          await api.agentPresetsSelect({ agentId: id, agentPreset: preset });
         } catch (e) {
           this.set({ error: `Agent 模式应用失败: ${String(e)}` });
         }
@@ -703,6 +964,14 @@ class AppStore {
     if (!r.result.ok) {
       this.set({ error: `发送失败: ${r.result.error.code}: ${r.result.error.message}` });
       return;
+    }
+    // 任务#15+#14：首条文本触发自动取名（未配置=零打扰；已有标题跳过；fire-and-forget）。
+    if (text.trim()) {
+      try {
+        this.autoTitleSession(sessionId, text);
+      } catch {
+        // 零打扰
+      }
     }
     window.setTimeout(() => {
       void this.loadHistory(sessionId).catch(() => {});
@@ -871,28 +1140,74 @@ class AppStore {
   }
 
 
-  async loadHistory(sessionId: SessionId): Promise<void> {
+  /** 17:30Z：session/list 行投影 asOfSeq 即 snapshot.cursor（空日志-1），供 page throughSeq 用。 */
+  private throughSeqForSession(sessionId: SessionId): number | null {
+    const s = this.state.sessions.find((x) => x.sessionId === sessionId) as unknown as
+      | { projections?: { asOfSeq?: unknown } }
+      | undefined;
+    const v = s?.projections?.asOfSeq;
+    return typeof v === "number" && Number.isInteger(v) && v >= -1 ? v : null;
+  }
+
+  /** 17:30Z：隔离会话（auto-review 二判）轮询读尾：每次先 refresh 取最新 asOfSeq 作 throughSeq 再 page（cursor 随回合增长，仍经代理）。失败返回 null（调用方 continue/转人工，不抛）。 */
+  private async isolationAssistantText(api: DshApiClient, isoId: SessionId, maxMessages: number): Promise<string | null> {
+    try {
+      try {
+        await this.refreshSessions();
+      } catch {
+        // ignore，fallback 用州内旧 cursor/-1
+      }
+      const throughSeq = this.throughSeqForSession(isoId) ?? -1;
+      const r = await (api as unknown as {
+        sessionPage: (req: unknown) => Promise<{ result: { ok: boolean; value?: unknown } }>;
+      }).sessionPage({ address: { kind: "session", sessionId: isoId as string }, throughSeq, maxMessages });
+      if (!r.result.ok) return null;
+      const text = assistantTextFromPageRecords((r.result.value as { records?: unknown }).records ?? []);
+      return text ? text : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 17:30Z：旧 sessions.history 已移除→session/page（unary 冷读）；page 无 projections，投影改源 follow snapshot（拿不到先保历史可读，另注）。 */
+  async loadHistory(sessionId: SessionId, opts?: { beforeSeq?: number; maxMessages?: number }): Promise<void> {
     const api = this.requireApi();
-    const r = await api.sessions.history({ sessionId, maxMessages: 200 });
+    const maxMessages = opts?.maxMessages ?? 200;
+    const beforeSeq = opts?.beforeSeq;
+    let throughSeq = this.throughSeqForSession(sessionId);
+    if (throughSeq === null) {
+      try {
+        await this.refreshSessions();
+        throughSeq = this.throughSeqForSession(sessionId);
+      } catch {
+        // ignore，fallback -1 探活
+      }
+      if (throughSeq === null) throughSeq = -1;
+    }
+    let r: { result: { ok: boolean; value?: unknown; error?: { code: string; message: string } } };
+    try {
+      r = (await (api as unknown as {
+        sessionPage: (req: unknown) => Promise<{ result: { ok: boolean; value?: unknown; error?: { code: string; message: string } } }>;
+      }).sessionPage({
+        address: { kind: "session", sessionId: sessionId as string },
+        throughSeq,
+        ...(typeof beforeSeq === "number" ? { beforeSeq } : {}),
+        maxMessages,
+      })) as typeof r;
+    } catch (e) {
+      const msg = String(e);
+      throw new Error(`session/page 失败${pageErrorHint(msg)}: ${msg}`);
+    }
     if (r.result.ok) {
+      const records = (r.result.value as { records?: unknown }).records ?? [];
+      const entries = pageRecordsToHistoryEntries(records);
       const history = new Map(this.state.history);
-      history.set(sessionId, r.result.value.events);
-      const patch: Partial<AppState> = { history };
-      // 会话权限投影（tail 页 projections.values.permissions）
-      const proj = r.result.value.projections as { asOfSeq?: number; values?: Record<string, unknown> } | undefined;
-      const perm = proj?.values?.permissions as PermissionSelect | undefined;
-      if (perm) {
-        const m = new Map(this.state.sessionPermissions);
-        m.set(sessionId, perm);
-        patch.sessionPermissions = m;
-      }
-      this.set(patch);
-      // 投影基线播种：tail 页 asOfSeq 之下全量入投影存储（higher-seq-wins 防回退）
-      if (proj && typeof proj.asOfSeq === "number") {
-        for (const [key, value] of Object.entries(proj.values ?? {})) {
-          this.applyProjection(sessionId, key, value, proj.asOfSeq);
-        }
-      }
+      history.set(sessionId, entries as unknown[]);
+      // page 无 projections：权限/基线播种改源 follow snapshot（stream 载体待后端另单确认代理路径，本轮先保历史可读）。
+      this.set({ history });
+    } else {
+      const err = (r.result as { error: { code: string; message: string } }).error;
+      throw new Error(`session/page 业务失败${pageErrorHint(`${err.code}: ${err.message}`)}: ${err.code}: ${err.message}`);
     }
   }
 
@@ -950,6 +1265,130 @@ class AppStore {
     await this.refreshWorkspaces();
   }
 
+  /** PRD-004 FR-M203 第三段 fail-closed：转人工（进 interactives + 红点 + notice + 置顶，不自动批）。 */
+  private enterHumanApproval(
+    req: { sessionId: SessionId; approvalId: string; toolName?: string },
+    frame: MuxFrame,
+    envelope: { rpcId: RpcId },
+    decision: { rowId: string },
+    ceiling: string,
+    redacted: string,
+    review: {
+      reviewVerdict?: "allow" | "reject" | "abstain" | "deny-auto" | "manual";
+      reviewModelId?: string;
+      reviewLatencyMs?: number;
+      reviewTokens?: string;
+      reviewReason?: string;
+      reviewRisk?: "low" | "med" | "high";
+      pipelineMs?: number;
+    } | null,
+  ): void {
+    pushAuditRow({
+      requestId: String(req.approvalId),
+      source: "dsh-approval",
+      verdict: "to-human",
+      policyRowId: decision.rowId,
+      ceiling,
+      decidedAt: Date.now(),
+      evidence: { sessionId: req.sessionId, rpcId: String(envelope.rpcId) },
+      reasonRedacted: redacted,
+      ...(review ?? {}),
+    });
+    this.set({
+      interactives: [
+        ...this.state.interactives.filter(
+          (i) => !(i.kind === "approval" && i.frame.type === "approval/requested" && (i.frame as unknown as { approvalId: string }).approvalId === (frame as unknown as { approvalId: string }).approvalId),
+        ),
+        { rpcId: envelope.rpcId, kind: "approval", sessionId: req.sessionId, frame: frame as InteractiveItem["frame"] },
+      ],
+    });
+    window.setTimeout(() => {
+      const still = this.state.interactives.find(
+        (i) => i.kind === "approval" && i.frame.type === "approval/requested" && (i.frame as unknown as { approvalId: string }).approvalId === req.approvalId,
+      );
+      if (still) {
+        this.set({
+          interactives: [still, ...this.state.interactives.filter((i) => i !== still)],
+          notice: `申请 ${req.toolName ?? ""} 已等待超过 ${APPROVAL_TIMEOUT_SECS}s，仍为待判并置顶（不自动批）`,
+        });
+      }
+    }, APPROVAL_TIMEOUT_SECS * 1000);
+  }
+
+  /**
+   * PRD-004 FR-M203 第二段模型二判（降级通道：sendPrompt 新隔离会话一申请一调用）。
+   * llm.* 仅 providers/models/discoverModels，无 completion 直调（已确认），故走降级。
+   * 输出严格 JSON；abstain/超时60s/空回合/错误一律返回 null（调用方转人工，禁假裁决）。
+   */
+  private runAutoReviewSecondPass(
+    prompt: string,
+    model: { provider: string; model: string; reasoningEffort?: string },
+  ): Promise<{ ruling: AutoReviewRuling; latencyMs: number } | { ruling: null; abstain: boolean; rulingReason?: string; latencyMs?: number } | null> {
+    const task = (async () => {
+      const api = this.state.api;
+      if (!api) return null;
+      const t0 = Date.now();
+      try {
+        const cr = await api.sessions.create({});
+        if (!cr.result.ok) return null;
+        const isoId = cr.result.value.sessionId;
+        try {
+          await api.sessions.selectModel({
+            sessionId: isoId,
+            provider: model.provider,
+            model: model.model,
+            reasoningEffort: model.reasoningEffort ?? undefined,
+          } as never).catch(() => undefined);
+        } catch {
+          // 选模型失败不阻断，沿用会话默认（仍须二判，失败则转人工）
+        }
+        const pr = await api.sessions.prompt({
+          sessionId: isoId,
+          mode: "queue",
+          content: [{ type: "text", text: prompt }],
+        } as never);
+        if (!pr.result.ok) return null;
+        const deadline = t0 + AUTO_REVIEW_TIMEOUT_SECS * 1000;
+        let firstBad: string | null = null;
+        while (Date.now() < deadline) {
+          await sleepMs(2000);
+          try {
+            // 17:30Z：隔离会话轮询改 session/page（throughSeq 取最新 asOfSeq，records 取 event；仍经代理）。
+            const text = await this.isolationAssistantText(api, isoId, 20);
+            if (!text) continue;
+            const ruling = parseAutoReviewJson(text);
+            if (ruling) return { ruling, latencyMs: Date.now() - t0 };
+            // JSON 破损：记一次，重试≤1 次仍败转人工（不发第二遍 prompt，只重读一次）。
+            if (firstBad === null) {
+              firstBad = text;
+              await sleepMs(2000);
+              try {
+                const text2 = await this.isolationAssistantText(api, isoId, 20);
+                if (text2) {
+                  const ruling2 = parseAutoReviewJson(text2);
+                  if (ruling2) return { ruling: ruling2, latencyMs: Date.now() - t0 };
+                }
+              } catch {
+                // ignore, fall through to null
+              }
+              return { ruling: null, abstain: false, rulingReason: "JSON解析失败，已转人工", latencyMs: Date.now() - t0 };
+            }
+          } catch {
+            return null;
+          }
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    })();
+    // 串行：链式排队，前一判完成才开始下一判。
+    const chained = autoReviewChain.then(() => task);
+    autoReviewChain = chained.then(() => undefined).catch(() => undefined);
+    return chained;
+  }
+
+  /* ---------------- PRD-dispatch S1~S6 全管线（零新增 invoke/事件，仍经代理） ---------------- */
   async answerApproval(item: InteractiveItem, outcome: "allowed-once" | "rejected", opts?: { auto?: boolean }): Promise<void> {
     const api = this.requireApi();
     if (item.frame.type !== "approval/requested") return;
@@ -1007,10 +1446,55 @@ class AppStore {
   }
 
   async listProviders(): Promise<ConfigurableProviderView[]> {
-    const api = this.requireApi();
-    const r = await api.llm.providers({});
-    if (r.result.ok) return r.result.value.providers;
-    throw new Error(`获取模型提供商失败: ${r.result.error.code}: ${r.result.error.message}`);
+    // 21:00Z HANDOVER：旧 llm.providers 合并已删（POST /api/llm/providers→404），新链
+    // llm/listProviders（活路由 [{id,name}]）+ llm/listConfigurableProviders（目录
+    // [{provider,displayName,settingsNs,settingsPath,declared?}]）经 join（active=注册含 route，
+    // 声明行在前、无声明活路由追加，即旧 providers 等价）。仍经 Rust 代理，不直连 3080。
+    const api = this.requireApi() as unknown as {
+      llmListProviders: () => Promise<{ result: { ok: boolean; value?: unknown; error?: { code: string; message: string } } }>;
+      llmListConfigurableProviders: () => Promise<{ result: { ok: boolean; value?: unknown; error?: { code: string; message: string } } }>;
+    };
+    const [reg, dir] = await Promise.all([api.llmListProviders(), api.llmListConfigurableProviders()]);
+    if (!reg.result.ok) {
+      const e = (reg.result as { error: { code: string; message: string } }).error;
+      throw new Error(`获取活路由失败: ${e.code}: ${e.message}`);
+    }
+    if (!dir.result.ok) {
+      const e = (dir.result as { error: { code: string; message: string } }).error;
+      throw new Error(`获取提供商目录失败: ${e.code}: ${e.message}`);
+    }
+    const regVal = reg.result.value as unknown;
+    const registered: Array<{ id: string; name?: string }> = Array.isArray(regVal)
+      ? (regVal as Array<{ id: string; name?: string }>)
+      : Array.isArray((regVal as { providers?: unknown })?.providers)
+        ? ((regVal as { providers: Array<{ id: string; name?: string }> }).providers)
+        : [];
+    const dirVal = dir.result.value as unknown;
+    const directory: Array<{ provider: string; displayName: string; settingsNs: string; settingsPath: string[]; declared?: boolean }> =
+      Array.isArray(dirVal)
+        ? (dirVal as Array<{ provider: string; displayName: string; settingsNs: string; settingsPath: string[]; declared?: boolean }>)
+        : Array.isArray((dirVal as { providers?: unknown })?.providers)
+          ? ((dirVal as { providers: Array<{ provider: string; displayName: string; settingsNs: string; settingsPath: string[]; declared?: boolean }> }).providers)
+          : [];
+    const liveSet = new Set(registered.map((r) => r.id));
+    const out: ConfigurableProviderView[] = directory.map((d) => ({
+      ...(d as unknown as ConfigurableProviderView),
+      active: liveSet.has(d.provider),
+    }));
+    for (const r of registered) {
+      if (!directory.some((d) => d.provider === r.id)) {
+        const isDeepseek = /deepseek/i.test(r.id) || /deepseek/i.test(r.name ?? "");
+        out.push({
+          provider: r.id,
+          displayName: r.name ?? r.id,
+          settingsNs: isDeepseek ? "llm-deepseek" : "llm-pi-ai",
+          settingsPath: isDeepseek ? [] : [r.id],
+          active: true,
+          declared: false,
+        } as unknown as ConfigurableProviderView);
+      }
+    }
+    return out;
   }
 
   async describeCredentials(refs: string[]): Promise<Record<string, CredentialView>> {
@@ -1037,10 +1521,21 @@ class AppStore {
   }
 
   async discoverModels(opts: { settingsNs: string; provider?: string; baseURL?: string; api?: string; apiKey?: string }): Promise<DiscoveredModelView[]> {
-    const api = this.requireApi();
-    const r = await api.llm.discoverModels(opts);
-    if (r.result.ok) return r.result.value.models;
-    throw new Error(`探测失败: ${r.result.error.message || r.result.error.code}`);
+    // 21:00Z HANDOVER：旧扁平 discoverModels({settingsNs,provider?,baseURL?,api?,apiKey?}) 已拆键，
+    // 新形 args:{settingsNs,request:{provider?,baseURL?,api?,apiKey?}}（wire 拆出首键 settingsNs）。
+    // 仍经 Rust 代理，不直连 3080。
+    const api = this.requireApi() as unknown as {
+      llmDiscoverModels: (args: { settingsNs: string; request: { provider?: string; baseURL?: string; api?: string; apiKey?: string } }) => Promise<{ result: { ok: boolean; value?: unknown; error?: { code: string; message: string } } }>;
+    };
+    const request: { provider?: string; baseURL?: string; api?: string; apiKey?: string } = {};
+    if (opts.provider !== undefined) request.provider = opts.provider;
+    if (opts.baseURL !== undefined) request.baseURL = opts.baseURL;
+    if (opts.api !== undefined) request.api = opts.api;
+    if (opts.apiKey !== undefined) request.apiKey = opts.apiKey;
+    const r = await api.llmDiscoverModels({ settingsNs: opts.settingsNs, request });
+    if (r.result.ok) return (r.result.value as { models: DiscoveredModelView[] }).models;
+    const e = (r.result as { error: { code: string; message: string } }).error;
+    throw new Error(`探测失败: ${e.message || e.code}`);
   }
 
   async loadModels(): Promise<void> {
@@ -1053,10 +1548,15 @@ class AppStore {
   }
 
   async listModels(): Promise<ModelProviderGroup[]> {
-    const api = this.requireApi();
-    const r = await api.llm.models({});
-    if (r.result.ok) return r.result.value.groups;
-    throw new Error(`获取模型目录失败: ${r.result.error.code}: ${r.result.error.message}`);
+    // 21:00Z HANDOVER：旧 llm.models → session/modelCatalog 超集（含 default+routableProviders），取 groups。
+    // 信封 POST /api/session/modelCatalog + payload:{args:{}}，仍经 Rust 代理。
+    const api = this.requireApi() as unknown as {
+      sessionModelCatalog: () => Promise<{ result: { ok: boolean; value?: unknown; error?: { code: string; message: string } } }>;
+    };
+    const r = await api.sessionModelCatalog();
+    if (r.result.ok) return (r.result.value as { groups: ModelProviderGroup[] }).groups;
+    const e = (r.result as { error: { code: string; message: string } }).error;
+    throw new Error(`获取模型目录失败: ${e.code}: ${e.message}`);
   }
 
   setSelectedReasoning(id: string | null): void {
@@ -1212,17 +1712,30 @@ class AppStore {
   async loadAgentPresets(): Promise<void> {
     const api = this.requireApi();
     try {
-      const r = await api.agentPresets.list({});
+      // 19:00Z HANDOVER 单数→复数：POST /api/agentPresets/list + args:{}（仍经 Rust 代理）。
+      // 新 list 无 hasDocument（仅 {presets,authorable}），hasDocument 改源 settings/canOpenAgentPresetDirectory。
+      const r = await api.agentPresetsList();
       if (r.result.ok) {
+        const v = r.result.value as { presets: AgentPresetEntry[]; authorable: boolean; hasDocument?: boolean };
+        let hasDocument = typeof v.hasDocument === "boolean" ? v.hasDocument : false;
+        try {
+          const c = await api.settingsCanOpenAgentPresetDirectory();
+          if (c.result.ok) hasDocument = Boolean(c.result.value as unknown);
+        } catch {
+          // best-effort：canOpen 失败保持 false，不阻断列表
+        }
         this.set({
-          agentPresets: r.result.value.presets as AgentPresetEntry[],
-          agentPresetsMeta: { authorable: r.result.value.authorable, hasDocument: r.result.value.hasDocument },
+          agentPresets: v.presets as AgentPresetEntry[],
+          agentPresetsMeta: { authorable: v.authorable, hasDocument },
+          agentPresetsError: null,
         });
       } else {
-        this.set({ error: `读取 Agent 模式失败: ${r.result.error.code}: ${r.result.error.message}` });
+        const msg = `读取 Agent 模式失败: ${r.result.error.code}: ${r.result.error.message}`;
+        this.set({ error: msg, agentPresetsError: msg });
       }
     } catch (e) {
-      this.set({ error: `读取 Agent 模式失败: ${String(e)}` });
+      const msg = `读取 Agent 模式失败: ${String(e)}`;
+      this.set({ error: msg, agentPresetsError: msg });
     }
   }
 
@@ -1242,7 +1755,7 @@ class AppStore {
     const id = r.result.value.sessionId;
     this.set({ selectedSessionId: id });
     try {
-      await api.agentPresets.select({ sessionId: id, agentPreset });
+      await api.agentPresetsSelect({ agentId: id, agentPreset });
     } catch (e) {
       this.set({ error: `Agent 模式应用失败: ${String(e)}` });
     }
@@ -1255,7 +1768,7 @@ class AppStore {
   async applyAgentPresetToSession(sessionId: SessionId, agentPreset: string): Promise<void> {
     const api = this.requireApi();
     try {
-      const r = await api.agentPresets.select({ sessionId, agentPreset });
+      const r = await api.agentPresetsSelect({ agentId: sessionId, agentPreset });
       if (!r.result.ok) {
         this.set({ error: `更换 Agent 模式失败: ${r.result.error.code}: ${r.result.error.message}` });
         return;
@@ -1286,16 +1799,118 @@ class AppStore {
   }
 
   /**
+   * 任务#15+#14 自动取名（复用 sessionTitles/rename 落点 + 取名模型参数）。
+   * - 未配置 titleModel（provider/model 缺失）= 直接返回，零打扰（不调用模型、不改标题、不抛错）。
+   * - 已有本地/投影标题 = 跳过（不覆盖手动重命名）。
+   * - 复用隔离会话链（sessions.create→selectModel(取名模型)→prompt queue→page 轮询≤60s），与二判同构；失败静默跳过。
+   * - 成功经 renameSession 落点（本地表 + dsh user 源），仍经 Rust 代理；零新增 invoke/事件。
+   */
+  private runTitleModel(
+    prompt: string,
+    model: { provider: string; model: string; reasoningEffort?: string },
+  ): Promise<string | null> {
+    const task = (async (): Promise<string | null> => {
+      const api = this.state.api;
+      if (!api) return null;
+      const t0 = Date.now();
+      try {
+        const cr = await api.sessions.create({});
+        if (!cr.result.ok) return null;
+        const isoId = cr.result.value.sessionId;
+        try {
+          await api.sessions.selectModel({
+            sessionId: isoId,
+            provider: model.provider,
+            model: model.model,
+            reasoningEffort: model.reasoningEffort ?? undefined,
+          } as never).catch(() => undefined);
+        } catch {
+          // 选模型失败不阻断，沿用会话默认（失败则静默跳过）
+        }
+        const pr = await api.sessions.prompt({
+          sessionId: isoId,
+          mode: "queue",
+          content: [{ type: "text", text: prompt }],
+        } as never);
+        if (!pr.result.ok) return null;
+        const deadline = t0 + AUTO_REVIEW_TIMEOUT_SECS * 1000;
+        while (Date.now() < deadline) {
+          await sleepMs(2000);
+          try {
+            const text = await this.isolationAssistantText(api, isoId, 20);
+            if (!text) continue;
+            const title = parseTitleText(text);
+            if (title) return title;
+            return null;
+          } catch {
+            return null;
+          }
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    })();
+    const chained = titleChain.then(() => task);
+    titleChain = chained.then(() => undefined).catch(() => undefined);
+    return chained;
+  }
+
+  /** 自动取名入口（fire-and-forget，失败零打扰；并发同会话去重）。 */
+  autoTitleSession(sessionId: SessionId, firstText: string): void {
+    try {
+      const key = String(sessionId);
+      const titleVal = this.state.titleModel?.value ?? null;
+      if (!titleVal || !titleVal.provider || !titleVal.model) return;
+      if (pendingTitles.has(key)) return;
+      const sess = this.state.sessions.find((s) => String(s.sessionId) === key) as unknown as
+        | { projections?: { values?: { title?: unknown } } }
+        | undefined;
+      const projected = (sess?.projections?.values as Record<string, unknown> | undefined)?.title;
+      const hasProjected = typeof projected === "string" && !!projected;
+      if (this.state.sessionTitles[key] || hasProjected) return;
+      const snippet = (firstText ?? "").trim();
+      if (!snippet) return;
+      pendingTitles.add(key);
+      const prompt = buildTitlePrompt(snippet);
+      const model = { provider: titleVal.provider, model: titleVal.model, ...(titleVal.reasoningEffort ? { reasoningEffort: titleVal.reasoningEffort } : {}) };
+      void this.runTitleModel(prompt, model)
+        .then((title) => {
+          pendingTitles.delete(key);
+          if (!title) return;
+          // 二次确认仍无标题才写（防手动重命名竞态覆盖）。
+          const cur = this.state.sessionTitles[key];
+          if (cur) return;
+          void this.renameSession(sessionId, title).catch(() => {});
+        })
+        .catch(() => {
+          pendingTitles.delete(key);
+        });
+    } catch {
+      // 零打扰：任何同步异常静默跳过
+    }
+  }
+
+  /**
    * 设置「未来新会话」的默认权限预设（permission settings 命名空间，live 生效）。
    * 注：切换「当前会话」权限是 dsh 宿主侧 `/permission` 命令（Typert commands.execute，
    * 外部浏览器客户端经 apiproxy 无法调用，且经 session.prompt 发送会被当作普通消息触发模型回合）。
    */
   async setDefaultPermissionPreset(preset: string): Promise<void> {
+    const normalized = normalizePermissionValue(preset);
+    // PRD-004 FR-M201 回退①：auto-review 永不写 dsh（dsh 会拒识）：本地 flag + dsh 侧保持 ask 兜底。
+    if (isAutoReviewValue(preset) || normalized === "auto-review") {
+      setAutoReviewEnabled(true);
+      this.set({ notice: "已启用本地自动审核（dsh侧保持询问审批兜底）" });
+      return;
+    }
     // PRD-003 FR-T202 冻结：完全访问本轮禁用，选即回退（不写 dsh，只出 notice）。
     if (preset === "danger-full-access" || preset === "完全访问") {
       this.set({ notice: "完全访问已被 PRD-003 禁用，已回退为询问审批" });
       return;
     }
+    // 回退③：关闭该档即删本地 flag，dsh 侧值原样有效，零残留。
+    if (isAutoReviewEnabled()) setAutoReviewEnabled(false);
     try {
       await this.mutateSettings("permission", [{ op: "set", path: ["defaultPreset"], value: preset }]);
     } catch (e) {
@@ -1307,7 +1922,29 @@ class AppStore {
   async getPermissionOptions(): Promise<{ options: Array<{ value: string; name: string }>; current: string | null }> {
     const ns = await this.getSettingsNamespace("permission");
     const value = (ns?.value ?? {}) as { defaultPreset?: string };
-    const options = permissionSchemaEnums(ns?.schema).map((v) => ({ value: v, name: v }));
+    let options = permissionSchemaEnums(ns?.schema).map((v) => ({ value: v, name: v }));
+    // PRD-004 FR-M201：dsh schema 枚举之后本地追加一档；别名 auto_audit 归一为 auto-review 不双列。
+    const hasReview = options.some((o) => isAutoReviewValue(o.value));
+    const hasAuditAliasOnly = options.some((o) => o.value === "auto_audit") && !options.some((o) => o.value === "auto-review");
+    if (hasAuditAliasOnly) {
+      options = options.filter((o) => o.value !== "auto_audit");
+      options.push({ value: "auto-review", name: "auto-review" });
+    } else if (!hasReview) {
+      options.push({ value: "auto-review", name: "auto-review" });
+    } else {
+      // 上游未来自带真 auto-review：去重本地档，优先上游值（R-01）。
+      const seen = new Set<string>();
+      options = options.filter((o) => {
+        const n = normalizePermissionValue(o.value);
+        if (n === "auto-review") {
+          if (seen.has("auto-review")) return false;
+          seen.add("auto-review");
+          o.value = "auto-review";
+          o.name = "auto-review";
+        }
+        return true;
+      });
+    }
     return { options, current: value.defaultPreset ?? null };
   }
 
@@ -1322,7 +1959,7 @@ class AppStore {
 
   async copyAgentPreset(from: string, id: string, name?: string): Promise<void> {
     const api = this.requireApi();
-    const r = await api.agentPresets.copy({ from, agentPreset: id, name: name?.trim() || undefined });
+    const r = await api.agentPresetsCopy({ from, id, name: name?.trim() || undefined });
     if (!r.result.ok) {
       this.set({ error: `复制 Agent 模式失败: ${r.result.error.code}: ${r.result.error.message}` });
       return;
@@ -1332,7 +1969,7 @@ class AppStore {
 
   async removeAgentPreset(id: string): Promise<void> {
     const api = this.requireApi();
-    const r = await api.agentPresets.remove({ agentPreset: id });
+    const r = await api.agentPresetsDelete({ id });
     if (!r.result.ok) {
       this.set({ error: `删除 Agent 模式失败: ${r.result.error.code}: ${r.result.error.message}` });
       return;
@@ -1342,7 +1979,7 @@ class AppStore {
 
   async readAgentPreset(id: string): Promise<{ content: string; name?: string; description?: string } | null> {
     const api = this.requireApi();
-    const r = await api.agentPresets.read({ agentPreset: id });
+    const r = await api.agentPresetsRead({ agentPreset: id });
     if (!r.result.ok) {
       this.set({ error: `读取组装失败: ${r.result.error.code}: ${r.result.error.message}` });
       return null;
@@ -1353,7 +1990,7 @@ class AppStore {
   async openAgentPresetDocument(id: string): Promise<void> {
     const api = this.requireApi();
     try {
-      const r = await api.agentPresets.openDocument({ agentPreset: id });
+      const r = await api.settingsOpenAgentPresetDirectory({ agentPreset: id });
       if (r.result.ok) {
         if (!r.result.value.opened) {
           this.set({ error: `已打开预设目录（路径见设置页提示）: ${r.result.value.path}` });
@@ -1380,7 +2017,8 @@ class AppStore {
 
   async archiveSession(sessionId: SessionId): Promise<void> {
     const api = this.requireApi();
-    const r = await api.workspace.archiveSession({ sessionId });
+    // 23:50Z HANDOVER：旧 flat {sessionId}→新 wire {request:{sessionId}}（WorkspaceArchiveSessionRequest），仍经 Rust 代理。
+    const r = await api.workspaceArchiveSession({ sessionId });
     if (!r.result.ok) {
       this.set({ error: `归档会话失败: ${r.result.error.code}: ${r.result.error.message}` });
       return;
@@ -1422,12 +2060,55 @@ class AppStore {
       const d = await this.describeSettings();
       const ns = d?.namespaces.find((n) => n.ns === "agent-default-model");
       if (!ns) {
-        this.set({ defaultModel: null });
+        this.set({ defaultModel: null, autoReviewModel: null, titleModel: null, dispatchModel: null });
         return;
       }
+      const raw = (ns.value ?? null) as ({ provider?: string; model?: string; reasoningEffort?: string; autoReview?: { provider?: string; model?: string; reasoningEffort?: string }; titleModel?: { provider?: string; model?: string; reasoningEffort?: string }; dispatchModel?: { mode?: string; provider?: string; model?: string; reasoningEffort?: string } } | null);
+      const topValue =
+        raw && typeof raw.provider === "string" && typeof raw.model === "string"
+          ? { provider: raw.provider, model: raw.model, ...(raw.reasoningEffort ? { reasoningEffort: raw.reasoningEffort } : {}) }
+          : null;
+      // FR-M202 存储选①：同 ns 加平行 autoReview 字段；读无此值容忍关闭（value null，不报错）。
+      const autoRaw = raw?.autoReview ?? null;
+      const autoValue =
+        autoRaw && typeof autoRaw.provider === "string" && autoRaw.provider.trim() && typeof autoRaw.model === "string" && autoRaw.model.trim()
+          ? { provider: autoRaw.provider, model: autoRaw.model, ...(autoRaw.reasoningEffort ? { reasoningEffort: autoRaw.reasoningEffort } : {}) }
+          : null;
+      // 任务#15+#14 存储复用：同 ns 加平行 titleModel 字段，一次 CAS；读无此值=不自动取名，零打扰。
+      const titleRaw = raw?.titleModel ?? null;
+      const titleValue =
+        titleRaw && typeof titleRaw.provider === "string" && titleRaw.provider.trim() && typeof titleRaw.model === "string" && titleRaw.model.trim()
+          ? { provider: titleRaw.provider, model: titleRaw.model, ...(titleRaw.reasoningEffort ? { reasoningEffort: titleRaw.reasoningEffort } : {}) }
+          : null;
+      // PRD-dispatch Q2：同 ns 加平行 dispatchModel 字段，一次 CAS；默认 follow-default，未配回落默认+提示。
+      const dispRaw = raw?.dispatchModel ?? null;
+      const dispMode: DispatchModelSetting["mode"] = dispRaw?.mode === "specified" ? "specified" : "follow-default";
+      const dispSetting: DispatchModelSetting | null = dispRaw
+        ? {
+            mode: dispMode,
+            ...(typeof dispRaw.provider === "string" && dispRaw.provider.trim() ? { provider: dispRaw.provider } : {}),
+            ...(typeof dispRaw.model === "string" && dispRaw.model.trim() ? { model: dispRaw.model } : {}),
+            ...(typeof dispRaw.reasoningEffort === "string" && dispRaw.reasoningEffort ? { reasoningEffort: dispRaw.reasoningEffort } : {}),
+          }
+        : null;
       this.set({
         defaultModel: {
-          value: (ns.value ?? null) as DefaultModelView["value"],
+          value: topValue,
+          revision: ns.revision,
+          applies: ns.applies,
+        },
+        autoReviewModel: {
+          value: autoValue,
+          revision: ns.revision,
+          applies: ns.applies,
+        },
+        titleModel: {
+          value: titleValue,
+          revision: ns.revision,
+          applies: ns.applies,
+        },
+        dispatchModel: {
+          setting: dispSetting,
           revision: ns.revision,
           applies: ns.applies,
         },
@@ -1446,6 +2127,25 @@ class AppStore {
     await this.loadDefaultModel();
   }
 
+  /** PRD-004 FR-M202：保存自动审核模型（同 ns 加 autoReview 字段，一次 updateSettings CAS）。 */
+  async saveAutoReviewModel(
+    patch: { provider: string; model: string; reasoningEffort?: string },
+    expectedRevision?: number,
+  ): Promise<void> {
+    await this.updateSettings("agent-default-model", { autoReview: patch }, expectedRevision);
+    await this.loadDefaultModel();
+  }
+
+  /** 任务#15+#14：保存标题取名模型（同 ns 加平行 titleModel 字段，一次 updateSettings CAS）。 */
+  async saveTitleModel(
+    patch: { provider: string; model: string; reasoningEffort?: string },
+    expectedRevision?: number,
+  ): Promise<void> {
+    await this.updateSettings("agent-default-model", { titleModel: patch }, expectedRevision);
+    await this.loadDefaultModel();
+  }
+
+  /** PRD-dispatch Q2：保存拆解模型（同 ns 加平行 dispatchModel 字段，一次 updateSettings CAS；默认 follow-default）。 */
   /** 整体替换命名空间用户层（settings.replace；section={} 即恢复默认）。 */
   async replaceSettings(ns: string, section: object, expectedRevision?: number): Promise<void> {
     const api = this.requireApi();
@@ -1515,21 +2215,96 @@ class AppStore {
     this.set({ subagentCatalogs: m });
   }
 
-  /** 读取子代理历史（subagent.history；mode 取自目录行）。 */
+  /**
+   * 17:30Z：子代理无 list 行投影可取 cursor，以 page 二分探最大合法 throughSeq（-1 必合法为空下界；
+   * 超 cursor 即 bad-request 为上界信号；探针 maxMessages=1 减负，仍经代理）。其他错误（404/401/信封错）即停返 null。
+   */
+  private async discoverThroughSeq(
+    address:
+      | { kind: "session"; sessionId: string }
+      | { kind: "subagent"; parentSessionId: string; childSessionId: string; mode: "one-shot" | "continuable" },
+  ): Promise<number | null> {
+    const api = this.requireApi() as unknown as {
+      sessionPage: (req: unknown) => Promise<{ result: { ok: boolean; error?: { code: string; message: string } } }>;
+    };
+    const probe = async (throughSeq: number): Promise<"valid" | "over" | "fatal"> => {
+      try {
+        const r = await api.sessionPage({ address, throughSeq, maxMessages: 1 });
+        if (r.result.ok) return "valid";
+        const code = r.result.error?.code ?? "";
+        const msg = r.result.error?.message ?? "";
+        const over = code.includes("bad-request") || msg.includes("bad-request") || msg.includes("throughSeq") || msg.includes("cursor");
+        return over ? "over" : "fatal";
+      } catch (e) {
+        const msg = String(e);
+        if (msg.includes("bad-request") || msg.includes("throughSeq") || msg.includes("cursor")) return "over";
+        if (msg.includes("HTTP 404") || msg.includes("HTTP 401") || msg.includes("HTTP 403") || msg.includes("HTTP 502")) return "fatal";
+        return "fatal";
+      }
+    };
+    if ((await probe(-1)) === "fatal") return null;
+    let low = -1;
+    let high = 50;
+    for (let i = 0; i < 8; i++) {
+      const st = await probe(high);
+      if (st === "valid") {
+        low = high;
+        if (high >= 10_000_000) return low;
+        high *= 4;
+        continue;
+      }
+      if (st === "over") break;
+      return null;
+    }
+    // 二分夹逼最大合法 throughSeq（=cursor；空日志时仍 -1）。
+    while (high - low > 1) {
+      const mid = Math.floor((low + high) / 2);
+      const st = await probe(mid);
+      if (st === "valid") low = mid;
+      else if (st === "over") high = mid;
+      else return null;
+    }
+    return low;
+  }
+
+  /** 读取子代理历史（17:30Z：旧 subagents.history 已移除→session/page，address.kind=subagent；records 取 event；仍经代理）。 */
   async loadSubagentHistory(parentSessionId: SessionId, childSessionId: SessionId, mode: "one-shot" | "continuable"): Promise<void> {
     const api = this.requireApi();
-    const r = await api.subagents.history({
-      parentSessionId,
-      childSessionId,
+    const address = {
+      kind: "subagent",
+      parentSessionId: parentSessionId as string,
+      childSessionId: childSessionId as string,
       mode,
-      maxMessages: 100,
-    });
-    if (!r.result.ok) {
-      this.set({ error: `读取子代理记录失败: ${r.result.error.code}: ${r.result.error.message}` });
+    } as const;
+    let throughSeq: number | null = null;
+    try {
+      throughSeq = await this.discoverThroughSeq({ ...address });
+    } catch {
+      throughSeq = null;
+    }
+    if (throughSeq === null) {
+      this.set({ error: "读取子代理记录失败：无已知 cursor 且探活失败（需 follow snapshot，待后端另单确认代理路径）" });
       return;
     }
+    let r: { result: { ok: boolean; value?: unknown; error?: { code: string; message: string } } };
+    try {
+      r = (await (api as unknown as {
+        sessionPage: (req: unknown) => Promise<typeof r>;
+      }).sessionPage({ address: { ...address }, throughSeq, maxMessages: 100 })) as typeof r;
+    } catch (e) {
+      const msg = String(e);
+      this.set({ error: `读取子代理记录失败${pageErrorHint(msg)}: ${msg}` });
+      return;
+    }
+    if (!r.result.ok) {
+      const err = r.result.error as { code: string; message: string };
+      this.set({ error: `读取子代理记录失败${pageErrorHint(`${err.code}: ${err.message}`)}: ${err.code}: ${err.message}` });
+      return;
+    }
+    const records = (r.result.value as { records?: unknown }).records ?? [];
+    const entries = pageRecordsToHistoryEntries(records);
     const m = new Map(this.state.subagentHistories);
-    m.set(childSessionId, r.result.value.events);
+    m.set(childSessionId, entries as unknown as HistoryEntry[]);
     this.set({ subagentHistories: m });
   }
 

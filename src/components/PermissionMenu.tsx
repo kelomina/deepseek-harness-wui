@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { appStore, useAppState } from "../lib/dsh/store";
+import { isAutoReviewEnabled, isAutoReviewValue, normalizePermissionValue } from "../lib/team";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 
 function titleCase(value: string): string {
@@ -43,10 +44,25 @@ export function PermissionMenu({ sessionId }: { sessionId?: SessionId }) {
   }, [open]);
 
   const sessionPerm = sessionId ? sessionPermissions.get(sessionId) : undefined;
-  const options = sessionPerm?.options?.length ? sessionPerm.options : defaultOptions;
+  const rawOptions = sessionPerm?.options?.length ? sessionPerm.options : defaultOptions;
+  // PRD-004 FR-M201：本地增补 auto-review（别名 auto_audit 归一，不双列两行）。
+  const options = (() => {
+    const list = [...rawOptions];
+    const hasReview = list.some((o) => isAutoReviewValue(o.value));
+    if (!hasReview) list.push({ value: "auto-review", name: "auto-review", description: "确定性规则先行 + 设置中所选模型二判，dsh侧保持ask兜底" });
+    // 别名归一：auto_audit 即 auto-review。
+    return list
+      .filter((o, i, a) => (isAutoReviewValue(o.value) ? a.findIndex((x) => isAutoReviewValue(x.value)) === i : true))
+      .map((o) => (o.value === "auto_audit" ? { ...o, value: "auto-review", name: o.name || "auto-review" } : o));
+  })();
   const sessionCurrent = sessionPerm?.currentValue ?? null;
-  const current = sessionId ? (sessionCurrent ?? defaultCurrent) : defaultCurrent;
-  const label = sessionId ? `权限 · ${titleCase(sessionCurrent ?? "?")}` : current ? titleCase(current) : "权限";
+  const autoOn = isAutoReviewEnabled();
+  // dsh 侧保持 ask 兜底：启用时显示本地态，不伪装成 dsh 预设。
+  const effectiveCurrent = autoOn ? "auto-review" : (sessionId ? (sessionCurrent ?? defaultCurrent) : defaultCurrent);
+  const current = effectiveCurrent ? normalizePermissionValue(effectiveCurrent) : effectiveCurrent;
+  const label = current && isAutoReviewValue(current)
+    ? "权限·Auto Review"
+    : sessionId ? `权限 · ${titleCase(sessionCurrent ?? "?")}` : current ? titleCase(current) : "权限";
 
   const choose = (value: string) => {
     void appStore.setDefaultPermissionPreset(value);
@@ -67,12 +83,13 @@ export function PermissionMenu({ sessionId }: { sessionId?: SessionId }) {
                 : "设置未来新会话的默认权限（立即生效）"}
             </div>
             {options.map((o) => (
-              <div key={o.value} className={`preset-row${o.value === sessionCurrent ? " selected" : ""}${o.value === "danger-full-access" ? " locked" : ""}`} title={o.value === "danger-full-access" ? "完全访问已被 PRD-003 禁用（选即回退）" : undefined} onClick={() => choose(o.value)}>
+              <div key={o.value} className={`preset-row${current && normalizePermissionValue(o.value) === current ? " selected" : ""}${o.value === "danger-full-access" ? " locked" : ""}`} title={o.value === "danger-full-access" ? "完全访问已被 PRD-003 禁用（选即回退）" : isAutoReviewValue(o.value) ? "确定性规则先行 + 设置中所选模型二判，dsh侧保持ask兜底" : undefined} onClick={() => choose(o.value)}>
                 <span className="preset-meta">
                   <span className="preset-nm">
-                    {titleCase(o.name || o.value)}
-                    {o.value === sessionCurrent && <span className="badge def">当前</span>}
-                    {o.value === defaultCurrent && o.value !== sessionCurrent && <span className="badge off">默认</span>}
+                    {isAutoReviewValue(o.value) ? "Auto Review" : titleCase(o.name || o.value)}
+                    {current && normalizePermissionValue(o.value) === current && <span className="badge def">当前</span>}
+                    {o.value === defaultCurrent && o.value !== sessionCurrent && !isAutoReviewValue(o.value) && <span className="badge off">默认</span>}
+                    {isAutoReviewValue(o.value) && <span className="badge off">本地</span>}
                     {o.value === "danger-full-access" && <span className="badge cond">已禁用</span>}
                   </span>
                   {o.description && <span className="preset-ds">{o.description}</span>}

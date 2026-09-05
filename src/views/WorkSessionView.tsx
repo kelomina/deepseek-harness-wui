@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { appStore, useAppState } from "../lib/dsh/store";
+import { useAppState, appStore } from "../lib/dsh/store";
+import { parseDispatchCommand } from "../lib/team";
 import { displayTitle } from "../lib/dsh/sessionTitle";
 import { ApprovalCard, EventRow, LiveAssistantRow, QuestionCard, shortId, useConversationItems, useLiveAssistant, useSessionInteractives } from "../components/Conversation";
 import { ModelMenu } from "../components/ModelMenu";
@@ -17,8 +18,10 @@ interface PendingImage {
   name?: string;
 }
 
-export function WorkSessionView({ onOpenSettings, onOpenToolDock, onOpenSessionDock }: { onOpenSettings?: () => void; onOpenToolDock: (tab: ToolTab | "team") => void; onOpenSessionDock?: (sub: SessionSubTab) => void }) {
-  const { connected, sessions, selectedSessionId, history, stoppingSessions, sessionTitles, projections, sessionQueues, subagentCatalogs, pendingSkillInsert } = useAppState();
+export function WorkSessionView({ onOpenSettings, onOpenToolDock, onOpenSessionDock, onGoTeam, mode }: { onOpenSettings?: () => void; onOpenToolDock: (tab: ToolTab | "team") => void; onOpenSessionDock?: (sub: SessionSubTab) => void; onGoTeam?: () => void; mode?: "work" | "code" }) {
+  const { connected, sessions, selectedSessionId, history, stoppingSessions, sessionTitles, projections, sessionQueues, subagentCatalogs, pendingSkillInsert, dispatchBusy, modelGroups, defaultModel } = useAppState();
+  const isWork = (mode ?? "work") === "work";
+  const [slashOpen, setSlashOpen] = useState(true);
   const [draft, setDraft] = useState("");
   const [images, setImages] = useState<PendingImage[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -211,8 +214,8 @@ export function WorkSessionView({ onOpenSettings, onOpenToolDock, onOpenSessionD
             </button>
             <button
               className="ent-btn"
-              title="团队黑板（只读聚合）"
-              onClick={() => onOpenToolDock("team")}
+              title={onGoTeam ? "回到团队黑板（Work）" : "团队黑板（只读聚合）"}
+              onClick={() => (onGoTeam ? onGoTeam() : onOpenToolDock("team"))}
             >
               <span className="ent-ico">▦</span>
               <span>团队</span>
@@ -256,15 +259,40 @@ export function WorkSessionView({ onOpenSettings, onOpenToolDock, onOpenSessionD
             <textarea
               className="composer-input"
               value={draft}
-              onChange={(e) => setDraft(e.currentTarget.value)}
-              placeholder="输入消息…"
+              onChange={(e) => {
+                setDraft(e.currentTarget.value);
+                if (e.currentTarget.value.startsWith("/")) setSlashOpen(true);
+              }}
+              placeholder={isWork ? "输入消息…（/分派 <需求> 拆解分派）" : "输入消息…"}
               onKeyDown={(e) => {
+                if (e.key === "Escape" && slashOpen && draft.startsWith("/")) {
+                  e.preventDefault();
+                  setSlashOpen(false);
+                  return;
+                }
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   send();
                 }
               }}
             />
+            {isWork && slashOpen && draft.startsWith("/") && (
+              <div className="perm-pop" role="listbox" aria-label="斜杠补全">
+                <div
+                  className="preset-row"
+                  title="Work 会话唯一入口：/分派 <需求>（无前缀=闲聊直答；空参数=用法提示）"
+                  onClick={() => {
+                    setDraft((d) => (d.startsWith("/分派") ? d : "/分派 "));
+                    setSlashOpen(false);
+                  }}
+                >
+                  <span className="preset-meta">
+                    <span className="preset-nm">/分派 {"<需求>"}</span>
+                    <span className="preset-ds">拆解为任务卡并按 role/skill 确定性匹配分派（Esc 关闭）</span>
+                  </span>
+                </div>
+              </div>
+            )}
             <div className="toolbar">
               <div className="tools">
                 <button

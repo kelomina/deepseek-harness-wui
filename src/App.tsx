@@ -6,11 +6,12 @@ import { TitleBar } from "./components/TitleBar";
 import { Sidebar, type Mode, type View } from "./components/Sidebar";
 import { WelcomeView } from "./views/WelcomeView";
 import { WorkSessionView } from "./views/WorkSessionView";
-import { CodeView } from "./views/CodeView";
+import { TeamBoard } from "./components/TeamBoard";
 import { StatusPage } from "./pages/StatusPage";
 import { WorkspacesPage } from "./pages/WorkspacesPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { ToolDock, type ToolTab, type SessionSubTab } from "./components/ToolDock";
+import { DispatchConfirm } from "./components/DispatchConfirm";
 import { SetupWizard } from "./components/SetupWizard";
 import { GlobalLoading } from "./components/GlobalLoading";
 import { withLoading, isDedupError, isCancelError } from "./lib/loading";
@@ -67,13 +68,20 @@ export default function App() {
     setSessionSubTab(sub);
   };
   const closeToolDock = () => setToolDockOpen(false);
+  // PRD-004 v1.1 FR-M101/M104：Work=团队黑板新一级 team view，Code=原 Work 会话链（code view）。
+  // 切换保持 selectedSession/mode（复用 modeChange/selectSession 语义扩展，不清空历史/队列）。
+  const goTeam = () => {
+    setMode("work");
+    if (toolTab === "team") setToolTab("files");
+    setView("team");
+  };
   const selectSession = (id: SessionId) => {
     appStore.selectSession(id);
-    setView(mode === "code" ? "code" : "session");
+    setView(mode === "code" ? "code" : "team");
   };
   const modeChange = (m: Mode) => {
     setMode(m);
-    if (view === "session" || view === "code") setView(m === "code" ? "code" : "session");
+    if (view === "session" || view === "code" || view === "team") setView(m === "code" ? "code" : "team");
   };
 
   return (
@@ -94,12 +102,25 @@ export default function App() {
           {setup === "checking" && <div className="empty-state" style={{ margin: "auto" }}>正在检测运行环境…</div>}
           {setup !== "checking" && (
             <>
-              {view === "welcome" && <WelcomeView mode={mode} onEnterSession={() => setView(mode === "code" ? "code" : "session")} onOpenSettings={() => setView("settings")} onOpenToolDock={openToolDock} />}
-              {view === "session" && <WorkSessionView onOpenSettings={() => setView("settings")} onOpenToolDock={openToolDock} onOpenSessionDock={openSessionDock} />}
-              {view === "code" && <CodeView />}
+              {view === "welcome" && <WelcomeView mode={mode} onEnterSession={() => setView(mode === "code" ? "code" : "team")} onOpenSettings={() => setView("settings")} onOpenToolDock={openToolDock} />}
+              {view === "team" && (
+                <section className="view active" id="view-team">
+                  <div className="col col-team">
+                    <TeamBoard />
+                  </div>
+                </section>
+              )}
+              {view === "session" && <WorkSessionView mode={mode} onOpenSettings={() => setView("settings")} onOpenToolDock={openToolDock} onOpenSessionDock={openSessionDock} onGoTeam={goTeam} />}
+              {view === "code" && (
+                <section className="view active" id="view-code-mode">
+                  <div className="col col-conv">
+                    <WorkSessionView mode={mode} onOpenSettings={() => setView("settings")} onOpenToolDock={openToolDock} onOpenSessionDock={openSessionDock} onGoTeam={goTeam} />
+                  </div>
+                </section>
+              )}
               {view === "status" && <StatusPage />}
               {view === "workspaces" && <WorkspacesPage />}
-              {view === "settings" && <SettingsPage onStartSession={() => setView(mode === "code" ? "code" : "session")} />}
+              {view === "settings" && <SettingsPage onStartSession={() => setView(mode === "code" ? "code" : "team")} />}
             </>
           )}
           {toolDockOpen && view !== "code" && setup !== "checking" && (
@@ -109,6 +130,7 @@ export default function App() {
               onClose={closeToolDock}
               sessionSubTab={sessionSubTab}
               onSessionSubTabChange={setSessionSubTab}
+              hideTeamTab={view === "team"}
             />
           )}
         </main>

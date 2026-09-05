@@ -1,11 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import type { SessionSummary } from "@deepseek-ai/dsh-host-apiproxy/api";
 import { useAppState, appStore } from "../lib/dsh/store";
+import {
+  SIDEBAR_DEFAULT,
+  SIDEBAR_HIDDEN_KEY,
+  SIDEBAR_MAX,
+  SIDEBAR_MIN,
+  SIDEBAR_WIDTH_KEY,
+  loadHidden,
+  saveHidden,
+  useResizableWidth,
+} from "../lib/panelResize";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { DshStatus } from "../lib/tauri";
 import { displayTitle } from "../lib/dsh/sessionTitle";
 
-export type View = "welcome" | "session" | "code" | "status" | "workspaces" | "settings";
+export type View = "welcome" | "session" | "code" | "team" | "status" | "workspaces" | "settings";
 export type Mode = "work" | "code";
 
 export function Sidebar({
@@ -36,6 +46,18 @@ export function Sidebar({
   const debounceRef = useRef<number | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const { pinnedSessions, workspaces, archivedSessionIds, sessionTitles, searchResults, searching, searchDisabled } = useAppState();
+  // 任务#5：侧边栏宽度可调 + 可完全隐藏（localStorage 持久化，复用 hiddenPresets 的 JSON+try/catch 模式）
+  const { width: sidebarWidth, setWidth: setSidebarWidth, startDrag: startSidebarDrag, onKey: onSidebarKey } = useResizableWidth(
+    SIDEBAR_WIDTH_KEY,
+    SIDEBAR_DEFAULT,
+    SIDEBAR_MIN,
+    SIDEBAR_MAX,
+  );
+  const [sidebarHidden, setSidebarHidden] = useState<boolean>(() => loadHidden(SIDEBAR_HIDDEN_KEY));
+  const setHidden = (v: boolean) => {
+    setSidebarHidden(v);
+    saveHidden(SIDEBAR_HIDDEN_KEY, v);
+  };
   // 搜索输入防抖（400ms）：空值即清除结果
   useEffect(() => {
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
@@ -74,7 +96,7 @@ export function Sidebar({
   const taskItem = (s: SessionSummary) => (
     <button
       key={s.sessionId}
-      className={`task-item${s.sessionId === selectedSessionId && (view === "session" || view === "code") ? " active" : ""}`}
+      className={`task-item${s.sessionId === selectedSessionId && (view === "session" || view === "code" || view === "team") ? " active" : ""}`}
       onClick={() => onSelectSession(s.sessionId)}
       onContextMenu={(e) => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, id: s.sessionId }); }}
       onDoubleClick={() => {
@@ -127,8 +149,31 @@ export function Sidebar({
     void appStore.moveSessionInWorkspace(ws.workspaceId, id, anchor);
   };
   const canMoveSession = (id: SessionId): boolean => workspaces.some((w) => w.sessionIds.includes(id));
+  if (sidebarHidden) {
+    return (
+      <div className="sidebar-hidden-bar">
+        <button className="sidebar-restore-btn" title="展开侧边栏" aria-label="展开侧边栏" onClick={() => setHidden(false)}>
+          ›
+        </button>
+      </div>
+    );
+  }
   return (
-    <aside className="sidebar">
+    <aside className="sidebar sidebar-resizable" style={{ width: sidebarWidth }}>
+      <button className="sidebar-collapse-btn" title="收起侧边栏" aria-label="收起侧边栏" onClick={() => setHidden(true)}>
+        ‹
+      </button>
+      <div
+        className="sidebar-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="拖动调整侧边栏宽度"
+        title="拖动调整侧边栏宽度（双击恢复默认）"
+        tabIndex={0}
+        onPointerDown={(e) => startSidebarDrag(e, 1)}
+        onKeyDown={(e) => onSidebarKey(e, 1)}
+        onDoubleClick={() => setSidebarWidth(SIDEBAR_DEFAULT)}
+      />
       <div className="mode-tabs">
         <button className={`tab${mode === "work" ? " active" : ""}`} onClick={() => onModeChange("work")}>Work</button>
         <button className={`tab${mode === "code" ? " active" : ""}`} onClick={() => onModeChange("code")}>Code</button>
@@ -158,6 +203,7 @@ export function Sidebar({
           </div>
         </div>
       )}
+      <div className="side-scroll">
       {searchResults && (
         <div className="side-block search-results">
           <div className="side-head">
@@ -197,6 +243,7 @@ export function Sidebar({
         </div>
         {tasksOpen && unpinned.length === 0 && <div className="empty-state" style={{ padding: "8px 4px" }}>暂无会话</div>}
         {tasksOpen && groupByWs(unpinned).map((g) => renderGroup(g, "t:"))}
+      </div>
       </div>
       {ctx && (
         <>
