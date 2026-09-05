@@ -6,6 +6,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -15,6 +16,7 @@ const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 pub struct ProxyContext {
     pub dsh_port: Arc<AtomicU16>,
+    pub dsh_home: Option<PathBuf>,
     client: reqwest::Client,
 }
 
@@ -25,13 +27,14 @@ pub struct ProxyHandle {
     _task: JoinHandle<()>,
 }
 
-pub async fn start_proxy(dsh_port: u16) -> Result<ProxyHandle, String> {
+pub async fn start_proxy(dsh_port: u16, dsh_home: Option<PathBuf>) -> Result<ProxyHandle, String> {
     let client = reqwest::Client::builder()
         .no_proxy() // proxy 转发到本地 127.0.0.1:{dsh_port}，绝不能走系统外部代理
         .build()
         .map_err(|e| e.to_string())?;
     let ctx = Arc::new(ProxyContext {
         dsh_port: Arc::new(AtomicU16::new(dsh_port)),
+        dsh_home,
         client,
     });
     let app = Router::new()
@@ -155,21 +158,83 @@ async fn proxy_api(State(ctx): State<Arc<ProxyContext>>, req: Request) -> Respon
         .map(|p| p.as_str().to_string())
         .unwrap_or_default();
     let port = ctx.dsh_port.load(Ordering::Relaxed);
+    // BUG-14: inject BrowserAuth cookie for 0.1.2-rc.1+ when authority is loopback.
+    // dsh 侧 authority 恒为 dsh 监听地址：本代理转发时不透传 Host（allowlist 丢弃），
+    // reqwest 按目标 URL 重写 Host 为 127.0.0.1:{dsh_port}；上游 requestAuthority、
+    // cookie name、body.authority 验签全都基于该值。用前端发来的 Host（代理端口）
+    // 计算 cookie 会导致 name/body 双错位而 upstream 401，故 build_cookie 入参必须
+    // 是 dsh_authority。is_loopback 门禁仍看原始 Host（非 loopback 来源不注入）。
+    let host_header = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("127.0.0.1:{port}"));
+    let dsh_authority = format!("127.0.0.1:{port}");
+    let mut extra_cookie: Option<String> = None;
+    if super::browser_auth::is_loopback_authority(&host_header) {
+        if let Some(home) = &ctx.dsh_home {
+            match super::browser_auth::build_cookie(&dsh_authority, home) {
+                Some(cookie_val) => {
+                    let prefix = cookie_val.split('=').next().unwrap_or("dsh-auth-?");
+                    let short: String = prefix.chars().take(20).collect();
+                    eprintln!(
+                        "[proxy] BrowserAuth inject authority={} cookie={}… (client host={})",
+                        dsh_authority, short, host_header
+                    );
+                    extra_cookie = Some(cookie_val);
+                }
+                None => {
+                    eprintln!(
+                        "[proxy] BrowserAuth downgrade: no cookie for authority={} (secret 缺失/不可读或 HMAC 失败，保持不注入)",
+                        dsh_authority
+                    );
+                }
+            }
+        } else {
+            eprintln!(
+                "[proxy] BrowserAuth downgrade: dsh_home 未配置，不注入 cookie (authority={})",
+                dsh_authority
+            );
+        }
+    } else {
+        eprintln!(
+            "[proxy] BrowserAuth skip: 非 loopback Host ({})，不注入 cookie",
+            host_header
+        );
+    }
     let upstream = format!("http://127.0.0.1:{port}{path}");
     let mut rb = ctx.client.request(method, &upstream);
     // Allowlist: only forward headers the upstream API actually needs.
     // Drop all browser-specific headers (sec-fetch-*, user-agent, accept-language,
     // priority, etc.) because dsh rejects non-loopback requests based on them.
+    // BUG-14 fix: cookie is forwarded only when we successfully generated a
+    // BrowserAuth cookie above; otherwise keep original allowlist behaviour.
     for (k, v) in headers.iter() {
         let name = k.as_str().to_ascii_lowercase();
         if matches!(
             name.as_str(),
-            "content-type"
-                | "accept"
-                | "authorization"
-                | "x-requested-with"
+            "content-type" | "accept" | "authorization" | "x-requested-with"
         ) {
             rb = rb.header(k, v);
+        } else if name == "cookie" {
+            // Merge upstream-origin cookie (if any) with our BrowserAuth cookie.
+            let existing = v.to_str().unwrap_or("").to_string();
+            let combined = match &extra_cookie {
+                Some(bc) if existing.is_empty() => bc.clone(),
+                Some(bc) => format!("{}; {}", existing, bc),
+                None => existing,
+            };
+            if let Ok(hv) = HeaderValue::from_str(&combined) {
+                rb = rb.header(k, hv);
+            }
+        }
+    }
+    // If no original Cookie header existed but we have a BrowserAuth one, inject it.
+    if extra_cookie.is_some() && !headers.contains_key(header::COOKIE) {
+        if let Some(ref cv) = extra_cookie {
+            if let Ok(hv) = HeaderValue::from_str(cv) {
+                rb = rb.header(header::COOKIE, hv);
+            }
         }
     }
     let body = axum::body::to_bytes(req.into_body(), MAX_BODY_BYTES)
@@ -186,6 +251,20 @@ async fn proxy_api(State(ctx): State<Arc<ProxyContext>>, req: Request) -> Respon
     let up_status = up.status();
     let up_headers = up.headers().clone();
     let bytes = up.bytes().await.unwrap_or_default();
+    // BUG-14 diagnosability: log upstream 401/403 bodies (dsh trust fence or future auth)
+    // to stderr so harness.log contains actionable evidence, not just FE's "transport failure".
+    if up_status.as_u16() == 401 || up_status.as_u16() == 403 {
+        let preview = String::from_utf8_lossy(&bytes);
+        let head = if preview.len() > 600 { format!("{}…", &preview[..600]) } else { preview.to_string() };
+        eprintln!(
+            "[proxy] upstream {} for {} (dsh:{} proxy:{}): {}",
+            up_status.as_u16(),
+            path,
+            port,
+            ctx.dsh_port.load(Ordering::Relaxed),
+            head
+        );
+    }
     let mut resp = Response::new(Body::from(bytes));
     *resp.status_mut() = StatusCode::from_u16(up_status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     for (k, v) in up_headers.iter() {
@@ -305,7 +384,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "live: 需要本地网络栈，手动运行 cargo test -- --ignored proxy_binds_loopback"]
     async fn proxy_binds_loopback_and_forwards() {
-        let handle = start_proxy(3080).await.expect("start proxy");
+        let handle = start_proxy(3080, None).await.expect("start proxy");
         assert!(
             handle.addr.starts_with("127.0.0.1:"),
             "proxy 必须绑定 loopback，实际: {}",

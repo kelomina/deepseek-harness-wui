@@ -1,3 +1,4 @@
+pub mod browser_auth;
 pub mod config;
 pub mod event;
 pub mod manager;

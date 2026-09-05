@@ -857,7 +857,7 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle();
             let cfg = load(handle);
-            let proxy = tauri::async_runtime::block_on(start_proxy(cfg.port))
+            let proxy = tauri::async_runtime::block_on(start_proxy(cfg.port, Some(crate::dsh::plugins::dsh_home(&cfg))))
                 .map_err(|e| format!("proxy start failed: {e}"))?;
             {
                 let state = handle.state::<AppState>();
