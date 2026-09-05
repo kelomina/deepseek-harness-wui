@@ -714,6 +714,18 @@ input,textarea,.composer-input{user-select:text;-webkit-user-select:text}
 @media (prefers-reduced-motion: reduce){.sidebar-resizer,.hm-resizer,.td-resizer{transition:none}}
 
 /* ===== 任务#7：真 pty→xterm（沿用 term/t-tab/btn/hint/toolcall token，无新色系） ===== */
+.pty-wrap{display:flex;flex-direction:column;gap:6px;min-height:0;flex:1}
+.pty-wrap .term-tabs{flex:none;display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.pty-wrap .t-tab{display:inline-flex;align-items:center;gap:6px}
+.pty-x{flex:none;width:18px;height:18px;border-radius:6px;font-size:13px;line-height:1;color:inherit;display:inline-flex;align-items:center;justify-content:center}
+.pty-x:hover{background:#3a3a42;color:#fff}
+.pty-body{flex:1;min-height:260px;height:320px;max-height:46vh;overflow:hidden;border-radius:10px;background:#1e1e1e;border:1px solid var(--border);padding:6px}
+.pty-body .empty-state{color:#737373}
+.pty-screen{height:100%;min-height:240px}
+.pty-screen .xterm{height:100%;padding:2px 4px}
+.td-body .pty-body{height:100%;max-height:none}
+
+/* ===== DSH运行tab·B仪表盘式（沿用 card/head/kv/actions/btn/badge/hint/dot token；blue=运行中/信息、amber=待处理/警告与badge/dot共用） ===== */
 .col-settings .dsh-strip.card{grid-column:1/-1;display:flex;align-items:center;gap:16px;flex-wrap:wrap;background:linear-gradient(135deg,#eef7f0,#ebf3fc)}
 .dsh-strip .dot{width:14px;height:14px;flex:none}
 .dsh-strip .dot.green{background:#2f9e5f;box-shadow:0 0 12px rgba(47,158,95,.8);animation:dsh-pulse 2s infinite}

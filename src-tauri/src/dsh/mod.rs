@@ -6,6 +6,7 @@ pub mod plugin_host;
 pub mod plugins;
 pub mod prereq;
 pub mod proxy;
+pub mod pty;
 pub mod routing_suite;
 pub mod runtime;
 pub mod wsl;

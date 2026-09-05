@@ -214,7 +214,7 @@ export function CodeView() {
         </div>
 
         {/* 0.2.0 条目 1：工具视图（文件/终端/浏览器/Git，MVP；可折叠，≤1280 默认折叠） */}
-        <ToolViews items={items} workspaceRoot={activeWs?.path ?? host?.cwd ?? null} />
+        <ToolViews items={items} workspaceRoot={activeWs?.path ?? host?.cwd ?? null} canOpenPath={host?.canOpenPath ?? null} />
 
         {/* 底部：终端 + 状态栏 */}
         {/* 底部：终端 + 状态栏 */}

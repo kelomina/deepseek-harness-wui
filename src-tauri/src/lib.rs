@@ -5,6 +5,7 @@ use dsh::event::TauriSink;
 use dsh::manager::{lock, spawn_health_watcher, DshManager, DshStatusView};
 use dsh::plugins::{plugins_import, plugins_list, plugins_remove, plugins_set_enabled};
 use dsh::prereq;
+use dsh::pty::{pty_kill, pty_resize, pty_spawn, pty_write, PtyManager};
 use dsh::proxy::{start_proxy, ProxyHandle};
 use dsh::routing_suite::{
     routing_suite_install, routing_suite_remove, routing_suite_status, RoutingSuiteStatus,
@@ -19,6 +20,7 @@ pub struct AppState {
     pub manager: Arc<Mutex<DshManager>>,
     pub proxy: Mutex<Option<ProxyHandle>>,
     pub plugin_host: Arc<Mutex<dsh::plugin_host::PluginHostManager>>,
+    pub pty: Arc<PtyManager>,
 }
 
 #[tauri::command]
@@ -800,6 +802,7 @@ pub fn run() {
             manager: Arc::new(Mutex::new(DshManager::new(DshConfig::default(), 0))),
             proxy: Mutex::new(None),
             plugin_host: Arc::new(Mutex::new(dsh::plugin_host::PluginHostManager::new())),
+            pty: Arc::new(PtyManager::new()),
         })
         .invoke_handler(tauri::generate_handler![
             frontend_error,
@@ -808,6 +811,10 @@ pub fn run() {
             fs_revert,
             fs_list_dir,
             term_exec,
+            pty_spawn,
+            pty_write,
+            pty_resize,
+            pty_kill,
             web_fetch,
             git_status,
             git_diff_file,
