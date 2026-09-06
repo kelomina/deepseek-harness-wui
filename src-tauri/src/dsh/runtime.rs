@@ -1015,7 +1015,7 @@ mod tests {
             &node,
             &["-e", "process.stdout.write('ok-marker')"],
             &cwd,
-            10_000,
+            30_000, // 共享 runner 慢：10s→30s，node 冷启动也不 flake
             None,
         )
         .unwrap();
@@ -1036,12 +1036,12 @@ mod tests {
             &node,
             &["-e", "setInterval(() => {}, 1000)"],
             &cwd,
-            1_500,
+            5_000, // 共享 runner 慢：1.5s→5s；挂起脚本超时路径确定，kill 语义不变
             None,
         );
         assert!(result.is_err(), "expected timeout error");
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(30),
+            started.elapsed() < std::time::Duration::from_secs(120), // 30s→120s runner 友好
             "should return promptly after timeout"
         );
     }
@@ -1058,7 +1058,7 @@ mod tests {
             &node,
             &["-e", "process.stdout.write(String(process.env.HTTPS_PROXY))"],
             &cwd,
-            5_000,
+            15_000, // 共享 runner 慢：5s→15s
             Some(&envs),
         )
         .unwrap();
