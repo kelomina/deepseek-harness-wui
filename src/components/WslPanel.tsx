@@ -92,11 +92,11 @@ export function WslPanel() {
         setWorkspaceDir(report.workspace_dir ?? "");
         const cfg = await dsh.getConfig();
         appStore.set({ config: cfg });
-        setMsg("一键创建/初始化完成");
+        setMsg("准备完成：所选 Linux 系统已装好 DSH 并完成绑定，失败会在下方红条显示原因");
         logger.info("wsl", "一键创建/初始化完成");
         await load();
       } else {
-        setProvisionError(report.error ?? "创建失败");
+        setProvisionError(report.error ?? "安装失败：见上方日志，修好后点“检测并安装 DSH”重试");
       }
     } catch (e) {
       if (isDedupError(e) || isCancelError(e)) return;
@@ -120,7 +120,7 @@ export function WslPanel() {
       const cfg = await dsh.getConfig();
       appStore.set({ config: cfg });
       setConfirm(false);
-      setMsg("WSL 配置已保存（写前已校验发行版与路径；config.json 留有备份）");
+      setMsg("绑定已保存：所选系统和路径已校验并自动备份，成功可直接用 WSL 运行，失败会显示原因");
       logger.info("wsl", "WSL 配置已保存");
     } catch (e) {
       if (isDedupError(e) || isCancelError(e)) return;
@@ -135,20 +135,20 @@ export function WslPanel() {
   return (
     <div className="card">
       <div className="card-head">
-        <span className="card-title">DSH WSL 配置与连接</span>
-        <button className="btn sm" disabled={loading} onClick={() => void load()}>{loading ? "检测中…" : "重新检测"}</button>
+        <span className="card-title">WSL 连接：在 Linux 子系统里运行 DSH</span>
+        <button className="btn sm" disabled={loading} onClick={() => void load()}>{loading ? "正在检测…" : "检测 WSL 状态"}</button>
       </div>
 
-      {status === null && !msg && <div className="empty-state">检测 WSL 状态…</div>}
+      {status === null && !msg && <div className="empty-state">正在检测 WSL 是否可用，成功会列出 Linux 系统，失败会显示原因…</div>}
       {msg && <div className="error-banner" title={msg} style={{ margin: "0 0 10px", userSelect: "text" }}>{msg}</div>}
 
       {status && (
         <>
-          <div className="kv"><span className="k">WSL 可用</span><span className="v">{status.available ? "是" : "否"}</span></div>
-          {status.reason && <div className="kv"><span className="k">不可用原因</span><span className="v">{status.reason}</span></div>}
-          {status.default_distro && <div className="kv"><span className="k">默认发行版</span><span className="v">{status.default_distro}</span></div>}
-          {status.kernel && <div className="kv"><span className="k">内核</span><span className="v">{status.kernel}</span></div>}
-          {status.wsl_version && <div className="kv"><span className="k">WSL</span><span className="v">{status.wsl_version}</span></div>}
+          <div className="kv"><span className="k">WSL 状态</span><span className="v">{status.available ? "可用" : "不可用（见下方说明）"}</span></div>
+          {status.reason && <div className="kv"><span className="k">不可用原因（修好后点“检测 WSL 状态”重试）</span><span className="v">{status.reason}</span></div>}
+          {status.default_distro && <div className="kv"><span className="k">默认 Linux 系统（发行版，不选时就用它）</span><span className="v">{status.default_distro}</span></div>}
+          {status.kernel && <div className="kv"><span className="k">内核版本</span><span className="v">{status.kernel}</span></div>}
+          {status.wsl_version && <div className="kv"><span className="k">WSL 版本</span><span className="v">{status.wsl_version}</span></div>}
 
           {status.distros.length > 0 && (
             <div className="list" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 4, margin: "8px 0" }}>
@@ -164,16 +164,15 @@ export function WslPanel() {
 
           {unavailable ? (
             <div className="empty-state" style={{ textAlign: "left", padding: "12px 0" }}>
-              当前环境无 WSL，配置已停用；应用主流程不受影响。请先安装 WSL（wsl --install）后重试。
+              当前没检测到 WSL，本区已停用但不影响 Windows 直连使用；成功是上方显示“可用”，失败请用管理员终端运行 wsl --install 后点“检测 WSL 状态”重试。
             </div>
           ) : (
             <>
               <div className="section-divider" style={{ margin: "12px 0 8px" }}>
-                <span className="title">一键创建 / 初始化</span>
+                <span className="title">一键准备 Linux 环境</span>
               </div>
               <div className="hint" style={{ marginBottom: 8 }}>
-                目标发行版不存在时自动创建（Ubuntu 基础，跳过首次用户向导），并在其内安装 Node{" "}
-                ≥20 与 dsh（精确锁定版本）。已存在则复用并在其中安装/更新 dsh。
+                点“检测并安装 DSH”即可准备所选 Linux 系统：没有就新建一个 Ubuntu，有就直接复用并装好 Node 20+ 和 DSH；成功提示“准备完成”，失败下方红条显示原因。
               </div>
               <div className="actions">
                 <button
@@ -181,7 +180,7 @@ export function WslPanel() {
                   disabled={provisioning}
                   onClick={() => setProvisionConfirm(true)}
                 >
-                  {provisioning ? "创建中…（见下方日志）" : "一键创建并安装 DSH"}
+                  {provisioning ? "正在安装…（进度见下方日志）" : "检测并安装 DSH"}
                 </button>
               </div>
               {provisionError && (
@@ -212,22 +211,22 @@ export function WslPanel() {
                 </div>
               )}
 
-              <div className="f-label">目标发行版</div>
+              <div className="f-label">要用的 Linux 系统（发行版，不选就用默认）</div>
               <select value={distro} onChange={(e) => setDistro(e.currentTarget.value)}>
-                <option value="">（默认发行版）</option>
+                <option value="">（用默认系统）</option>
                 {status.distros.map((d) => (
                   <option key={d.name} value={d.name}>{d.name}</option>
                 ))}
               </select>
-              <div className="f-label">WSL 内 DSH_HOME（\\wsl$\&lt;发行版&gt;\…）</div>
+              <div className="f-label">DSH 存配置的文件夹（DSH_HOME，格式 \\wsl$\系统名\…）</div>
               <input type="text" value={dshHome} onChange={(e) => setDshHome(e.currentTarget.value)} placeholder={'例如 \\\\wsl$\\CodexUbuntu\\home\\user\\.dsh'} />
-              <div className="f-label">WSL 工作区目录（\\wsl$\&lt;发行版&gt;\…）</div>
+              <div className="f-label">放代码的工作区文件夹（WSL 里能打开的路径，格式同上）</div>
               <input type="text" value={workspaceDir} onChange={(e) => setWorkspaceDir(e.currentTarget.value)} placeholder={'例如 \\\\wsl$\\CodexUbuntu\\home\\user\\projects'} />
               <div className="hint" style={{ marginTop: 8 }}>
-                写操作遵循：最小权限（仅写应用 config.json，不改系统配置）、用户确认（下方按钮二次确认）、失败可恢复（保存前自动备份 config.json）。路径与发行版在写入前校验。
+                点“保存绑定”只改本应用设置并自动备份，成功提示“已保存”，失败会弹出原因，不会改系统设置。
               </div>
               <div className="actions">
-                <button className="btn primary" onClick={() => setConfirm(true)}>保存 WSL 配置（需确认）</button>
+                <button className="btn primary" onClick={() => setConfirm(true)}>保存绑定</button>
               </div>
             </>
           )}
@@ -237,14 +236,13 @@ export function WslPanel() {
       {confirm && (
         <div className="modal-mask" onClick={() => setConfirm(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h4>确认保存 WSL 配置？</h4>
+            <h4>确认保存绑定？</h4>
             <div className="hint">
-              将写入：发行版 = {distro || "（默认）"}，DSH_HOME = {dshHome || "（未设置）"}，工作区 = {workspaceDir || "（未设置）"}。
-              写入前校验发行版存在、路径可访问；保存前备份 config.json。
+              点“确认绑定”会保存：系统 = {distro || "（默认）"}，DSH_HOME = {dshHome || "（未设置）"}，工作区 = {workspaceDir || "（未设置）"}；成功提示“已保存”，失败会显示原因并保留原设置。
             </div>
             <div className="modal-row">
               <button className="btn" onClick={() => setConfirm(false)}>取消</button>
-              <button className="btn primary" disabled={saving} onClick={() => void save()}>{saving ? "保存中…" : "确认保存"}</button>
+              <button className="btn primary" disabled={saving} onClick={() => void save()}>{saving ? "正在保存…" : "确认绑定"}</button>
             </div>
           </div>
         </div>
@@ -253,15 +251,14 @@ export function WslPanel() {
       {provisionConfirm && (
         <div className="modal-mask" onClick={() => setProvisionConfirm(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h4>确认一键创建并安装 DSH？</h4>
+            <h4>确认检测并安装 DSH？</h4>
             <div className="hint">
-              {"目标发行版 = " + (distro || (status?.default_distro ? `（默认：${status.default_distro}）` : "（自动创建 DshUbuntu）"))}
-              。若不存在将创建新发行版并在其中安装 Node ≥20 与 dsh（精确锁定版本）；全程可观察（实时日志），完成后自动写入应用配置（保存前备份 config.json）。
+              点“确认安装”会在所选 Linux 系统里装好 Node 20+ 和 DSH；成功提示“准备完成”并自动绑定，失败红条显示原因。
             </div>
             <div className="modal-row">
               <button className="btn" onClick={() => setProvisionConfirm(false)}>取消</button>
               <button className="btn primary" disabled={provisioning} onClick={() => void provision()}>
-                {provisioning ? "创建中…" : "确认创建并安装"}
+                {provisioning ? "正在安装…" : "确认安装"}
               </button>
             </div>
           </div>

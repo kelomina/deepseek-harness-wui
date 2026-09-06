@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { TD_DEFAULT, TD_MAX, TD_MIN, TD_WIDTH_KEY, useResizableWidth } from "../lib/panelResize";
 import { appStore, useAppState } from "../lib/dsh/store";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import { useConversationItems } from "./Conversation";
@@ -108,27 +109,54 @@ export function ToolDock({
   onClose,
   sessionSubTab,
   onSessionSubTabChange,
+  hideTeamTab,
 }: {
   tab: ToolTab;
   onTabChange: (t: ToolTab) => void;
   onClose: () => void;
   sessionSubTab: SessionSubTab;
   onSessionSubTabChange: (t: SessionSubTab) => void;
+  /** PRD-004 v1.1：Work 主界面（team view）下 Dock 内 team 第七 tab 去重隐藏，防套娃。 */
+  hideTeamTab?: boolean;
 }) {
   const { host, activeWorkspaceId, workspaces, selectedSessionId } = useAppState();
   const unreadErrors = useUnreadErrors();
   const teamPending = useTeamPendingCount();
   const items = useConversationItems();
   const activeWs = workspaces.find((w) => w.workspaceId === activeWorkspaceId) ?? null;
+  const visibleTabs = (["files", "terminal", "web", "git", "session", "logs", "team"] as ToolTab[]).filter(
+    (t) => !(hideTeamTab && t === "team"),
+  );
+  const effectiveTab: ToolTab = hideTeamTab && tab === "team" ? "files" : tab;
+  // 汉堡弹出后的右侧抽屉：左边缘把手调宽（复用 panelResize 同套 pointer+clamp+持久化，dir=-1 右锚定）
+  const { width: dockWidth, setWidth: setDockWidth, startDrag: startDockDrag, onKey: onDockKey } =
+    useResizableWidth(TD_WIDTH_KEY, TD_DEFAULT, TD_MIN, TD_MAX);
 
   return (
-    <div className="tool-dock">
+    <div className="tool-dock tool-resizable" style={{ width: dockWidth }}>
+      <div
+        className="td-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="拖动调整工具面板宽度"
+        title="拖动调整宽度（双击恢复默认）"
+        tabIndex={0}
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          startDockDrag(e, -1);
+        }}
+        onKeyDown={(e) => onDockKey(e, -1)}
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          setDockWidth(TD_DEFAULT);
+        }}
+      />
       <div className="td-head">
-        <div className="td-tabs" style={{ whiteSpace: "nowrap", overflow: "hidden" }}>
-          {(["files", "terminal", "web", "git", "session", "logs", "team"] as ToolTab[]).map((t) => (
+        <div className="td-tabs" style={{ whiteSpace: "nowrap", overflowX: "auto", overflowY: "hidden" }}>
+          {visibleTabs.map((t) => (
             <span
               key={t}
-              className={`t-tab${tab === t ? " on" : ""}`}
+              className={`t-tab${effectiveTab === t ? " on" : ""}`}
               onClick={() => onTabChange(t)}
             >
               {TAB_LABELS[t]}
@@ -144,11 +172,11 @@ export function ToolDock({
         <button className="td-close" title="关闭" onClick={onClose}>×</button>
       </div>
       <div className="td-body">
-        {tab === "team" ? (
+        {effectiveTab === "team" ? (
           <TeamBoard />
-        ) : tab === "logs" ? (
+        ) : effectiveTab === "logs" ? (
           <LogPanel compact />
-        ) : tab === "session" ? (
+        ) : effectiveTab === "session" ? (
           <SessionPanel
             subTab={sessionSubTab}
             onSubTabChange={onSessionSubTabChange}
@@ -157,10 +185,11 @@ export function ToolDock({
           />
         ) : (
           <ToolViews
-            key={tab}
+            key={effectiveTab}
             items={items}
             workspaceRoot={activeWs?.path ?? host?.cwd ?? null}
-            initialTab={tab}
+            canOpenPath={host?.canOpenPath ?? null}
+            initialTab={effectiveTab}
             compact
           />
         )}

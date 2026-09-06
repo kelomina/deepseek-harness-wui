@@ -44,8 +44,8 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "../plugins/dsh-routing-suite",
-      "../plugin-host"
+      "../plugins/dsh-routing-suite/**/*",
+      "../plugin-host/**/*"
     ]
   }
 }

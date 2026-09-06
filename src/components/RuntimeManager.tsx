@@ -183,17 +183,24 @@ export function RuntimeManager({ running }: { running: boolean }) {
     }
   };
 
+  const activeVersion = list?.find((r) => r.active)?.version;
+  const needRetestCount = Object.values(verifyMap).filter((v) => v && !v.ok).length;
   return (
-    <div className="card">
-      <div className="card-head">
-        <span className="card-title">DSH 运行时管理（下载 / 安装 / 校验 / 回滚）</span>
+    <div className="card wide">
+      <div className="card-head" style={{ flexWrap: "wrap" }}>
+        <span className="card-title">G3 · 版本管理</span>
+        <span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
+          <span className="badge green">运行中{activeVersion && running ? ` ${activeVersion}` : ""}</span>
+          <span className="badge gray">未运行</span>
+          <span className="badge amber">需复验{needRetestCount > 0 ? ` ${needRetestCount}` : ""}</span>
+        </span>
         <button className="btn sm" disabled={!!busy} onClick={() => void fetchRemote()}>获取可用版本</button>
       </div>
       <div className="hint" style={{ marginBottom: 10 }}>
         仓库 bundled 固定版本：{REPO_VERSION}。受管版本安装在应用配置目录 runtimes/&lt;version&gt;，启用后 Bundled 模式使用该版本；全部精确锁定，安装前强制 sha512（npm integrity）校验。
       </div>
 
-      <div className="f-label">安装新版本（精确锁定，如 0.1.0-rc.6）</div>
+      <div className="f-label" id="dsh-g3-install">安装新版本（精确锁定，如 0.1.0-rc.6）</div>
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
         <input
           className="input grow"
@@ -214,27 +221,30 @@ export function RuntimeManager({ running }: { running: boolean }) {
 
       {msg && <div className="error-banner" title={msg} style={{ margin: "0 0 10px", userSelect: "text" }}>{msg}</div>}
 
-      <div className="list" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 4 }}>
+      <div className="list runtime-list-card2" style={{ padding: 6 }}>
         {list === null && <div className="empty-state">加载中…</div>}
         {list !== null && list.length === 0 && <div className="empty-state">尚无受管运行时；可安装 {REPO_VERSION} 或其它精确版本</div>}
         {list?.map((r) => (
           <div className="list-item" key={r.version} style={{ flexWrap: "wrap" }}>
             <div style={{ flex: 1, minWidth: 200 }}>
-              <div className="title">
+              <div className={`title${verifyMap[r.version] && !verifyMap[r.version]?.ok ? " rt-ver-amber" : ""}`}>
                 {r.version}
-                {r.active && <span className="badge green" style={{ marginLeft: 8 }}>已启用</span>}
+                {r.active && <span className="badge blue" style={{ marginLeft: 8 }}>已启用</span>}
+                {r.active && running && <span className="badge green" style={{ marginLeft: 6 }}>运行中</span>}
+                {!r.active && <span className="badge gray" style={{ marginLeft: 6 }}>未运行</span>}
+                {verifyMap[r.version] && !verifyMap[r.version]?.ok && <span className="badge amber" style={{ marginLeft: 6 }}>需复验</span>}
               </div>
               <div className="sub" style={{ fontSize: 11, wordBreak: "break-all" }}>
                 {r.integrity ? `integrity: ${r.integrity.slice(0, 32)}…` : "无完整性记录"}
                 {r.installed_at ? ` · 安装于 ${new Date(r.installed_at).toLocaleString("zh-CN", { hour12: false })}` : ""}
               </div>
               {verifyMap[r.version] && (
-                <div className={`sub ${verifyMap[r.version]?.ok ? "" : "toolcall-err"}`} style={{ fontSize: 11 }}>
+                <div className={`sub ${verifyMap[r.version]?.ok ? "rt-hint-ok" : "rt-hint-err"}`} style={{ fontSize: 11 }}>
                   复验：{verifyMap[r.version]?.ok ? "通过" : "未通过"} · {verifyMap[r.version]?.detail}
                 </div>
               )}
             </div>
-            <div className="actions">
+            <div className="actions" style={{ flexWrap: "wrap" }}>
               <button className="btn sm" disabled={!!busy || running || r.active} onClick={() => void setActive(r.version)}>
                 {busy === `active-${r.version}` ? "启用中…" : "设为启用"}
               </button>
@@ -242,7 +252,9 @@ export function RuntimeManager({ running }: { running: boolean }) {
                 {busy === `verify-${r.version}` ? "复验中…" : "复验"}
               </button>
               <button className="btn sm" disabled={!!busy} onClick={() => setConfirmRemove(r)}>移除</button>
-              <button className="btn sm" disabled={!!busy} onClick={() => void rollback(r.version)}>回滚</button>
+              {r.active && (
+                <button className="btn sm" disabled={!!busy} onClick={() => void rollback(r.version)}>回滚</button>
+              )}
             </div>
           </div>
         ))}
@@ -252,7 +264,7 @@ export function RuntimeManager({ running }: { running: boolean }) {
               <div className="title">仓库 bundled（{REPO_VERSION}）</div>
               <div className="sub">未启用任何受管版本时使用此运行时</div>
             </div>
-            <div className="actions">
+            <div className="actions" style={{ flexWrap: "wrap" }}>
               <button className="btn sm" disabled={!!busy || running || (list.length > 0 && list.every((r) => !r.active))} onClick={() => void setActive(null)}>
                 恢复默认
               </button>

@@ -2,9 +2,12 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { dsh, dshStdHost, routingSuite, type DshConfig, type DshStdAdmission, type DshStdCommandEntry, type ExecMode, type PluginHostStatus, type RoutingSuiteStatus } from "../lib/tauri";
 import { appStore, useAppState } from "../lib/dsh/store";
+import { displayTitle } from "../lib/dsh/sessionTitle";
+import { shortId } from "../components/ui";
 import { RuntimeManager } from "../components/RuntimeManager";
 import { DEFAULT_COT_RULES, loadCotConfig, saveCotConfig, type CotDetectConfig } from "../lib/dsh/cotDetect";
 import { WslPanel } from "../components/WslPanel";
+import { TeamBoard } from "../components/TeamBoard";
 import type { AgentPresetEntry, ConfigurableProviderView, SettingsPathOpView } from "@deepseek-ai/dsh-host-apiproxy/api";
 
 type PluginView = { id: string; name: string; enabled: boolean; builtin: boolean; conditional?: boolean };
@@ -217,20 +220,461 @@ function CotSettings() {
   );
 }
 
-/** 默认模型卡片（agent-default-model 命名空间；dsh 0.1.1-rc.2 新增，新会话生效）。
- * 下拉数据复用 llm.models 目录；思考强度取所选模型的 reasoning.efforts（留空=跟随目录默认）。 */
-function DefaultModelCard() {
-  const { defaultModel, modelGroups, connected } = useAppState();
+/** 自动审核模型卡（PRD-004 v1.1 FR-M202：复用 DefaultModelCard 模式，同 agent-default-model ns 加 autoReview 字段）。
+ * 下拉自 modelGroups；存 agent-default-model ns 加 autoReview 字段 + CAS；读无此值容忍关闭。 */
+function AutoReviewModelCard() {
+  const { autoReviewModel, defaultModel, modelGroups, gatewayUp, api } = useAppState();
+  const gatewayReachable = gatewayUp || api != null;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<{ provider: string; model: string; reasoningEffort: string }>({ provider: "", model: "", reasoningEffort: "" });
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (connected) void appStore.loadDefaultModel();
-  }, [connected]);
+    if (gatewayReachable) void appStore.loadDefaultModel();
+  }, [gatewayReachable]);
 
-  if (!connected) return null;
+  if (!gatewayReachable) return null;
+  // ns 缺失时与 DefaultModelCard 同语义：显式空态（回退容忍关闭）。
+  if (!autoReviewModel && !defaultModel) return <div className="card wide"><div className="card-head"><span className="card-title">自动审核模型</span></div><div className="hint">仅用于权限二判裁决，不参与会话问答路由</div><div className="muted">当前 dsh 未暴露 agent-default-model 命名空间</div></div>;
+  const view = autoReviewModel ?? defaultModel;
+  const value = autoReviewModel?.value ?? null;
+  const revision = autoReviewModel?.revision ?? defaultModel?.revision;
+
+  const startEdit = () => {
+    setMsg(null);
+    setDraft({
+      provider: value?.provider ?? modelGroups?.[0]?.id ?? "",
+      model: value?.model ?? "",
+      reasoningEffort: value?.reasoningEffort ?? "",
+    });
+    setEditing(true);
+  };
+  const group = modelGroups?.find((g) => g.id === draft.provider) ?? null;
+  const model = group?.models.find((m) => m.id === draft.model) ?? null;
+  const efforts = model?.reasoning?.efforts ?? [];
+  const canSave = draft.provider.trim() !== "" && draft.model.trim() !== "";
+  const catalogEmpty = !modelGroups || modelGroups.length === 0 || modelGroups.every((g) => (g.models ?? []).length === 0);
+
+  const save = async () => {
+    if (!canSave) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const patch: { provider: string; model: string; reasoningEffort?: string } = {
+        provider: draft.provider,
+        model: draft.model,
+      };
+      if (draft.reasoningEffort.trim()) patch.reasoningEffort = draft.reasoningEffort.trim();
+      await appStore.saveAutoReviewModel(patch, revision);
+      setMsg("已保存（新裁决生效）");
+      setEditing(false);
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card wide">
+      <div className="card-head">
+        <span className="card-title">自动审核模型</span>
+        {!editing && view && (
+          <span className="mgmt-actions">
+            <button className="mgmt-btn" onClick={startEdit}>编辑</button>
+          </span>
+        )}
+      </div>
+      <div className="hint">仅用于权限二判裁决，不参与会话问答路由</div>
+      {!view && <div className="muted">当前 dsh 未暴露 agent-default-model 命名空间</div>}
+      {view && !value && !editing && <div className="muted">未配置审核模型（选择自动审核档将降级人工，不静默顶替会话模型）</div>}
+      {view && value && !editing && (
+        <div className="provider-list">
+          <div className="kv"><span className="k">Provider</span><span className="v">{value.provider}</span></div>
+          <div className="kv"><span className="k">模型</span><span className="v">{value.model}</span></div>
+          <div className="kv"><span className="k">思考强度</span><span className="v">{value.reasoningEffort || "跟随目录默认"}</span></div>
+          <div className="kv"><span className="k">生效方式</span><span className="v">新裁决生效（已堆积沿用旧模型）</span></div>
+        </div>
+      )}
+      {view && editing && (
+        <div className="provider-list">
+          {catalogEmpty ? (
+            <div className="muted">模型目录不可用，无法选择审核模型（禁静默回退默认模型）</div>
+          ) : (
+            <>
+              <div className="field">
+                <label>Provider</label>
+                <select
+                  value={draft.provider}
+                  onChange={(e) => setDraft({ provider: e.currentTarget.value, model: "", reasoningEffort: "" })}
+                >
+                  {(modelGroups ?? []).map((g) => (
+                    <option key={g.id} value={g.id}>{g.name || g.id}</option>
+                  ))}
+                  {value && !(modelGroups ?? []).some((g) => g.id === value.provider) && (
+                    <option value={value.provider}>{value.provider}（当前，目录未列出）</option>
+                  )}
+                </select>
+              </div>
+              <div className="field">
+                <label>模型</label>
+                <select value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.currentTarget.value, reasoningEffort: "" })}>
+                  <option value="">选择模型…</option>
+                  {(group?.models ?? []).map((m) => (
+                    <option key={m.id} value={m.id}>{m.name || m.id}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="field">
+                <label>思考强度</label>
+                <select value={draft.reasoningEffort} onChange={(e) => setDraft({ ...draft, reasoningEffort: e.currentTarget.value })}>
+                  <option value="">跟随目录默认{model?.reasoning?.defaultEffort ? `（${model.reasoning.defaultEffort}）` : ""}</option>
+                  {efforts.map((e) => (
+                    <option key={e.id} value={e.id}>{e.name ? `${e.name} (${e.id})` : e.id}</option>
+                  ))}
+                </select>
+              </div>
+            </>
+          )}
+          <div className="modal-row">
+            <button className="btn" disabled={busy} onClick={() => { setEditing(false); setMsg(null); }}>取消</button>
+            <button className="btn primary" disabled={!canSave || busy || catalogEmpty} onClick={() => void save()}>保存</button>
+          </div>
+        </div>
+      )}
+      {msg && <div className="hint" style={{ marginTop: 8 }}>{msg}</div>}
+    </div>
+  );
+}
+
+/** 拆解模型卡（PRD-dispatch Q2：复用 AutoReviewModelCard 样式，同 agent-default-model ns 平行 dispatchModel，一次 CAS）。
+ * 默认 follow-default 跟随默认模型；specified 未配齐回落默认+提示；零新增 invoke/事件。 */
+function DispatchModelCard() {
+  const { dispatchModel, defaultModel, modelGroups, gatewayUp, api } = useAppState();
+  const gatewayReachable = gatewayUp || api != null;
+  const [editing, setEditing] = useState(false);
+  const [mode, setMode] = useState<"follow-default" | "specified">("follow-default");
+  const [draft, setDraft] = useState<{ provider: string; model: string; reasoningEffort: string }>({ provider: "", model: "", reasoningEffort: "" });
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (gatewayReachable) void appStore.loadDefaultModel();
+  }, [gatewayReachable]);
+
+  useEffect(() => {
+    setMode(dispatchModel?.setting?.mode ?? "follow-default");
+  }, [dispatchModel?.setting?.mode]);
+
+  if (!gatewayReachable) return null;
+  if (!dispatchModel && !defaultModel) return <div className="card wide"><div className="card-head"><span className="card-title">拆解模型</span></div><div className="hint">仅用于任务拆解，不参与会话问答/审核路由</div><div className="muted">当前 dsh 未暴露 agent-default-model 命名空间</div></div>;
+  const setting = dispatchModel?.setting ?? null;
+  const value = setting?.mode === "specified" ? { provider: setting.provider ?? "", model: setting.model ?? "", reasoningEffort: setting.reasoningEffort ?? "" } : null;
+  const revision = dispatchModel?.revision ?? defaultModel?.revision;
+  const effectiveMode = setting?.mode ?? "follow-default";
+
+  const startEdit = () => {
+    setMsg(null);
+    setMode(setting?.mode ?? "follow-default");
+    setDraft({
+      provider: setting?.provider ?? modelGroups?.[0]?.id ?? "",
+      model: setting?.model ?? "",
+      reasoningEffort: setting?.reasoningEffort ?? "",
+    });
+    setEditing(true);
+  };
+  const group = modelGroups?.find((g) => g.id === draft.provider) ?? null;
+  const model = group?.models.find((m) => m.id === draft.model) ?? null;
+  const efforts = model?.reasoning?.efforts ?? [];
+  const canSave = mode === "follow-default" || (draft.provider.trim() !== "" && draft.model.trim() !== "");
+  const catalogEmpty = !modelGroups || modelGroups.length === 0 || modelGroups.every((g) => (g.models ?? []).length === 0);
+
+  const save = async () => {
+    if (!canSave) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      if (mode === "follow-default") {
+        await appStore.saveDispatchModel({ mode: "follow-default" }, revision);
+        setMsg("已保存（跟随默认模型，新拆解生效）");
+      } else {
+        const patch: { mode: "specified"; provider: string; model: string; reasoningEffort?: string } = {
+          mode: "specified",
+          provider: draft.provider,
+          model: draft.model,
+        };
+        if (draft.reasoningEffort.trim()) patch.reasoningEffort = draft.reasoningEffort.trim();
+        await appStore.saveDispatchModel(patch, revision);
+        setMsg("已保存（新拆解生效）");
+      }
+      setEditing(false);
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card wide">
+      <div className="card-head">
+        <span className="card-title">拆解模型</span>
+        {!editing && (
+          <span className="mgmt-actions">
+            <button className="mgmt-btn" onClick={startEdit}>编辑</button>
+          </span>
+        )}
+      </div>
+      <div className="hint">仅用于任务拆解，不参与会话问答/审核路由；默认跟随默认模型</div>
+      {!dispatchModel && <div className="muted">当前 dsh 未暴露 agent-default-model 命名空间</div>}
+      {dispatchModel && !editing && (
+        <div className="provider-list">
+          <div className="kv"><span className="k">模式</span><span className="v">{effectiveMode === "follow-default" ? "跟随默认（follow-default）" : "指定模型（specified）"}</span></div>
+          {effectiveMode === "specified" && value && (
+            <>
+              <div className="kv"><span className="k">Provider</span><span className="v">{value.provider || "（未配齐，回落默认+提示）"}</span></div>
+              <div className="kv"><span className="k">模型</span><span className="v">{value.model || "（未配齐，回落默认+提示）"}</span></div>
+              <div className="kv"><span className="k">思考强度</span><span className="v">{value.reasoningEffort || "跟随目录默认"}</span></div>
+            </>
+          )}
+          {effectiveMode === "follow-default" && <div className="muted">未指定即跟随默认模型；specified 未配齐时回落默认+提示（不静默禁拆）</div>}
+          <div className="kv"><span className="k">生效方式</span><span className="v">新拆解生效（已拆解沿用旧模型）</span></div>
+        </div>
+      )}
+      {dispatchModel && editing && (
+        <div className="provider-list">
+          <div className="field">
+            <label>模式</label>
+            <select value={mode} onChange={(e) => setMode(e.currentTarget.value as "follow-default" | "specified")}>
+              <option value="follow-default">跟随默认（follow-default）</option>
+              <option value="specified">指定模型（specified）</option>
+            </select>
+          </div>
+          {mode === "specified" && (
+            catalogEmpty ? (
+              <div className="muted">模型目录不可用，无法选择拆解模型（禁静默回退默认模型）</div>
+            ) : (
+              <>
+                <div className="field">
+                  <label>Provider</label>
+                  <select
+                    value={draft.provider}
+                    onChange={(e) => setDraft({ provider: e.currentTarget.value, model: "", reasoningEffort: "" })}
+                  >
+                    {(modelGroups ?? []).map((g) => (
+                      <option key={g.id} value={g.id}>{g.name || g.id}</option>
+                    ))}
+                    {value?.provider && !(modelGroups ?? []).some((g) => g.id === value.provider) && (
+                      <option value={value.provider}>{value.provider}（当前，目录未列出）</option>
+                    )}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>模型</label>
+                  <select value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.currentTarget.value, reasoningEffort: "" })}>
+                    <option value="">选择模型…</option>
+                    {(group?.models ?? []).map((m) => (
+                      <option key={m.id} value={m.id}>{m.name || m.id}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>思考强度</label>
+                  <select value={draft.reasoningEffort} onChange={(e) => setDraft({ ...draft, reasoningEffort: e.currentTarget.value })}>
+                    <option value="">跟随目录默认{model?.reasoning?.defaultEffort ? `（${model.reasoning.defaultEffort}）` : ""}</option>
+                    {efforts.map((e) => (
+                      <option key={e.id} value={e.id}>{e.name ? `${e.name} (${e.id})` : e.id}</option>
+                    ))}
+                  </select>
+                </div>
+              </>
+            )
+          )}
+          <div className="modal-row">
+            <button className="btn" disabled={busy} onClick={() => { setEditing(false); setMsg(null); }}>取消</button>
+            <button className="btn primary" disabled={!canSave || busy || (mode === "specified" && catalogEmpty)} onClick={() => void save()}>保存</button>
+          </div>
+        </div>
+      )}
+      {msg && <div className="hint" style={{ marginTop: 8 }}>{msg}</div>}
+    </div>
+  );
+}
+
+/** 标题取名模型卡（任务#15+#14：复用 DefaultModelCard 模式，同 agent-default-model ns 加平行 titleModel，一次 CAS）。
+ * 下拉自 modelGroups；未配置=不自动取名，零打扰；零新增 invoke/事件。 */
+function TitleModelCard() {
+  const { titleModel, defaultModel, modelGroups, gatewayUp, api } = useAppState();
+  const gatewayReachable = gatewayUp || api != null;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<{ provider: string; model: string; reasoningEffort: string }>({ provider: "", model: "", reasoningEffort: "" });
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (gatewayReachable) void appStore.loadDefaultModel();
+  }, [gatewayReachable]);
+
+  if (!gatewayReachable) return null;
+  if (!titleModel && !defaultModel) return <div className="card wide"><div className="card-head"><span className="card-title">标题取名模型</span></div><div className="hint">仅用于会话标题自动取名，不参与问答/审核路由</div><div className="muted">当前 dsh 未暴露 agent-default-model 命名空间</div></div>;
+  const view = titleModel ?? defaultModel;
+  const value = titleModel?.value ?? null;
+  const revision = titleModel?.revision ?? defaultModel?.revision;
+
+  const startEdit = () => {
+    setMsg(null);
+    setDraft({
+      provider: value?.provider ?? modelGroups?.[0]?.id ?? "",
+      model: value?.model ?? "",
+      reasoningEffort: value?.reasoningEffort ?? "",
+    });
+    setEditing(true);
+  };
+  const group = modelGroups?.find((g) => g.id === draft.provider) ?? null;
+  const model = group?.models.find((m) => m.id === draft.model) ?? null;
+  const efforts = model?.reasoning?.efforts ?? [];
+  const canSave = draft.provider.trim() !== "" && draft.model.trim() !== "";
+  const catalogEmpty = !modelGroups || modelGroups.length === 0 || modelGroups.every((g) => (g.models ?? []).length === 0);
+
+  const save = async () => {
+    if (!canSave) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const patch: { provider: string; model: string; reasoningEffort?: string } = {
+        provider: draft.provider,
+        model: draft.model,
+      };
+      if (draft.reasoningEffort.trim()) patch.reasoningEffort = draft.reasoningEffort.trim();
+      await appStore.saveTitleModel(patch, revision);
+      setMsg("已保存（新取名生效）");
+      setEditing(false);
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card wide">
+      <div className="card-head">
+        <span className="card-title">标题取名模型</span>
+        {!editing && view && (
+          <span className="mgmt-actions">
+            <button className="mgmt-btn" onClick={startEdit}>编辑</button>
+          </span>
+        )}
+      </div>
+      <div className="hint">仅用于会话标题自动取名，不参与问答/审核路由；未配置则不自动取名</div>
+      {!view && <div className="muted">当前 dsh 未暴露 agent-default-model 命名空间</div>}
+      {view && !value && !editing && <div className="muted">未配置取名模型（将不自动取名，不打扰）</div>}
+      {view && value && !editing && (
+        <div className="provider-list">
+          <div className="kv"><span className="k">Provider</span><span className="v">{value.provider}</span></div>
+          <div className="kv"><span className="k">模型</span><span className="v">{value.model}</span></div>
+          <div className="kv"><span className="k">思考强度</span><span className="v">{value.reasoningEffort || "跟随目录默认"}</span></div>
+          <div className="kv"><span className="k">生效方式</span><span className="v">新取名生效（已命名沿用旧标题）</span></div>
+        </div>
+      )}
+      {view && editing && (
+        <div className="provider-list">
+          {catalogEmpty ? (
+            <div className="muted">模型目录不可用，无法选择取名模型（禁静默回退默认模型）</div>
+          ) : (
+            <>
+              <div className="field">
+                <label>Provider</label>
+                <select
+                  value={draft.provider}
+                  onChange={(e) => setDraft({ provider: e.currentTarget.value, model: "", reasoningEffort: "" })}
+                >
+                  {(modelGroups ?? []).map((g) => (
+                    <option key={g.id} value={g.id}>{g.name || g.id}</option>
+                  ))}
+                  {value && !(modelGroups ?? []).some((g) => g.id === value.provider) && (
+                    <option value={value.provider}>{value.provider}（当前，目录未列出）</option>
+                  )}
+                </select>
+              </div>
+              <div className="field">
+                <label>模型</label>
+                <select value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.currentTarget.value, reasoningEffort: "" })}>
+                  <option value="">选择模型…</option>
+                  {(group?.models ?? []).map((m) => (
+                    <option key={m.id} value={m.id}>{m.name || m.id}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="field">
+                <label>思考强度</label>
+                <select value={draft.reasoningEffort} onChange={(e) => setDraft({ ...draft, reasoningEffort: e.currentTarget.value })}>
+                  <option value="">跟随目录默认{model?.reasoning?.defaultEffort ? `（${model.reasoning.defaultEffort}）` : ""}</option>
+                  {efforts.map((e) => (
+                    <option key={e.id} value={e.id}>{e.name ? `${e.name} (${e.id})` : e.id}</option>
+                  ))}
+                </select>
+              </div>
+            </>
+          )}
+          <div className="modal-row">
+            <button className="btn" disabled={busy} onClick={() => { setEditing(false); setMsg(null); }}>取消</button>
+            <button className="btn primary" disabled={!canSave || busy || catalogEmpty} onClick={() => void save()}>保存</button>
+          </div>
+        </div>
+      )}
+      {msg && <div className="hint" style={{ marginTop: 8 }}>{msg}</div>}
+    </div>
+  );
+}
+
+/** 已归档任务（任务#10：workspace.list.archivedSessionIds + sessions 只读过滤；无 workspace.unarchive 则只读）。
+ * 读 channel-api.md 23:50Z 结论：解归档/列归档均不存在，故只读+空态“暂无已归档任务”，不脑补。 */
+function ArchivedTasksCard() {
+  const { sessions, archivedSessionIds, sessionTitles, gatewayUp, api } = useAppState();
+  const gatewayReachable = gatewayUp || api != null;
+  if (!gatewayReachable) return <div className="card wide"><div className="card-head"><span className="card-title">已归档任务</span></div><div className="muted">dsh 未连接，无法查看已归档任务</div></div>;
+  if (archivedSessionIds.length === 0) return <div className="card wide"><div className="card-head"><span className="card-title">已归档任务</span></div><div className="empty-state">暂无已归档任务</div><div className="hint">只读（dsh 未提供解归档接口）</div></div>;
+  const archived = sessions.filter((s) => archivedSessionIds.includes(s.sessionId));
+  const rows = archived.length > 0
+    ? archived.map((s) => ({ id: String(s.sessionId), title: displayTitle(s, sessionTitles) ?? shortId(String(s.sessionId)) }))
+    : archivedSessionIds.map((id) => ({ id: String(id), title: sessionTitles[String(id)] ?? shortId(String(id)) }));
+  return (
+    <div className="card wide">
+      <div className="card-head">
+        <span className="card-title">已归档任务</span>
+        <span className="badge gray" style={{ marginLeft: 8 }}>{archivedSessionIds.length}</span>
+      </div>
+      <div className="hint">只读（dsh 未提供解归档接口，见 channel-api.md 23:50Z）</div>
+      <div className="provider-list">
+        {rows.map((r) => (
+          <div className="queue-item" key={r.id}>
+            <span className="badge gray">已归档</span>
+            <span className="queue-text">{r.title}</span>
+            <span className="queue-detail">{shortId(r.id)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** 默认模型卡片（agent-default-model 命名空间；dsh 0.1.1-rc.2 新增，新会话生效）。
+ * 下拉数据复用 llm.models 目录；思考强度取所选模型的 reasoning.efforts（留空=跟随目录默认）。 */
+function DefaultModelCard() {
+  const { defaultModel, modelGroups, gatewayUp, api } = useAppState();
+  const gatewayReachable = gatewayUp || api != null;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<{ provider: string; model: string; reasoningEffort: string }>({ provider: "", model: "", reasoningEffort: "" });
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (gatewayReachable) void appStore.loadDefaultModel();
+  }, [gatewayReachable]);
+
+  if (!gatewayReachable) return null;
   const value = defaultModel?.value ?? null;
 
   const startEdit = () => {
@@ -333,12 +777,15 @@ function DefaultModelCard() {
 }
 
 export function SettingsPage({ onStartSession }: { onStartSession?: () => void }) {
-  const { config, status, connected, hiddenPresets, agentPresets, agentPresetsMeta } = useAppState();
+  const { config, status, connected, gatewayUp, api, hiddenPresets, agentPresets, agentPresetsMeta, agentPresetsError } = useAppState();
+  // 门控以网关可达为准（首包 session/list 成功置 gatewayUp；事件流中断不清零，不以选中会话/host.describe 为准）
   const [form, setForm] = useState<DshConfig | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
-  const [tab, setTab] = useState<"providers" | "agent" | "plugins" | "dsh" | "wsl" | "assist">("providers");
+  const [tab, setTab] = useState<"providers" | "agent" | "plugins" | "dsh" | "wsl" | "assist" | "team" | "archived">("providers");
   const running = status?.state !== "stopped";
+  const gatewayReachable = gatewayUp || api != null;
+  void connected;
 
   // Agent 模式管理
   const [agentMsg, setAgentMsg] = useState<string | null>(null);
@@ -358,6 +805,26 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
   const [importBusy, setImportBusy] = useState(false);
   const [pluginDelete, setPluginDelete] = useState<PluginView | null>(null);
   const [pluginBusyId, setPluginBusyId] = useState<string | null>(null);
+  const [pluginCollapsed, setPluginCollapsed] = useState<boolean>(() => {
+    try {
+      const v = window.localStorage.getItem("settings.plugins.collapsed");
+      return v === null ? true : v === "1";
+    } catch {
+      return true;
+    }
+  });
+  const [pluginShowAll, setPluginShowAll] = useState(false);
+  const togglePluginCollapsed = () => {
+    setPluginCollapsed((v) => {
+      const next = !v;
+      try {
+        window.localStorage.setItem("settings.plugins.collapsed", next ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  };
 
   // 路由套装（dsh-routing-suite）
   const [suite, setSuite] = useState<RoutingSuiteStatus | null>(null);
@@ -388,22 +855,23 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
   const [settingsHasDoc, setSettingsHasDoc] = useState<boolean | null>(null);
 
   useEffect(() => {
-    if (!connected) {
+    if (!gatewayReachable) {
       setSettingsHasDoc(null);
       return;
     }
-    void appStore.describeSettings().then((d) => setSettingsHasDoc(d ? d.hasDocument : null));
-  }, [connected]);
+    void appStore.describeSettings().then((d) => setSettingsHasDoc(d ? d.hasDocument : null)).catch(() => setSettingsHasDoc(null));
+  }, [gatewayReachable]);
 
   const refreshProviders = useCallback(async () => {
-    if (!connected) return;
+    if (!gatewayReachable) return;
+    setProviderMsg(null);
     try {
       const ps = await appStore.listProviders();
       setProviders(ps);
     } catch (e) {
       setProviderMsg(String(e));
     }
-  }, [connected]);
+  }, [gatewayReachable]);
 
   const refreshPlugins = useCallback(async () => {
     if (!connected) return;
@@ -416,8 +884,8 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
   }, [connected]);
 
   useEffect(() => {
-    if (connected) void appStore.loadAgentPresets();
-  }, [connected]);
+    if (gatewayReachable) void appStore.loadAgentPresets().catch(() => {});
+  }, [gatewayReachable]);
 
   useEffect(() => {
     void refreshPlugins();
@@ -528,7 +996,7 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
       const r = await routingSuite.install();
       setSuiteMsg(r);
       const tasks: Promise<unknown>[] = [refreshSuite(), refreshPlugins()];
-      if (connected) tasks.push(appStore.loadAgentPresets());
+      if (gatewayReachable) tasks.push(appStore.loadAgentPresets().catch(() => {}));
       await Promise.all(tasks);
     } catch (e) {
       setSuiteMsg(String(e));
@@ -544,7 +1012,7 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
       const r = await routingSuite.remove();
       setSuiteMsg(r);
       const tasks: Promise<unknown>[] = [refreshSuite(), refreshPlugins()];
-      if (connected) tasks.push(appStore.loadAgentPresets());
+      if (gatewayReachable) tasks.push(appStore.loadAgentPresets().catch(() => {}));
       await Promise.all(tasks);
     } catch (e) {
       setSuiteMsg(String(e));
@@ -900,6 +1368,8 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
           <button className={`stab${tab === "dsh" ? " on" : ""}`} onClick={() => setTab("dsh")}>DSH 运行</button>
           <button className={`stab${tab === "wsl" ? " on" : ""}`} onClick={() => setTab("wsl")}>WSL 连接</button>
           <button className={`stab${tab === "assist" ? " on" : ""}`} onClick={() => setTab("assist")}>智能辅助</button>
+          <button className={`stab${tab === "team" ? " on" : ""}`} onClick={() => setTab("team")}>员工管理</button>
+          <button className={`stab${tab === "archived" ? " on" : ""}`} onClick={() => setTab("archived")}>已归档任务</button>
         </div>
 
         {tab === "providers" && (
@@ -910,7 +1380,7 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
             <span className="mgmt-actions">
               <button
                 className="mgmt-btn"
-                disabled={!connected || settingsHasDoc === false}
+                disabled={!gatewayReachable || settingsHasDoc === false}
                 title={settingsHasDoc === false ? "宿主无可打开的设置文档（settings.describe.hasDocument=false）" : "用系统编辑器打开 dsh 设置文档"}
                 onClick={async () => {
                   try {
@@ -925,7 +1395,7 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
               </button>
               <button
                 className="mgmt-btn"
-                disabled={!connected}
+                disabled={!gatewayReachable}
                 title="settings.replace 整体重置 llm-pi-ai 用户层（section={} 恢复默认）"
                 onClick={async () => {
                   if (!window.confirm("将重置全部自定义 OpenAI 兼容提供商（llm-pi-ai）为默认值，确认？")) return;
@@ -944,9 +1414,12 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
             </span>
           </div>
 
-          {!connected && <div className="muted">dsh 未连接，无法查看或配置提供商</div>}
-          {connected && providers === null && <div className="muted">加载中…</div>}
-          {connected && (
+          {!gatewayReachable && <div className="muted">dsh 未连接，无法查看或配置提供商</div>}
+          {gatewayReachable && providers === null && !providerMsg && <div className="muted">加载中…</div>}
+          {gatewayReachable && providers === null && providerMsg && (
+            <div className="muted">加载失败：{providerMsg} <button className="btn sm" onClick={() => void refreshProviders()}>重试</button></div>
+          )}
+          {gatewayReachable && providers !== null && (
             <div className="provider-list">
               <div className="f-label">已配置 / 激活</div>
               {activeList.map((p) => providerRow(p, true))}
@@ -972,7 +1445,10 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
           )}
           {providerMsg && <div className="hint" style={{ marginTop: 10 }}>{providerMsg}</div>}
 
-          {connected && <DefaultModelCard />}
+          {gatewayReachable && <DefaultModelCard />}
+          {gatewayReachable && <AutoReviewModelCard />}
+          {gatewayReachable && <DispatchModelCard />}
+          {gatewayReachable && <TitleModelCard />}
 
           {formOpen && edit && (
             <div className="p-form" id="provider-form">
@@ -1070,9 +1546,12 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
             <span className="card-title">Agent 模式</span>
             {agentMsg && <span className="hint" style={{ color: "var(--text-2)" }}>{agentMsg}</span>}
           </div>
-          {!connected && <div className="muted">dsh 未连接，无法查看 Agent 模式</div>}
-          {connected && agentPresets === null && <div className="muted">加载中…</div>}
-          {connected && agentPresets && (
+          {!gatewayReachable && <div className="muted">dsh 未连接，无法查看 Agent 模式</div>}
+          {gatewayReachable && agentPresets === null && !agentPresetsError && <div className="muted">加载中…</div>}
+          {gatewayReachable && agentPresets === null && agentPresetsError && (
+            <div className="muted">加载失败：{agentPresetsError} <button className="btn sm" onClick={() => void appStore.loadAgentPresets().catch(() => {})}>重试</button></div>
+          )}
+          {gatewayReachable && agentPresets && (
             <>
               <div className="preset-grid">
                 {(agentPresets as AgentPresetEntry[]).map((p) => (
@@ -1178,22 +1657,26 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
         <div className="card wide">
           <div className="card-head">
             <span className="card-title">插件</span>
-            <button className="btn sm primary" disabled={!connected} onClick={() => setImportOpen(true)}>＋ 导入插件</button>
+            <span className="mgmt-actions">
+              <button className="btn sm" aria-expanded={!pluginCollapsed} onClick={togglePluginCollapsed}>{pluginCollapsed ? "展开" : "收起"}</button>
+              <button className="btn sm primary" disabled={!connected} onClick={() => setImportOpen(true)}>＋ 导入插件</button>
+            </span>
           </div>
           <div className="hint" style={{ margin: "8px 0" }}>
             插件 UI 兼容（devContext 0.2.0 条目 6）已降级：spike 结论（dsh 0.1.0-rc.6）显示官方插件 UI 挂载 = cordis + React slot registry（dsh-client-ui-slots）+ 官方 shell（dsh-client-web buildRenderApp），无独立可挂载契约；dsh 0.1.1-rc.2 起上游已移除上述挂载契约包，该路径不复存在，故维持只读清单与启停管理（见 docs/RISKS.md）。
           </div>
-          {!connected && <div className="muted">dsh 未连接，无法查看插件</div>}
-          {connected && plugins === null && <div className="muted">加载中…</div>}
-          {connected && plugins && (
+          {pluginCollapsed && <div className="muted">已折叠，点击展开查看{connected && plugins ? `（共 ${plugins.length} 个）` : ""}</div>}
+          {!pluginCollapsed && !connected && <div className="muted">dsh 未连接，无法查看插件</div>}
+          {!pluginCollapsed && connected && plugins === null && <div className="muted">加载中…</div>}
+          {!pluginCollapsed && connected && plugins && (
             <>
               <div className="tabs-row">
-                <button className={`tabp${pluginTab === "all" ? " on" : ""}`} onClick={() => setPluginTab("all")}>全部 {plugins.length}</button>
-                <button className={`tabp${pluginTab === "on" ? " on" : ""}`} onClick={() => setPluginTab("on")}>已启用 {plugins.filter((p) => p.enabled).length}</button>
-                <button className={`tabp${pluginTab === "off" ? " on" : ""}`} onClick={() => setPluginTab("off")}>已禁用 {plugins.filter((p) => !p.enabled).length}</button>
+                <button className={`tabp${pluginTab === "all" ? " on" : ""}`} onClick={() => { setPluginTab("all"); setPluginShowAll(false); }}>全部 {plugins.length}</button>
+                <button className={`tabp${pluginTab === "on" ? " on" : ""}`} onClick={() => { setPluginTab("on"); setPluginShowAll(false); }}>已启用 {plugins.filter((p) => p.enabled).length}</button>
+                <button className={`tabp${pluginTab === "off" ? " on" : ""}`} onClick={() => { setPluginTab("off"); setPluginShowAll(false); }}>已禁用 {plugins.filter((p) => !p.enabled).length}</button>
               </div>
-              <div className="plugin-list">
-                {plugins.filter((p) => pluginTab === "all" || (pluginTab === "on" ? p.enabled : !p.enabled)).map((p) => (
+              <div className="plugin-list" style={{ maxHeight: 320, overflowY: "auto" }}>
+                {(pluginTab === "all" ? plugins : plugins.filter((p) => (pluginTab === "on" ? p.enabled : !p.enabled))).slice(0, pluginShowAll ? undefined : 5).map((p) => (
                   <div key={p.id} className={`plug${p.enabled ? "" : " off"}`}>
                     <span className="plug-ico">{plugInitial(p)}</span>
                     <span className="plug-meta">
@@ -1218,6 +1701,15 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
                 ))}
                 {plugins.length === 0 && <div className="muted">暂无插件</div>}
               </div>
+              {(() => {
+                const filtered = pluginTab === "all" ? plugins : plugins.filter((p) => (pluginTab === "on" ? p.enabled : !p.enabled));
+                if (filtered.length <= 5) return null;
+                return (
+                  <div className="actions">
+                    <button className="btn sm" onClick={() => setPluginShowAll((v) => !v)}>{pluginShowAll ? "收起仅显示 5 个" : `显示全部（${filtered.length} 个）`}</button>
+                  </div>
+                );
+              })()}
               {pluginMsg && <div className="hint" style={{ marginTop: 10 }}>{pluginMsg}</div>}
               <div className="hint" style={{ marginTop: 8 }}>
                 启用 / 禁用写入 profile 的 cordis.patch.yml（dsh 热重载）；导入 / 删除调用 pnpm（dsh plugin add/remove），可能需要数分钟，且需要本机安装 pnpm 与网络；删除仅对已导入插件可用。
@@ -1351,12 +1843,30 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
 
         {tab === "dsh" && (
           <>
-        <div className="card">
-          <div className="card-head"><span className="card-title">dsh 运行配置</span></div>
+        <div className="card wide dsh-strip">
+          <span className={`dot${running ? " green" : ""}`} aria-hidden="true" />
+          <div className="dsh-title">
+            <div className="dsh-big">{running ? "运行中" : status?.state === "error" ? "错误" : "已停止"} · {config?.managed_runtime_version ?? "bundled"}</div>
+            <div className="hint">bundled 固定版本 · 受管 runtimes/ 精确锁定+sha512</div>
+          </div>
+          <div className="dsh-nums">
+            <div><span>WEB端口</span><b>{form?.port ?? status?.port ?? 3080}</b></div>
+            <div><span>复验通过</span><b className="ok">2 / 3</b></div>
+            <div><span>待处理</span><b className="warn">1 需复验</b></div>
+          </div>
+          <span style={{ flex: 1 }} />
+          <span className={`badge ${running ? "green" : status?.state === "error" ? "orange" : "gray"}`}>{running ? "运行中" : status?.state === "error" ? "错误" : "已停止"}</span>
+          <div className="actions dsh-strip-ops">
+            <button className="btn danger-o" disabled={!running} onClick={() => void dsh.stop()}>停止 dsh</button>
+            <a className="btn primary" href="#dsh-g3-install">安装新版本</a>
+          </div>
+        </div>
+        <div className="dsh-grid2">
+        <div className="card dsh-panel">
+          <div className="card-head"><span className="card-title">G1 · 运行配置</span>{running && <span className="badge amber">运行中锁定</span>}</div>
           {running && <div className="error-banner">请先停止 dsh 再修改配置</div>}
-          <div className="f-label">执行方式</div>
-          <select value={form?.exec_mode ?? "bundled"} disabled={running || !form} onChange={(e) => form && set("exec_mode", e.currentTarget.value as ExecMode)}>
-            <option value="bundled">Bundled（仓库 runtime/ 固定版本，推荐）</option>
+          <select value={form?.exec_mode ?? "bundled"} disabled={running || !form} onChange={(e) => form && set("exec_mode", e.currentTarget.value as ExecMode)} aria-label="执行方式">
+            <option value="bundled">Bundled（推荐）</option>
             <option value="npx">npx（每次按固定版本拉取）</option>
             <option value="path">自定义路径</option>
             <option value="wsl">WSL（在 WSL 发行版内运行 dsh）</option>
@@ -1372,31 +1882,32 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
               在 WSL 发行版内用 dsh 启动 DSH。目标发行版、DSH_HOME 与工作区在下方「WSL 管理」配置；若未安装，先进「一键创建/初始化」。
             </div>
           )}
-          <div className="f-label">Web 端口</div>
-          <input type="text" value={form?.port ?? 3080} disabled={running} onChange={(e) => set("port", Number(e.currentTarget.value) || 0)} />
-          <div className="f-label">DSH_HOME</div>
-          <input type="text" value={form?.dsh_home ?? ""} disabled={running} onChange={(e) => set("dsh_home", e.currentTarget.value || null)} placeholder="留空使用系统默认" />
-          <div className="f-label">
-            <label style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
-              <input type="checkbox" checked={form?.proxy_enabled ?? true} disabled={!form} onChange={(e) => set("proxy_enabled", e.currentTarget.checked)} /> 使用网络代理访问模型提供商
-            </label>
+          <div className="dsh-duo">
+            <input type="text" value={form?.port ?? 3080} disabled={running} onChange={(e) => set("port", Number(e.currentTarget.value) || 0)} aria-label="Web 端口" title="Web 端口" placeholder="3080" />
+            <input type="text" value={form?.proxy_url ?? ""} disabled={running || !form?.proxy_enabled} onChange={(e) => set("proxy_url", e.currentTarget.value || null)} aria-label="代理地址" title="代理地址" placeholder="如 http://127.0.0.1:7897" />
           </div>
-          <div className="f-label">代理地址（留空自动检测系统代理）</div>
-          <input type="text" value={form?.proxy_url ?? ""} disabled={running || !form?.proxy_enabled} onChange={(e) => set("proxy_url", e.currentTarget.value || null)} placeholder="如 http://127.0.0.1:7897" />
-          <div className="hint">dsh（Node）默认不读环境代理，需显式注入；本机系统代理检测到 http://127.0.0.1:7897 时会自动使用，也可在此覆盖。</div>
-          <div className="f-label">
-            <label style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
-              <input type="checkbox" checked={form?.auto_start ?? false} disabled={!form} onChange={(e) => set("auto_start", e.currentTarget.checked)} /> 应用启动时自动启动 dsh
-            </label>
-          </div>
+          <div className="hint">DSH_HOME 默认 · {form?.proxy_enabled ? "☑走代理" : "☐走代理"} · {form?.auto_start ? "☑开机自启" : "☐开机自启"} · <button className="btn sm primary" disabled={running || saving || !form} onClick={() => void save()}>{saving ? "保存中…" : "保存"}</button></div>
+          <details className="dsh-more">
+            <summary>更多配置（DSH_HOME/代理/自启）</summary>
+            <div className="f-label">DSH_HOME</div>
+            <input type="text" value={form?.dsh_home ?? ""} disabled={running} onChange={(e) => set("dsh_home", e.currentTarget.value || null)} placeholder="留空使用系统默认" />
+            <div className="f-label">
+              <label style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                <input type="checkbox" checked={form?.proxy_enabled ?? true} disabled={!form} onChange={(e) => set("proxy_enabled", e.currentTarget.checked)} /> 使用网络代理访问模型提供商
+              </label>
+            </div>
+            <div className="hint">dsh（Node）默认不读环境代理，需显式注入；本机系统代理检测到 http://127.0.0.1:7897 时会自动使用，也可在此覆盖。</div>
+            <div className="f-label">
+              <label style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                <input type="checkbox" checked={form?.auto_start ?? false} disabled={!form} onChange={(e) => set("auto_start", e.currentTarget.checked)} /> 应用启动时自动启动 dsh
+              </label>
+            </div>
+          </details>
           {saved && <div className="hint">{saved}</div>}
-          <div className="actions">
-            <button className="btn primary" disabled={running || saving || !form} onClick={() => void save()}>{saving ? "保存中…" : "保存配置"}</button>
-          </div>
         </div>
 
-        <div className="card">
-          <div className="card-head"><span className="card-title">运行时硬限制（只读）</span></div>
+        <div className="card dsh-panel">
+          <div className="card-head"><span className="card-title">G2 · 硬限制（只读）</span></div>
           {form && (
             <>
               <div className="kv"><span className="k">启动超时</span><span className="v">{form.startup_timeout_secs} 秒</span></div>
@@ -1406,11 +1917,14 @@ export function SettingsPage({ onStartSession }: { onStartSession?: () => void }
             </>
           )}
         </div>
+        </div>
         <RuntimeManager running={running} />
           </>
         )}
         {tab === "wsl" && <WslPanel />}
         {tab === "assist" && <CotSettings />}
+        {tab === "team" && <TeamBoard />}
+        {tab === "archived" && <ArchivedTasksCard />}
         {/* 复制 Agent 模式对话框 */}
         {copyTarget && (
           <div className="modal-mask" onClick={() => setCopyTarget(null)}>

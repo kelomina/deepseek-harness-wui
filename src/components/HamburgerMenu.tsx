@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useUnreadErrors } from "../lib/logger";
+import { HM_DEFAULT, HM_MAX, HM_MIN, HM_WIDTH_KEY, useResizableWidth } from "../lib/panelResize";
 
 export type ToolTab = "files" | "terminal" | "web" | "git" | "session" | "logs";
 
@@ -26,6 +27,9 @@ export function HamburgerMenu({
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const unreadErrors = useUnreadErrors();
+  // 任务#6：汉堡面板左侧把手调宽（与侧边栏同一套 pointer 把手逻辑，clamp 另取面板语义）
+  const { width: menuWidth, setWidth: setMenuWidth, startDrag: startMenuDrag, onKey: onMenuKey } =
+    useResizableWidth(HM_WIDTH_KEY, HM_DEFAULT, HM_MIN, HM_MAX);
 
   useEffect(() => {
     if (!open) return;
@@ -47,7 +51,24 @@ export function HamburgerMenu({
         {unreadErrors > 0 && <span className="hm-badge">{unreadErrors}</span>}
       </button>
       {open && (
-        <div className="hamburger-menu">
+        <div className="hamburger-menu hamburger-resizable" style={{ width: menuWidth }}>
+          <div
+            className="hm-resizer"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="拖动调整工具菜单宽度"
+            title="拖动调整宽度（双击恢复默认）"
+            tabIndex={0}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              startMenuDrag(e, -1);
+            }}
+            onKeyDown={(e) => onMenuKey(e, -1)}
+            onDoubleClick={(e) => {
+              e.stopPropagation();
+              setMenuWidth(HM_DEFAULT);
+            }}
+          />
           {DEFAULT_ITEMS.map((it) => (
             <button
               key={it.id}

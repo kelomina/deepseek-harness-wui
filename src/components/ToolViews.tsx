@@ -6,13 +6,16 @@
  *   （diff: DiffResultView；terminal: TerminalCallView/TerminalResultView；
  *    file: ReadResultView；web: WebSearchResultView/WebFetchResultView）。
  * - 交互式功能经 Tauri Rust 命令直连本机能力（不依赖 dsh capability）：
- *   文件=fs_list_dir 目录浏览；终端=term_exec 命令执行；
- *   浏览器=web_fetch 网页抓取；Git=git_status/git_diff_file/git_stage/git_unstage/git_commit。
+ *   文件=fs_list_dir 目录浏览；终端=真 pty（pty_spawn/write/resize/kill + xterm，
+ *   CONTRACT 2026-09-07T06:00Z，上限 4 会话；term_exec 后端保留兼容，前端不再调用）；
+ *   浏览器=web_fetch 网页抓取；Git=git_status/git_diff_file/git_stage/git_unstage/git_commit
+ *   快捷栏 + 同一套 pty（cwd=仓库目录，复用 canOpenPath 双查）。
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { RenderItem } from "../lib/dsh/render";
 import { collectFiles } from "../lib/dsh/toolCollect";
+import { PtyTabs } from "./PtyTerminal";
 
 interface DirEntry { name: string; path: string; hidden: boolean }
 
@@ -66,85 +69,13 @@ function FileBrowserPanel({ root }: { root: string | null }) {
   );
 }
 
-/* ===== 终端：真实命令执行 ===== */
-interface TermRecord { cmd: string; cwd: string; output: string; exitCode: number | null }
+/* ===== 终端：真 pty + xterm（1:1 绑定，上限 4 会话） ===== */
 
 function TerminalPanel({ root }: { root: string | null }) {
-  const [cmd, setCmd] = useState("");
-  const [cwd, setCwd] = useState(root ?? "");
-  const [busy, setBusy] = useState(false);
-  const [records, setRecords] = useState<TermRecord[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const listRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (root) setCwd((v) => (v ? v : root));
-  }, [root]);
-
-  useEffect(() => {
-    const el = listRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [records]);
-
-  const run = async () => {
-    const c = cmd.trim();
-    if (!c || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await invoke<{ output: string; exit_code: number | null }>("term_exec", {
-        cmd: c,
-        cwd: cwd.trim() || null,
-      });
-      setRecords((rs) => [...rs, { cmd: c, cwd: cwd.trim() || "~", output: r.output, exitCode: r.exit_code }]);
-      setCmd("");
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <div className="tp-wrap">
-      <div className="tp-input-row">
-        <span className="tp-prompt mono">$</span>
-        <input
-          className="input tp-cmd"
-          placeholder="输入命令，Enter 执行"
-          value={cmd}
-          onChange={(e) => setCmd(e.currentTarget.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") void run(); }}
-        />
-        <button className="btn sm primary" disabled={busy || !cmd.trim()} onClick={() => void run()}>
-          {busy ? "执行中…" : "执行"}
-        </button>
-      </div>
-      <div className="tp-input-row">
-        <span className="tp-prompt mono">cwd</span>
-        <input
-          className="input tp-cwd"
-          placeholder="工作目录（空=主目录）"
-          value={cwd}
-          onChange={(e) => setCwd(e.currentTarget.value)}
-        />
-      </div>
-      {error && <div className="toolcall toolcall-err">{error}</div>}
-      <div className="tp-records" ref={listRef}>
-        {records.length === 0 && <div className="empty-state">尚未执行任何命令</div>}
-        {records.map((r, i) => (
-          <div className="toolcard" key={i}>
-            <div className="toolcard-head">
-              <span className="toolcard-title mono">$ {r.cmd}</span>
-              {r.exitCode != null && (
-                <span className={`badge ${r.exitCode === 0 ? "green" : "orange"}`}>exit {r.exitCode}</span>
-              )}
-            </div>
-            <div className="toolcard-cwd mono">{r.cwd}</div>
-            <pre className="toolcard-output mono">{r.output || "（无输出）"}</pre>
-          </div>
-        ))}
-      </div>
+      <div className="hint">常驻 shell（powershell/cmd）：输入直达 pty，输出按会话分流；切页不杀会话，关页/关窗口才 kill。</div>
+      <PtyTabs defaultCwd={root} />
     </div>
   );
 }
@@ -217,7 +148,7 @@ function WebPanel() {
 /* ===== Git：真实 git 操作 ===== */
 interface GitFile { path: string; staged: string; unstaged: string }
 
-function GitPanel({ root }: { root: string | null }) {
+function GitPanel({ root, canOpenPath }: { root: string | null; canOpenPath?: boolean | null }) {
   const [repo, setRepo] = useState(root ?? "");
   const [files, setFiles] = useState<GitFile[]>([]);
   const [busy, setBusy] = useState(false);
@@ -336,6 +267,9 @@ function GitPanel({ root }: { root: string | null }) {
           </button>
         </div>
       )}
+      <div className="f-label">Git 终端（cwd=仓库目录，与终端 tab 同一套 pty；上方按钮为快捷栏保留）</div>
+      <div className="hint mono" style={{ marginTop: 0 }}>{repo.trim() || "（仓库目录未填则主目录）"}</div>
+      <PtyTabs defaultCwd={repo.trim() || null} canOpenPath={canOpenPath} showCwdInput={false} />
     </div>
   );
 }
@@ -343,6 +277,7 @@ function GitPanel({ root }: { root: string | null }) {
 export function ToolViews({
   items,
   workspaceRoot,
+  canOpenPath,
   initialTab = "files",
   onTabChange,
   showToggle = true,
@@ -351,6 +286,8 @@ export function ToolViews({
 }: {
   items: RenderItem[];
   workspaceRoot: string | null;
+  /** host.canOpenPath（Git pty 双查：binding 时刻 + spawn 时刻；终端 tab 不设门传 undefined）。 */
+  canOpenPath?: boolean | null;
   initialTab?: "files" | "terminal" | "web" | "git";
   onTabChange?: (tab: "files" | "terminal" | "web" | "git") => void;
   showToggle?: boolean;
@@ -408,7 +345,7 @@ export function ToolViews({
             )}
             {tab === "terminal" && <TerminalPanel root={workspaceRoot} />}
             {tab === "web" && <WebPanel />}
-            {tab === "git" && <GitPanel root={workspaceRoot} />}
+            {tab === "git" && <GitPanel root={workspaceRoot} canOpenPath={canOpenPath} />}
           </div>
         </>
       )}

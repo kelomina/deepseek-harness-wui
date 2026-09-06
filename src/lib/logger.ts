@@ -45,7 +45,26 @@ class LoggerStore {
 
   constructor() {
     if (typeof window !== "undefined") {
+      // guard v4 兜底网（转正，非临时）：吞“xterm 内部孤儿 timer 遗言”——gen1 open 排的
+      // setTimeout→rAF 在 dispose 后仍触发，读已清空 _renderer.value 即炸，与我方守卫无关。
+      // 签名精确到文件名+方法链（xterm.js 内 + dimensions + Viewport/open 路径），禁宽吞。
+      const isOrphanViewportDimensions = (message: unknown, stack: unknown): boolean => {
+        const msg = String(message ?? "");
+        if (!msg.includes("dimensions")) return false;
+        if (!/Cannot read propert|reading ['"]dimensions['"]|undefined/i.test(msg)) return false;
+        const st = String(stack ?? "");
+        if (!/xterm(\.js|\.mjs|\.css)?/i.test(st)) return false;
+        return /get dimensions|Viewport|_innerRefresh|_refresh|syncScrollArea|RenderService|Terminal\.open/i.test(st);
+      };
+      const swallowOrphanDim = (message: unknown, err: unknown): boolean => {
+        const stack = (err as Error | undefined)?.stack ?? err;
+        if (!isOrphanViewportDimensions(message, stack)) return false;
+        // eslint-disable-next-line no-console
+        console.debug("[pty] guard v4: swallow orphan viewport dimensions (disposed gen1 timer)", stack ?? message);
+        return true;
+      };
       window.addEventListener("error", (event) => {
+        if (isOrphanViewportDimensions(event.message, (event.error as Error | undefined)?.stack ?? event.error)) return;
         this.error("ui", `未捕获异常: ${event.message}`, {
           filename: event.filename,
           lineno: event.lineno,
@@ -53,8 +72,24 @@ class LoggerStore {
           error: event.error,
         });
       });
-
+      window.addEventListener(
+        "error",
+        (event) => {
+          if (swallowOrphanDim(event.message, event.error)) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+          }
+        },
+        true,
+      );
       window.addEventListener("unhandledrejection", (event) => {
+        const reason = event.reason as Error | undefined;
+        if (isOrphanViewportDimensions(reason?.message, reason?.stack ?? reason)) {
+          // eslint-disable-next-line no-console
+          console.debug("[pty] guard v4: swallow orphan viewport dimensions (rejection)", reason?.stack ?? reason);
+          event.preventDefault();
+          return;
+        }
         this.error(
           "ui",
           `未处理的 Promise 异常: ${String(event.reason?.message ?? event.reason)}`,

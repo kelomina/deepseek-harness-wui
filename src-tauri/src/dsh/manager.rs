@@ -272,7 +272,7 @@ impl DshManager {
         match self.config.exec_mode {
             ExecMode::Bundled => {
                 let bin = self.managed_runtime_bin_path()?;
-                Ok((node, vec![bin, "web".to_string(), "--port".to_string(), port]))
+                Ok((node, vec![bin, "web".to_string(), "--port".to_string(), port, "--no-open".to_string()]))
             }
             ExecMode::Npx => {
                 let npx = resolve_npx_cli()?;
@@ -285,15 +285,16 @@ impl DshManager {
                         "web".to_string(),
                         "--port".to_string(),
                         port,
+                        "--no-open".to_string(),
                     ],
                 ))
             }
             ExecMode::Path => {
                 let p = self.config.exec_path.clone().ok_or("exec_path is not set")?;
                 if p.to_ascii_lowercase().ends_with(".cmd") || p.to_ascii_lowercase().ends_with(".bat") {
-                    Ok(("cmd".to_string(), vec!["/C".to_string(), p, "web".to_string(), "--port".to_string(), port]))
+                    Ok(("cmd".to_string(), vec!["/C".to_string(), p, "web".to_string(), "--port".to_string(), port, "--no-open".to_string()]))
                 } else {
-                    Ok((p, vec!["web".to_string(), "--port".to_string(), port]))
+                    Ok((p, vec!["web".to_string(), "--port".to_string(), port, "--no-open".to_string()]))
                 }
             }
             ExecMode::Wsl => {
@@ -319,7 +320,7 @@ if [ -f "$HOME/.dsh-node/host-ca.crt" ]; then
   export NODE_EXTRA_CA_CERTS="$HOME/.dsh-node/host-ca.crt"
 fi
 echo "dsh in WSL: distro={distro} user=$USER node=$("$NODE_BIN" -v)"
-exec dsh --profile web --port {port}"#,
+exec dsh --profile web --port {port} --no-open"#,
                     distro = distro,
                     port = port,
                 );
