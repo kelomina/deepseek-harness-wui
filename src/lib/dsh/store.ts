@@ -443,13 +443,9 @@ class AppStore {
         this.set({ sessions: sess.result.value.items, sessionTitles: this.seedSessionTitles(sess.result.value.items) });
         // host.describe 已移除：置 null（UI 均为 nullable-safe，回退到 session.cwd）。
         this.set({ host: null });
-        // workspace/list 在新网关未 claim（404）：best-effort，不阻断 connected。
-        try {
-          const ws = await api.workspace.list({});
-          if (ws.result.ok) this.set({ workspaces: ws.result.value.items, archivedSessionIds: ws.result.value.archivedSessionIds });
-        } catch {
-          // workspace 降级：保持空列表，后续 refreshWorkspaces 重试
-        }
+        // 15:00Z HANDOVER: workspace.list 新网关无等价方法，不硬凑：会话名单走 session/list（已有），工作区行暂空（follow 另单）。
+        // connect 内 best-effort 置空，不抛错，不发请求。
+        this.set({ workspaces: [] });
         void this.loadAgentPresets();
         void this.loadDefaultModel();
         this.set({ connected: true, gatewayUp: true, agentPresetsError: null });
@@ -922,9 +918,8 @@ class AppStore {
   }
 
   async refreshWorkspaces(): Promise<void> {
-    if (!this.state.api) return;
-    const r = await this.state.api.workspace.list({});
-    if (r.result.ok) this.set({ workspaces: r.result.value.items, archivedSessionIds: r.result.value.archivedSessionIds });
+    // 15:00Z HANDOVER: workspace.list 无等价方法，不硬凑：降级为空列表 best-effort，不抛错，不发请求；归档集走 archiveSession 返回值 + 事件帧，工作区行暂空（follow 另单）。
+    this.set({ workspaces: [] });
   }
 
   setActiveWorkspace(workspaceId: WorkspaceId | null): void {
