@@ -82,7 +82,7 @@ fn default_shell_primary() -> String {
         std::env::var("SHELL")
             .ok()
             .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|_| "sh".to_string())
+            .unwrap_or_else(|| "sh".to_string())
     }
 }
 
