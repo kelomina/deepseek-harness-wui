@@ -25,19 +25,77 @@ interface PtyTab {
 interface TermHandles {
   term: Terminal;
   fit: FitAddon;
+  /** 挂载代际：StrictMode 双挂载/重建时迟到回调对代际即弃，防 gen1 timer 打到 gen2 首帧 */
+  gen: number;
 }
 
-function isFitReady(h: TermHandles): boolean {
-  // 根因：隐藏 tab/未 layout/dispose 后 _renderService 未就绪，
-  // proposeDimensions 内读 `_renderService.dimensions` 即抛
-  // `Cannot read properties of undefined (reading 'dimensions')`。
-  const el = h.term.element;
-  if (!el || !el.isConnected) return false;
-  const parent = el.parentElement;
-  if (!parent || parent.clientWidth <= 0 || parent.clientHeight <= 0) return false;
-  const core = (h.term as unknown as { _core?: { _renderService?: unknown } })._core;
-  if (!core?._renderService) return false;
-  return true;
+let guardV4Logged = false;
+let ptyGenSeq = 0;
+/** 孤儿 timer 精确签名：只认 xterm 内部 Viewport/open 路径的 dimensions 崩，禁宽吞。 */
+function isOrphanViewportDimError(e: unknown): boolean {
+  const msg = String((e as Error | undefined)?.message ?? e ?? "");
+  if (!msg.includes("dimensions")) return false;
+  const stack = (e as Error | undefined)?.stack ?? "";
+  if (!/xterm/i.test(stack)) return false;
+  return /get dimensions|Viewport|_innerRefresh|_refresh|syncScrollArea|RenderService|Terminal\.open/i.test(stack);
+}
+
+type FitSkipReason = "not-open" | "hidden" | "disposed" | "stale-generation" | "not-ready" | "exception";
+
+function fitSkipReason(h: TermHandles, expectGen?: number): FitSkipReason | null {
+  if (expectGen !== undefined && h.gen !== expectGen) return "stale-generation";
+  // 真凶：xterm.js:1776 `return this._renderer.value.dimensions;` ——崩的是
+  // RenderService._renderer.value（首帧 setRenderer 前/dispose 后为 undefined），
+  // 不是 _renderService 本身。旧守卫只判 core._renderService 存在故被绕过，
+  // FitAddon.proposeDimensions 内读 `_renderService.dimensions` 即抛。
+  // 本函数内对 rs.dimensions 的读取即“金丝雀”：必在 try 内，抛即 not-ready。
+  try {
+    const el = h.term.element;
+    if (!el) return "not-open";
+    if (!el.isConnected) return "disposed";
+    const parent = el.parentElement;
+    if (!parent || parent.clientWidth <= 0 || parent.clientHeight <= 0) return "hidden";
+    const core = (h.term as unknown as { _core?: { _renderService?: { hasRenderer?: () => boolean; _renderer?: { value?: unknown }; dimensions?: unknown }; isDisposed?: boolean } })._core;
+    if (!core || core.isDisposed) return "disposed";
+    const rs = core._renderService;
+    if (!rs) return "not-open";
+    if (typeof rs.hasRenderer === "function" && !rs.hasRenderer()) return "not-ready";
+    if (!rs._renderer?.value) return "not-ready";
+    if (!rs.dimensions) return "not-ready";
+    return null;
+  } catch {
+    return "exception";
+  }
+}
+
+function logFitSkipped(reason: FitSkipReason): void {
+  console.debug(`[pty] fit skipped: ${reason}`);
+}
+
+/** 唯一 .dimensions 读取入口：守卫 + fit/propose 二连 + try/catch 兜底记 dirty（调用方负责 pendingFit）。 */
+function guardedFit(h: TermHandles, expectGen?: number): { cols: number; rows: number } | undefined {
+  const skipped = fitSkipReason(h, expectGen);
+  if (skipped) {
+    logFitSkipped(skipped);
+    return undefined;
+  }
+  try {
+    h.fit.fit();
+    const dims = h.fit.proposeDimensions() ?? undefined;
+    if (!dims || !dims.cols || !dims.rows) {
+      logFitSkipped("not-ready");
+      return undefined;
+    }
+    return dims;
+  } catch {
+    logFitSkipped("exception");
+    return undefined;
+  }
+}
+
+/** 兼容保留：等价 fitSkipReason(h)===null，新代码走 guardedFit 统一入口。 */
+export function isFitReady(h: TermHandles, expectGen?: number): boolean {
+  return fitSkipReason(h, expectGen) === null;
 }
 
 function friendlyPtyError(e: unknown): string {
@@ -62,10 +120,19 @@ function PtyPane({
   const elRef = useRef<HTMLDivElement>(null);
   const cbRef = useRef({ register, unregister, onUserInput });
   cbRef.current = { register, unregister, onUserInput };
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  const kickOpenRef = useRef<(() => void) | null>(null);
+
+  // 可见性翻转：唤醒 _deferredOpen（隐藏 tab 里不开，等可见+有尺寸再 open）
+  useEffect(() => {
+    if (visible) kickOpenRef.current?.();
+  }, [visible]);
 
   useEffect(() => {
     const el = elRef.current;
     if (!el) return;
+    const host: HTMLDivElement = el;
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 12.5,
@@ -82,21 +149,123 @@ function PtyPane({
     } catch {
       /* 中文宽字符增强 best-effort，失败仍可用 */
     }
-    term.open(el);
-    // 首帧 fit 守卫：隐藏 tab/零尺寸不调，待父级切 tab 可见时补 fit（dirty 语义）
-    if (el.clientWidth > 0 && el.clientHeight > 0) {
-      try {
-        fit.fit();
-      } catch {
-        /* ignore */
-      }
+    // guard v4：真凶在 term.open(el) 内部——xterm 自己构造 Viewport 时排 setTimeout→rAF，
+    // 回调触发时 renderer 还没就绪或已被 dispose（_renderer.value undefined → get dimensions 炸）。
+    // StrictMode 双挂载下 gen1 的内部 timer 不随 dispose 取消，我方代际守卫管不住 xterm 肚子里的。
+    // 故：① open 前置守卫（isConnected + 可见 + 有尺寸）；② 单 flight（同一容器只 open 一次，
+    // React 已保证 gen1 cleanup→dispose 先于 gen2 effect，_deferredOpen 可取消）；③ 孤儿遗言靠
+    // logger.ts 精确签名兜底网转 debug。StrictMode 全局配置不动（dev 专属，prod 单挂载无此事）。
+    if (!guardV4Logged) {
+      guardV4Logged = true;
+      console.info("[pty] guard v4 active");
     }
-    const disp = term.onData((data) => cbRef.current.onUserInput(tabKey, data));
-    cbRef.current.register(tabKey, { term, fit });
+    const gen = ++ptyGenSeq;
+    let cancelled = false;
+    let opened = false;
+    let disposed = false;
+    let handles: TermHandles | null = null;
+    let renderDisp: { dispose(): void } | null = null;
+    let dataDisp: { dispose(): void } | null = null;
+    let deferredRaf = 0;
+    let deferredTimer = 0;
+    let ro: ResizeObserver | null = null;
+    const clearDeferred = () => {
+      if (deferredRaf) window.cancelAnimationFrame(deferredRaf);
+      if (deferredTimer) window.clearTimeout(deferredTimer);
+      deferredRaf = 0;
+      deferredTimer = 0;
+    };
+    const deferRetry = (delay = 60) => {
+      if (cancelled || opened) return;
+      clearDeferred();
+      deferredRaf = window.requestAnimationFrame(() => {
+        deferredRaf = 0;
+        if (!cancelled && !opened) tryOpen();
+      });
+      deferredTimer = window.setTimeout(() => {
+        deferredTimer = 0;
+        if (!cancelled && !opened) tryOpen();
+      }, delay);
+    };
+    const tryGuardedFit = () => {
+      if (!handles || disposed) {
+        logFitSkipped("disposed");
+        return;
+      }
+      if (!host.isConnected) {
+        logFitSkipped("disposed");
+        return;
+      }
+      // PtyPane 本地首帧补 fit：失败只记 dirty 不抛，切 tab 可见时由父级 pendingFit 补 fit
+      guardedFit(handles, gen);
+    };
+    function tryOpen() {
+      if (cancelled || opened) return;
+      // 单 flight：同一容器只 open 一次（防同代重复 open；gen1 残留由 cleanup 先 dispose）
+      if (host.dataset.ptyOpened === "1" || host.querySelector(".xterm-screen")) {
+        deferRetry(80);
+        return;
+      }
+      // open 前置守卫：须挂载 + 可见 + 有尺寸（隐藏 tab 等可见再 open）
+      if (!host.isConnected || !visibleRef.current) {
+        logFitSkipped(host.isConnected ? "hidden" : "disposed");
+        deferRetry(80);
+        return;
+      }
+      if (host.clientWidth <= 0 || host.clientHeight <= 0) {
+        logFitSkipped("hidden");
+        deferRetry(80);
+        return;
+      }
+      try {
+        term.open(host);
+      } catch (e) {
+        // open 同步炸：精确签名才转 debug 重试（孤儿/首帧竞态），其余照常上报
+        if (isOrphanViewportDimError(e)) {
+          console.debug("[pty] guard v4: open deferred (orphan viewport race), retry when visible+sized");
+          deferRetry(80);
+          return;
+        }
+        throw e;
+      }
+      opened = true;
+      clearDeferred();
+      ro?.disconnect();
+      host.dataset.ptyOpened = "1";
+      const h: TermHandles = { term, fit, gen };
+      handles = h;
+      renderDisp = term.onRender(() => tryGuardedFit());
+      deferredRaf = window.requestAnimationFrame(() => tryGuardedFit());
+      dataDisp = term.onData((data) => cbRef.current.onUserInput(tabKey, data));
+      cbRef.current.register(tabKey, h);
+    }
+    kickOpenRef.current = tryOpen;
+    // 可见性/尺寸变化唤醒 _deferredOpen（rAF 轮询兜底 + RO 精确唤醒）
+    try {
+      ro = new ResizeObserver(() => {
+        if (!cancelled && !opened) tryOpen();
+      });
+      ro.observe(host);
+      if (host.parentElement) ro.observe(host.parentElement);
+    } catch {
+      ro = null;
+    }
+    tryOpen();
     return () => {
-      disp.dispose();
+      cancelled = true;
+      disposed = true;
+      kickOpenRef.current = null;
+      clearDeferred();
+      ro?.disconnect();
+      renderDisp?.dispose();
+      dataDisp?.dispose();
       cbRef.current.unregister(tabKey);
-      term.dispose();
+      try {
+        term.dispose();
+      } catch {
+        /* dispose best-effort：孤儿内部 timer 的遗言走 logger 兜底网 */
+      }
+      delete host.dataset.ptyOpened;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabKey]);
@@ -137,6 +306,8 @@ export function PtyTabs({
   gateRef.current = canOpenPath;
   const fitTimers = useRef(new Map<number, number>());
   const pendingFit = useRef(new Set<number>());
+  /** deferred-open 期间（隐藏/0 尺寸未 open）的输出缓存，register 时 flush，不丢首屏 */
+  const pendingWrites = useRef(new Map<number, string[]>());
 
   useEffect(() => {
     setCwdDraft(defaultCwd ?? "");
@@ -145,26 +316,36 @@ export function PtyTabs({
   const gated = canOpenPath === false;
   const activeTab = tabs.find((t) => t.key === activeKey) ?? null;
 
-  const fitAndResize = useCallback((key: number) => {
+  const fitAndResize = useCallback((key: number, expectGen?: number) => {
     const h = terms.current.get(key);
     const ptyId = ptyIdByKey.current.get(key);
     if (!h || !ptyId) return;
+    // 代际短路：StrictMode 双挂载/重建后迟到 timer 打到新实例首帧即弃
+    if (expectGen !== undefined && h.gen !== expectGen) {
+      logFitSkipped("stale-generation");
+      return;
+    }
+    // dispose 迟到短路：element 已摘除即已 dispose/关闭中，不调 fit
+    try {
+      if (!h.term.element?.isConnected) {
+        logFitSkipped("disposed");
+        pendingFit.current.add(key);
+        return;
+      }
+    } catch {
+      logFitSkipped("exception");
+      pendingFit.current.add(key);
+      return;
+    }
     const tab = tabsRef.current.find((t) => t.key === key);
     if (!tab || tab.dead || tab.starting || tab.error) return;
-    // 守卫：不可见/零尺寸/_renderService 未就绪不调 fit，记 dirty 待切 tab 可见补 fit（不断连）
-    if (!isFitReady(h)) {
+    // 唯一读取入口：守卫 + try/catch 兜底记 dirty，失败待切 tab 可见补 fit（不断连）
+    const dims = guardedFit(h, expectGen);
+    if (!dims) {
       pendingFit.current.add(key);
       return;
     }
     pendingFit.current.delete(key);
-    let dims: { cols: number; rows: number } | undefined;
-    try {
-      h.fit.fit();
-      dims = h.fit.proposeDimensions() ?? undefined;
-    } catch {
-      return;
-    }
-    if (!dims || !dims.cols || !dims.rows) return;
     const cols = Math.max(1, Math.min(500, dims.cols));
     const rows = Math.max(1, Math.min(500, dims.rows));
     void pty.resize(ptyId, cols, rows).catch(() => {
@@ -173,12 +354,13 @@ export function PtyTabs({
   }, []);
 
   const scheduleFit = useCallback(
-    (key: number) => {
+    (key: number, delay = 120, expectGen?: number) => {
       const prev = fitTimers.current.get(key);
       if (prev) window.clearTimeout(prev);
+      const gen = expectGen ?? terms.current.get(key)?.gen;
       fitTimers.current.set(
         key,
-        window.setTimeout(() => fitAndResize(key), 120),
+        window.setTimeout(() => fitAndResize(key, gen), delay),
       );
     },
     [fitAndResize],
@@ -198,15 +380,15 @@ export function PtyTabs({
         ptyIdByKey.current.set(key, id);
         keyByPtyId.current.set(id, key);
         setTabs((ts) => ts.map((t) => (t.key === key ? { ...t, ptyId: id, starting: false, error: null } : t)));
-        // spawn 后按实际渲染尺寸校准一次
-        window.setTimeout(() => fitAndResize(key), 60);
+        // spawn 后按实际渲染尺寸校准一次（跟踪代际：迟到即弃，防打到重建实例首帧）
+        scheduleFit(key, 60);
       } catch (e) {
         const msg = friendlyPtyError(e);
         setTabs((ts) => ts.map((t) => (t.key === key ? { ...t, starting: false, error: msg } : t)));
         if (/上限\(4\)/.test(msg)) setGlobalError(msg);
       }
     },
-    [fitAndResize],
+    [scheduleFit],
   );
 
   const createTab = useCallback(() => {
@@ -239,7 +421,12 @@ export function PtyTabs({
   );
 
   const closeTab = useCallback((key: number) => {
-    const id = ptyIdByKey.current.get(key);
+    // 先清 fit 定时：防 dispose 后迟到 timer 触 proposeDimensions（_renderer.value 已空）
+    const timer = fitTimers.current.get(key);
+    if (timer) {
+      window.clearTimeout(timer);
+      fitTimers.current.delete(key);
+    }    const id = ptyIdByKey.current.get(key);
     if (id) {
       keyByPtyId.current.delete(id);
       ptyIdByKey.current.delete(key);
@@ -250,6 +437,7 @@ export function PtyTabs({
     terms.current.get(key)?.term.dispose();
     terms.current.delete(key);
     pendingFit.current.delete(key);
+    pendingWrites.current.delete(key);
     setTabs((ts) => {
       const next = ts.filter((t) => t.key !== key);
       setActiveKey((cur) => {
@@ -277,7 +465,18 @@ export function PtyTabs({
     void onPtyOutput((e) => {
       const key = keyByPtyId.current.get(e.id);
       if (key === undefined) return;
-      terms.current.get(key)?.term.write(e.data);
+      const h = terms.current.get(key);
+      if (!h) {
+        // deferred-open 未就绪：缓存（cap 64KB 防爆），register 时 flush
+        const q = pendingWrites.current.get(key) ?? [];
+        const size = q.reduce((n, s) => n + s.length, 0);
+        if (size < 65536) {
+          q.push(e.data);
+          pendingWrites.current.set(key, q);
+        }
+        return;
+      }
+      h.term.write(e.data);
     }).then((off) => {
       outOff = off;
     });
@@ -326,15 +525,17 @@ export function PtyTabs({
       }
       ptyIdByKey.current.clear();
       keyByPtyId.current.clear();
+      pendingWrites.current.clear();
     };
   }, []);
 
   // 切 tab 后重 fit（隐藏→显示尺寸变化联动 resize；后台 tab 不断连，仅补尺寸）
   useEffect(() => {
     if (activeKey == null) return;
-    // rAF 待 display:none→flex layout 就绪后再 fit，60ms 定时兜底脏页
-    const raf = window.requestAnimationFrame(() => fitAndResize(activeKey));
-    const t = window.setTimeout(() => fitAndResize(activeKey), 60);
+    const gen = terms.current.get(activeKey)?.gen;
+    // rAF 待 display:none→flex layout 就绪后再 fit，60ms 定时兜底脏页（代际对不上即弃）
+    const raf = window.requestAnimationFrame(() => fitAndResize(activeKey, gen));
+    const t = window.setTimeout(() => fitAndResize(activeKey, gen), 60);
     return () => {
       window.cancelAnimationFrame(raf);
       window.clearTimeout(t);
@@ -353,17 +554,28 @@ export function PtyTabs({
   const register = useCallback(
     (key: number, h: TermHandles) => {
       terms.current.set(key, h);
-      if (key === activeKey) scheduleFit(key);
+      // deferred-open 补齐：把等待期间的输出一次性刷屏
+      const queued = pendingWrites.current.get(key);
+      if (queued?.length) {
+        pendingWrites.current.delete(key);
+        try {
+          for (const chunk of queued) h.term.write(chunk);
+        } catch {
+          /* flush best-effort */
+        }
+      }
+      if (key === activeKey) scheduleFit(key, 120, h.gen);
       else {
-        // 后台 tab 隐藏不断连：不可见时 fitAndResize 内记 dirty，切回时补 fit，不抛错
-        window.setTimeout(() => fitAndResize(key), 80);
+        // 后台 tab 隐藏不断连：不可见时 fitAndResize 内记 dirty，切回时补 fit，不抛错（代际绑定防错位）
+        scheduleFit(key, 80, h.gen);
       }
     },
-    [activeKey, fitAndResize, scheduleFit],
+    [activeKey, scheduleFit],
   );
   const unregister = useCallback((key: number) => {
     terms.current.delete(key);
     pendingFit.current.delete(key);
+    pendingWrites.current.delete(key);
     const timer = fitTimers.current.get(key);
     if (timer) {
       window.clearTimeout(timer);
