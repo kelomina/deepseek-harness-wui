@@ -347,7 +347,12 @@ mod pty_tests {
 
     #[test]
     fn pty_cwd_rejects_missing() {
-        assert!(resolve_cwd(Some("Z:\\no_such_dir_xyz_123".to_string())).is_err());
+        // 可移植改写：temp 下必定不存在的绝对路径（Windows 仍为盘符绝对路径，
+        // 与旧 `Z:\...` 同等强度；Unix 下 `Z:\...` 会退化为相对文件名，语义不准）
+        let missing = std::env::temp_dir().join("no_such_dir_xyz_123_dsh_pty");
+        let _ = std::fs::remove_file(&missing);
+        let _ = std::fs::remove_dir(&missing);
+        assert!(resolve_cwd(Some(missing.to_string_lossy().to_string())).is_err());
         assert!(resolve_cwd(Some(String::new())).is_ok());
         assert!(resolve_cwd(None).is_ok());
     }
