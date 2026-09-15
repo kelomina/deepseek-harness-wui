@@ -936,22 +936,44 @@ mod tests {
 
     #[test]
     fn node_modules_root_of_bin_walks_to_the_real_node_modules() {
-        // 受管与 bundled 两种布局都必须落在 node_modules 本体（不是 @deepseek-ai）
-        let managed = std::path::Path::new(
-            r"/Users/x/Library/Application Support/com.deepseekharness.wui/runtimes/0.1.2-rc.1/node_modules/@deepseek-ai/dsh/lib/bin.js",
-        );
+        // 受管与 bundled 两种布局都必须落在 node_modules 本体（不是 @deepseek-ai）。
+        // 路径按组件拼装：CI 的 macOS/Linux runner 上反斜杠不是分隔符，
+        // 写死 `E:\…` 会让上溯直接走到空目录（mac job 就是这么炸的）。
+        let join = |segs: &[&str]| -> std::path::PathBuf {
+            let mut p = std::path::PathBuf::from(segs[0]);
+            for s in &segs[1..] {
+                p.push(s);
+            }
+            p
+        };
+        let managed = join(&[
+            "runtimes",
+            "0.1.2-rc.1",
+            "node_modules",
+            "@deepseek-ai",
+            "dsh",
+            "lib",
+            "bin.js",
+        ]);
         assert_eq!(
-            node_modules_root_of_bin(managed).unwrap(),
-            std::path::Path::new(
-                "/Users/x/Library/Application Support/com.deepseekharness.wui/runtimes/0.1.2-rc.1/node_modules"
-            )
+            node_modules_root_of_bin(&managed).unwrap(),
+            join(&["runtimes", "0.1.2-rc.1", "node_modules"]),
+            "受管布局应落在 node_modules 本体"
         );
-        let bundled = std::path::Path::new(r"E:\Project\runtime\node_modules\@deepseek-ai\dsh\lib\bin.js");
+        let bundled = join(&[
+            "runtime",
+            "node_modules",
+            "@deepseek-ai",
+            "dsh",
+            "lib",
+            "bin.js",
+        ]);
         assert_eq!(
-            node_modules_root_of_bin(bundled).unwrap(),
-            std::path::Path::new(r"E:\Project\runtime\node_modules")
+            node_modules_root_of_bin(&bundled).unwrap(),
+            join(&["runtime", "node_modules"]),
+            "bundled 布局应落在 node_modules 本体"
         );
-        assert!(node_modules_root_of_bin(std::path::Path::new("/tmp/loose/bin.js")).is_none());
+        assert!(node_modules_root_of_bin(&join(&["loose", "bin.js"])).is_none());
     }
 
     #[test]
