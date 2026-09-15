@@ -722,10 +722,22 @@ health 失败→自动重启 3 次→每次同一条错误，应用表现为「�
   node-pty 走 `prebuilds/win32-x64/conpty.node` 等预编译产物，koffi 与 `@img/sharp-win32-x64` 目录在位，
   实测未受影响（本机 `ignore-scripts=false`，拦截来自 npm 的 install-scripts 白名单策略）。
 
-### 边界（需要单独决策的一件事）
+### 受管运行时同样注入安全覆盖（已实施，用户实测授权）
 
-overrides 只覆盖仓库内提交的 `runtime/` 与根依赖树（dev / bundled 模式）。用户机器上的**受管运行时**由
-`runtime.rs::install_at` 现场 `npm install @deepseek-ai/dsh@<v>`，不读我们的 overrides，那棵树里的
-js-yaml/qs/sharp/hono 仍是 dsh 自己声明的版本。要把补丁带到终端用户，需要把同一组 overrides 注入受管安装的
-staging manifest——这会改变用户机器上 dsh 实际加载的依赖版本，属独立风险决策，本轮未做。
-dsh 0.1.1-rc.2 验证日期：2026-09-16。
+仓库里的 overrides 只覆盖提交的 `runtime/` 与根树（dev / bundled 模式）；用户机器上的**受管运行时**由
+`runtime.rs::install_at` 现场 `npm install @deepseek-ai/dsh@<v>`，不读仓库 manifest。因此把同一组覆盖写进
+受管安装的 staging manifest（`write_staging_manifest`），让终端用户实际加载的 dsh 也拿到补丁版依赖。
+
+- 门禁设计（关键）：**只对已实测通过的 dsh 版本注入**（`SECURITY_OVERRIDES_VERIFIED = ["0.1.1-rc.2","0.1.2-rc.1"]`，
+  精确匹配，沿用运行时安装的精确锁定纪律）。未验证版本按上游原样安装并在日志显式说明，
+  避免把没实测过的依赖图强推到用户机器上。升 dsh 时必须复验再把新版本加进清单。
+- 覆盖内容：`js-yaml ^4.3.2`、`qs ^6.16.0`、`sharp ^0.35.4`、`hono ^4.13.8`（全部同主版本线补丁）。
+- 验证 [事实]：`cargo test -- --ignored runtime_live_install_security_overrides` **PASS（180s）**——
+  真实 registry 装 0.1.2-rc.1，日志出现「注入依赖安全覆盖」行，peer 闭包补 26 个，
+  装完的树内四个包版本均达补丁线，且 `install_at` 自带的 `bin.js` 启动冒烟门禁通过。
+  单测另钉住：版本门禁（未验证版本不注入）、staging manifest 多轮写入幂等（overrides 与已合并 deps 都不丢）。
+- 用户侧生效条件：覆盖只影响**新安装**的受管运行时。已在用的版本不会被动改写——
+  需 设置 → DSH 运行时 → 先「移除」当前版本（自动 `.trash-*` 可回滚）→ 再「安装」同版本（约 1-3 分钟，
+  结束前自动做启动冒烟）。这与 2026-08-25 mac 运行时重装口径一致。
+- 剩余边界：Dependabot 只看仓库锁文件，看不到用户机器上的受管树；受管树的版本合规由本门禁 + 上游 dsh 决定。
+  dsh 0.1.1-rc.2 / 0.1.2-rc.1 验证日期：2026-09-16。
