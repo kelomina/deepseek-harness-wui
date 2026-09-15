@@ -438,6 +438,21 @@ pub fn install_at(root: &Path, version: &str) -> Result<RuntimeView, String> {
         let npm_cli = find_npm_cli(&node)?;
         let tarball_dep = format!("file:{}", tmp_tarball.to_string_lossy().replace('\\', "/"));
         write_staging_manifest(&staging, version, &[("@deepseek-ai/dsh", &tarball_dep)])?;
+        // 让「装出来的树有没有安全覆盖」在日志里可见（复验/回滚时能对齐口径）
+        match security_overrides_for(version) {
+            Some(overrides) => eprintln!(
+                "[runtime] dsh {version} 注入依赖安全覆盖：{}",
+                overrides
+                    .iter()
+                    .map(|(pkg, range)| format!("{pkg}@{range}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            None => eprintln!(
+                "[runtime] dsh {version} 不在安全覆盖已验证清单（{:?}）内，按上游依赖原样安装",
+                SECURITY_OVERRIDES_VERIFIED
+            ),
+        }
         let cache_dir = staging.join(".npm-cache");
         let cache_arg = format!("--cache={}", cache_dir.display());
 
@@ -604,7 +619,7 @@ pub fn install_at(root: &Path, version: &str) -> Result<RuntimeView, String> {
 
 /// staging 内写入显式 package.json：锁定 npm 项目根（防止向上查找到祖先
 /// package.json 把依赖装进别人的树），并声明当前需要补装的精确依赖集。
-fn write_staging_manifest(staging: &Path, _version: &str, deps: &[(&str, &str)]) -> Result<(), String> {
+fn write_staging_manifest(staging: &Path, version: &str, deps: &[(&str, &str)]) -> Result<(), String> {
     use serde_json::Value;
     let mut dep_map = serde_json::Map::new();
     for (name, range) in deps {
@@ -620,6 +635,16 @@ fn write_staging_manifest(staging: &Path, _version: &str, deps: &[(&str, &str)])
         root.insert("name".to_string(), Value::String("dsh-runtime-staging".to_string()));
     }
     root.insert("private".to_string(), Value::Bool(true));
+    // 安全覆盖：dsh 依赖树里的传递依赖（js-yaml/qs/sharp/hono）有公开漏洞，而父包精确锁定
+    // 导致 npm 无自动修复路径。仅对已实测「覆盖后装配与冒烟均通过」的版本注入，
+    // 其余版本保持上游原样——不把未验证的依赖图强推到用户机器上。
+    if let Some(overrides) = security_overrides_for(version) {
+        let mut ov = serde_json::Map::new();
+        for (pkg, range) in overrides {
+            ov.insert(pkg.to_string(), Value::String(range.to_string()));
+        }
+        root.insert("overrides".to_string(), Value::Object(ov));
+    }
     let existing = root.entry("dependencies").or_insert_with(|| Value::Object(Default::default()));
     if let Some(obj) = existing.as_object_mut() {
         for (k, v) in dep_map {
@@ -631,6 +656,26 @@ fn write_staging_manifest(staging: &Path, _version: &str, deps: &[(&str, &str)])
         serde_json::to_string_pretty(&Value::Object(root)).map_err(|e| e.to_string())?,
     )
     .map_err(|e| format!("写入 staging package.json 失败: {e}"))
+}
+
+/// 与仓库 `runtime/package.json` 的 overrides 保持同步：同主版本线内的补丁版。
+pub const SECURITY_OVERRIDES: &[(&str, &str)] = &[
+    ("js-yaml", "^4.3.2"),
+    ("qs", "^6.16.0"),
+    ("sharp", "^0.35.4"),
+    ("hono", "^4.13.8"),
+];
+
+/// 已实测「注入覆盖后 npm 装配 + bin.js 冒烟 + dump-config 装配」通过的 dsh 版本。
+/// 升级 dsh 后需按 docs/RISKS.md 的流程复验并把新版本加进来。
+pub const SECURITY_OVERRIDES_VERIFIED: &[&str] = &["0.1.1-rc.2", "0.1.2-rc.1"];
+
+/// 该 dsh 版本是否应用安全覆盖（精确匹配，沿用运行时安装的精确锁定纪律）。
+pub fn security_overrides_for(version: &str) -> Option<&'static [(&'static str, &'static str)]> {
+    let v = version.trim();
+    SECURITY_OVERRIDES_VERIFIED
+        .contains(&v)
+        .then_some(SECURITY_OVERRIDES)
 }
 
 /// 遍历 node_modules（含 scope 包），收集所有非可选 peerDependencies 中
@@ -990,6 +1035,148 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 端到端活体：受管运行时安装必须带上依赖安全覆盖，且装出来的树确实是补丁版。
+    /// 运行：`cargo test -- --ignored runtime_live_install_security_overrides`
+    #[test]
+    #[ignore = "live: 需要 npm registry + npm install，手动运行 cargo test -- --ignored runtime_live_install_security_overrides"]
+    fn runtime_live_install_security_overrides() {
+        let version = "0.1.2-rc.1";
+        let dir = std::env::temp_dir().join(format!("dsh-runtime-ov-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let view = install_at(&dir, version).expect("live install should succeed");
+        assert!(view.installed);
+        let nm = dir.join(version).join("node_modules");
+        for (pkg, range) in SECURITY_OVERRIDES {
+            let manifest = nm.join(pkg).join("package.json");
+            let text = std::fs::read_to_string(&manifest)
+                .unwrap_or_else(|e| panic!("{pkg} 未装进树（{}）: {e}", manifest.display()));
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let got = value
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let floor = range.trim_start_matches('^');
+            assert!(
+                version_not_below(&got, floor),
+                "{pkg} 应在 {range} 补丁线，实际 {got}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 仅比较 `a >= b`（点分数值三元组，够用于 npm 版本下界判断）。
+    fn version_not_below(a: &str, b: &str) -> bool {
+        let parse = |s: &str| -> Vec<u64> {
+            s.split(['.', '-', '+'])
+                .map(|p| p.parse::<u64>().unwrap_or(0))
+                .collect()
+        };
+        let (av, bv) = (parse(a), parse(b));
+        for i in 0..av.len().max(bv.len()) {
+            let x = av.get(i).copied().unwrap_or(0);
+            let y = bv.get(i).copied().unwrap_or(0);
+            if x != y {
+                return x > y;
+            }
+        }
+        true
+    }
+
+    #[test]
+    fn security_overrides_gate_is_exact_verified_versions_only() {
+        assert!(security_overrides_for("0.1.1-rc.2").is_some());
+        assert!(security_overrides_for(" 0.1.2-rc.1 ").is_some());
+        assert!(
+            security_overrides_for("0.1.3-rc.1").is_none(),
+            "未验证版本不得注入未实测过的依赖覆盖"
+        );
+        assert!(security_overrides_for("^0.1.1-rc.2").is_none());
+        // 覆盖必须是同主版本线的补丁范围（sharp 0.x 的 ^ 只放开 patch/minor）
+        for (pkg, range) in SECURITY_OVERRIDES {
+            assert!(range.starts_with('^'), "{pkg} 覆盖必须是 ^ 范围，实际 {range}");
+        }
+        assert!(version_not_below("4.3.2", "4.3.1"));
+        assert!(!version_not_below("4.3.1", "4.3.2"));
+    }
+
+    #[test]
+    fn write_staging_manifest_injects_overrides_and_keeps_deps_across_rounds() {
+        let dir = std::env::temp_dir().join(format!("dsh-staging-ov-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 第一轮主包 + 第二轮 peer 补装（install_at 会重复调用，必须幂等且不丢 deps）
+        write_staging_manifest(&dir, "0.1.1-rc.2", &[("@deepseek-ai/dsh", "file:a.tgz")]).unwrap();
+        write_staging_manifest(
+            &dir,
+            "0.1.1-rc.2",
+            &[("@deepseek-ai/cordis-plugin-group", "^4.0.0")],
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(dir.join("package.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value.get("private").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            value.get("name").and_then(|v| v.as_str()),
+            Some("dsh-runtime-staging")
+        );
+        let deps = value.get("dependencies").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(deps.len(), 2, "两轮依赖都要留住: {deps:?}");
+        let ov = value
+            .get("overrides")
+            .and_then(|v| v.as_object())
+            .unwrap_or_else(|| panic!("已验证版本应注入 overrides，实际: {text}"));
+        assert_eq!(ov.len(), SECURITY_OVERRIDES.len());
+        assert_eq!(
+            ov.get("js-yaml").and_then(|v| v.as_str()),
+            Some("^4.3.2"),
+            "js-yaml 覆盖缺失"
+        );
+
+        // 未验证版本：不得出现 overrides
+        let dir2 = std::env::temp_dir().join(format!("dsh-staging-noov-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir2);
+        std::fs::create_dir_all(&dir2).unwrap();
+        write_staging_manifest(&dir2, "0.9.9", &[("@deepseek-ai/dsh", "file:b.tgz")]).unwrap();
+        let v2: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir2.join("package.json")).unwrap())
+                .unwrap();
+        assert!(v2.get("overrides").is_none(), "未验证版本不得注入 overrides");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    /// 漂移守卫：Rust 侧注入受管运行时的覆盖集必须与仓库 `runtime/package.json` 完全一致，
+    /// 否则 dev/bundled 树与用户受管树会静默跑出两套依赖版本。
+    #[test]
+    fn security_overrides_match_repo_runtime_manifest() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("src-tauri 之上应是仓库根")
+            .join("runtime")
+            .join("package.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("读 {} 失败: {e}", path.display()));
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let ov = value
+            .get("overrides")
+            .and_then(|v| v.as_object())
+            .unwrap_or_else(|| panic!("runtime/package.json 缺少 overrides：{text}"));
+        assert_eq!(
+            ov.len(),
+            SECURITY_OVERRIDES.len(),
+            "覆盖条目数不一致：manifest={ov:?} rust={SECURITY_OVERRIDES:?}"
+        );
+        for (pkg, range) in SECURITY_OVERRIDES {
+            assert_eq!(
+                ov.get(*pkg).and_then(|v| v.as_str()),
+                Some(*range),
+                "{pkg} 的覆盖范围与 runtime/package.json 不一致"
+            );
+        }
+    }
+
     #[test]
     fn find_npm_cli_resolves_bundled_npm() {
         // probe 型（macOS CI 无真机可复查）：无 node 或 npm 布局差异时 skip，不 panic
@@ -1099,4 +1286,3 @@ mod tests {
         assert_eq!(doc2.versions.len(), 1);
     }
 }
-

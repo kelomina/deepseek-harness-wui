@@ -49,7 +49,10 @@ All notable user-visible changes are aggregated here. / 本项目重要变更按
   `web --dump-config` exit 0）。
   仍无法处理：`glib 0.18.5`（需跨版本且仅 Linux target 编译）、`proc-macro-error`、`unic-*`
   （上游 Tauri 依赖链，官方标记 unmaintained 且无修复版本）。
-  边界：overrides 不作用于用户机器上的「受管运行时」（安装时现场 `npm install`），详见 `docs/RISKS.md`。
+  同一组覆盖也会写进**受管运行时**的安装 staging（用户机器上实际跑的 dsh 一起拿到补丁版），
+  但仅对已实测通过的 dsh 版本生效（`0.1.1-rc.2`、`0.1.2-rc.1`）；其余版本按上游原样安装并在日志说明。
+  覆盖只影响新安装的运行时：已在用的请到 设置 → DSH 运行时 先「移除」再「安装」同版本以取补丁
+  （移除会备份 `.trash-*`，安装末尾自带启动冒烟门禁）。详见 `docs/RISKS.md` 2026-09-16 段。
 
 - dsh 0.1.1-rc.2 未变。
 
