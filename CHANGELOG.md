@@ -40,6 +40,17 @@ All notable user-visible changes are aggregated here. / 本项目重要变更按
   `cargo test -- --ignored profile_bundle_heal_live_end_to_end`（真实 dsh CLI 复现报错 → 守卫自愈 → dsh 正常加载）PASS。
   根因与边界见 `docs/RISKS.md` 2026-09-16 段。
 
+### Security / 安全
+
+- **依赖安全告警清理**：`runtime/` 与根工程新增 npm `overrides`，把 dsh 依赖树里的传递依赖提到同主版本补丁线
+  （`js-yaml ^4.3.2`、`qs ^6.16.0`、`sharp ^0.35.4`、`hono ^4.13.8`），`@deepseek-ai/*` 精确锁定不变；
+  Rust 侧 `rustls 0.23.43 → 0.23.45`（RUSTSEC-2026-0285）。root / runtime / plugin-host 三份 manifest
+  `npm audit` 现为 `found 0 vulnerabilities`；覆盖后 dsh 冒烟通过（`--version` 与隔离 `DSH_HOME` 下
+  `web --dump-config` exit 0）。
+  仍无法处理：`glib 0.18.5`（需跨版本且仅 Linux target 编译）、`proc-macro-error`、`unic-*`
+  （上游 Tauri 依赖链，官方标记 unmaintained 且无修复版本）。
+  边界：overrides 不作用于用户机器上的「受管运行时」（安装时现场 `npm install`），详见 `docs/RISKS.md`。
+
 - dsh 0.1.1-rc.2 未变。
 
 ## [0.4.0] - 2026-09-05

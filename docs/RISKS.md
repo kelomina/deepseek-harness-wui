@@ -680,10 +680,52 @@ health 失败→自动重启 3 次→每次同一条错误，应用表现为「�
 - dsh 0.1.2-rc.1 的 profile 加载仍是**全有或全无**：任何第三方 bundle 解析不到就拒绝启动，上游无
   「跳过不可解析 bundle」开关。守卫只能在我们这一侧预清理；若用户在 dsh 外部（命令行 pnpm）改坏
   profile，仍需重启应用才会被守卫纠正。验证日期 2026-09-16。
-- 守卫摘除 bundle 会让该插件静默失效（换来应用可启动），日志与 `package.json.bak-*` 是唯一线索；
+  - 守卫摘除 bundle 会让该插件静默失效（换来应用可启动），日志与 `package.json.bak-*` 是唯一线索；
   后续可考虑在设置→插件显示「上次启动自愈了什么」。
 - 本机存在散装 `C:\Users\<user>\node_modules`（含 `@deepseek-ai/dsh-base` 等），dsh 的上溯解析会命中它；
   守卫刻意与 dsh 保持一致（不误判为不可解析），但这意味着**家目录散装 node_modules 可能遮蔽 profile/运行时版本**，
   属环境隐患，未在本轮处理。
 - 稳定副本与 vendored 源之间只按 `package.json` 的 `version` 判定是否刷新：改 vendored 代码不升版本号
   不会自动同步（需重装套装或删 `.dsh-plugins`）。
+
+## 2026-09-16：mac CI 红灯根因 + Dependabot 告警处置（npm overrides / rustls）
+
+### [事实] macOS job 失败根因（run 35003989026，step「Rust tests」exit 101；Windows job 绿）
+
+上一轮新增的单测 `node_modules_root_of_bin_walks_to_the_real_node_modules` 里写了 Windows 路径字面量
+（`E:\Project\runtime\node_modules\@deepseek-ai\dsh\lib\bin.js`）。macOS/Linux 上反斜杠不是路径分隔符，
+整串被当成一个相对组件 → 上溯不到 `node_modules` → `unwrap()` panic。Windows 同时接受 `/` 和 `\` 所以看不出来。
+修复：测试路径改为按组件 `PathBuf::push` 拼装（平台无关）。教训：路径断言不写死分隔符。
+
+### Dependabot 告警定位（OSV crates.io 批量查询 + 三份 manifest 的 npm audit 双口径）
+
+- JS（root 1 项 + runtime 4 项，全在 dsh 依赖树的**传递依赖**上，`npm audit fix` 无自动路径因为父包精确锁定）：
+  `js-yaml 4.0.0–4.3.1`(high)、`sharp <0.35.4`(high)、`qs 2.2.5–6.15.3`(moderate)、`hono ≤4.13.4`(moderate)；
+  plugin-host 0 项。
+- Rust（3 项）：`rustls 0.23.43`（RUSTSEC-2026-0285 / GHSA-2mjx-qc3c-rqvc，fixed **0.23.45**）；
+  `glib 0.18.5`（RUSTSEC-2024-0429，fixed 0.20.0，跨版本且 `cargo tree -i glib` 在主机 target 下为空 =
+  仅 Linux 编译，Windows/macOS 产物不含）；`proc-macro-error 1.0.4`（RUSTSEC-2024-0370）与
+  `unic-* 0.9.0` 五连（RUSTSEC-2025-0075/0080/0081/0098/0100）均为 **unmaintained、无修复版本**，
+  传入链 `unic-ucd-ident ← urlpattern 0.3.0 ← tauri-utils 2.9.3`，只能等上游 Tauri。
+
+### 处置与验证 [事实]
+
+- `runtime/package.json`、根 `package.json` 增加 npm `overrides`（同 major 补丁版：
+  `js-yaml ^4.3.2`、`qs ^6.16.0`、`sharp ^0.35.4`、`hono ^4.13.8`；根只 `js-yaml`）。
+  **不动** `@deepseek-ai/*` 精确锁定（AGENTS 硬约束）。
+- `cargo update -p rustls` → 0.23.43 → 0.23.45（仅 1 个包变动）。
+- 复验：root / runtime / plugin-host 三处 `npm audit` 均 `found 0 vulnerabilities`；
+  `node runtime/node_modules/@deepseek-ai/dsh/lib/bin.js --version` → `0.1.1-rc.2`；
+  隔离 `DSH_HOME` 下 `web --dump-config` exit 0（503 行合成配置，llm/session/typert 等条目齐全）
+  → 覆盖后的传递依赖不破坏 dsh 配置装配。
+- `npm install` 报 install-scripts blocked（node-pty、koffi、@google/genai、protobufjs、dsh-subprocess-local）：
+  node-pty 走 `prebuilds/win32-x64/conpty.node` 等预编译产物，koffi 与 `@img/sharp-win32-x64` 目录在位，
+  实测未受影响（本机 `ignore-scripts=false`，拦截来自 npm 的 install-scripts 白名单策略）。
+
+### 边界（需要单独决策的一件事）
+
+overrides 只覆盖仓库内提交的 `runtime/` 与根依赖树（dev / bundled 模式）。用户机器上的**受管运行时**由
+`runtime.rs::install_at` 现场 `npm install @deepseek-ai/dsh@<v>`，不读我们的 overrides，那棵树里的
+js-yaml/qs/sharp/hono 仍是 dsh 自己声明的版本。要把补丁带到终端用户，需要把同一组 overrides 注入受管安装的
+staging manifest——这会改变用户机器上 dsh 实际加载的依赖版本，属独立风险决策，本轮未做。
+dsh 0.1.1-rc.2 验证日期：2026-09-16。
