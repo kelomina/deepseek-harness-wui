@@ -605,3 +605,85 @@ DSH_HOME=用户真实 `~/.dsh`，测试后 taskkill /T 清理）。输出：`evi
     后续文件损坏场景维持既有 hash 语义。
   - npm 解析耗时随上游依赖图变化波动；900s/轮超时 + 失败信息带 stderr 尾部，可诊断。
   - flate2/tar crate 已无调用方（tarball 不再手动解包），留在 Cargo.toml 待后续清理。
+
+## 2026-09-16：[已修复] profile bundle 解析失败导致应用完全起不来（安装包现场）
+
+**现象（用户实报，安装包 0.4.0）**：dsh 启动即
+`Error: dsh: cannot resolve profile bundle "@dsh-external/dsh-super-injector" from the dsh installation
+or C:\Users\<user>\.dsh\profiles\web; run 'dsh plugin --profile web install' ...`，
+health 失败→自动重启 3 次→每次同一条错误，应用表现为「装完不能正常启动」。
+
+### 根因 [事实]
+
+1. dsh 在**加载 profile 阶段**要求 `dsh.profile.bundles` 每一项都可解析：
+   `@deepseek-ai/dsh-app-boot` 的 `resolveBundleDir()`（0.1.2-rc.1 实测在 `lib/index.js:831`，
+   0.1.1-rc.2 在 523 行）先按 dsh 安装锚点、再按 profile 目录的 node_modules 链上溯找
+   `<pkg>/package.json`，找不到就 `throw`。此时 logger 尚未接管，`$DSH_HOME/logs/harness.log` 不写任何行
+   （本机该文件停在 09-04，与现场一致）。
+2. 隔离复现（临时 `DSH_HOME` + 悬空 `link:`，受管运行时 0.1.2-rc.1）：`dsh web` 与 `dsh web --dump-config`
+   **全部**以同一错误退出 → 单条 bundle 悬空即整个应用锁死，不是插件局部故障。
+3. 悬空来源：profile 的 `dependencies["@dsh-external/dsh-super-injector"]` 是
+   `link:E:/Project/HTML/DeepSeekHarnessWUI/src-tauri/../plugins/dsh-routing-suite/injector`
+   ——即**开发仓库路径**（由 dev 侧安装写入，安装包与应用配置共用同一 `~/.dsh`）。
+   该路径随仓库移动/重命名/`git clean`/分支切换消失；打包版同理会记住安装目录（本机 0.4.0 的
+   resources 落在 `%LOCALAPPDATA%\DeepSeek Harness Desktop\_up_\plugins\...`）。任一变化都让 profile
+   记住一个不存在的目录。
+   [事实] 更正记录：`_up_` **不是**就地升级残留——0.4.1 全新安装包用 7z 复核，资源同样落在
+   `$INSTDIR\_up_\`（`bundle.resources` 里 `../x/**` 这类越出 `src-tauri` 的键，NSIS 以 `_up_` 表示上跳一级）。
+   因此打包版 `path().resolve("dsh-routing-suite"|"plugin-host", Resource)`（= `$INSTDIR/<rel>`）
+   必然找不到自带资源：vendored 套装与 dsh-std sidecar 在安装包内都定位失败。
+4. 放大面 [事实]：`bundled_bin_path()` 只找仓库 `runtime/node_modules/@deepseek-ai/dsh/lib/bin.js`，
+   而安装包 `bundle.resources` 只含 `plugins/` 与 `plugin-host/`（不含 `runtime/`）→ 安装包里
+   `run_dsh_cli`（插件清单/导入/删除、路由套装安装卸载）**必然**报「bundled dsh runtime not found」，
+   用户无法在设置→插件里重装；dev 下 CLI 用 0.1.1-rc.2 而启动用受管 0.1.2-rc.1，跨版本写同一 profile。
+5. 附带缺陷 [事实]：`routing_suite::runtime_node_modules_root()` 的 bundled 分支从 `bin.js` 只上溯 3 层，
+   落在 `node_modules/@deepseek-ai` 而非 `node_modules`，注入器裸依赖 junction 全部「目标不存在（跳过）」
+   → 与 08-15 记录的 `Cannot find package 'schemastery'` 同源。
+
+### 修复 [事实]
+
+1. **启动前守卫**（`manager::start()` → `preflight_profile_bundles`，覆盖自动启动/手动启动/健康重启三条路径）：
+   镜像 `resolveBundleDir` 的解析顺序预检 `dsh.profile.bundles`；注入器可自愈则重建链接，
+   否则把该条从 bundles 摘除（改写前备份 `package.json.bak-<ts>`）并写日志，保证 dsh 一定能启动。
+   守卫自身失败不阻断启动（由 dsh 原始报错兜底）。
+2. **链接落点稳定化**：自愈与安装都把 vendored 注入器**复制**到
+   `$DSH_HOME/profiles/web/.dsh-plugins/dsh-super-injector/`（版本一致跳过、不一致旧副本 `.trash-<ts>`），
+   profile 的 `link:` 与 node_modules junction 都指向它 → 不再记住仓库/安装目录；
+   稳定副本的 `node_modules` 按**当前生效运行时**重建（复制时跳过源 `node_modules`，不沿用旧运行时的 junction）。
+   仅当链接已不可解析时才迁移，健康的仓库直链不强改（保留 dev 热改工作流）。
+3. **CLI 与启动同源**：`plugins::dsh_cli_bin(cfg)` 受管运行时优先（`app_config_dir/runtimes/<v>`，
+   与 `managed_runtime_bin_path` 同路径），回落 bundled；`run_dsh_cli` 改收 `cfg`。安装包由此才有插件管理能力。
+4. **自带 bundle 不被静默阉割**：`@deepseek-ai/dsh-{base,web-app,acp-app,headless,sdk-app}`
+   解析不到时只报错并指向「设置 → DSH 运行时 复验/回滚」，不从清单摘除。
+5. 打包资源定位统一走 `dsh::resource_roots`（`$INSTDIR` 与 `$INSTDIR/_up_` 都作候选，纯函数部分带单测）：
+   `routing_suite::resolve_suite_root` 找 `plugins/dsh-routing-suite`、`plugin_host::resolve_entry` 找
+   `plugin-host` 都改用它，安装包内两类自带资源才定位得到。
+   `node_modules_root_of_bin` 统一按「最近的 node_modules 目录」上溯（修根因 5）；
+   `diagnose_exit` 新增 `cannot resolve profile bundle` 签名与可执行提示。
+
+### 验证 [事实]
+
+- `cargo test --lib` **66 过 / 0 败 / 3 ignored**；`cargo check` 干净（仅既有 CollectSink dead_code 警告）。
+- 新增单测：祖先 node_modules 解析、健康清单零改写、悬空 link 摘除+备份+保留其他字段、
+  自带 bundle 不摘除（Windows/Linux/macOS 通用，环境不满足前提时按 probe 约定跳过）、
+  悬空注入器重建到稳定副本（Windows junction）。
+- **端到端活体**（`cargo test -- --ignored profile_bundle_heal_live_end_to_end`，PASS）：真实 dsh CLI +
+  临时 DSH_HOME + 仓库 vendored 注入器——修复前 `dsh web --dump-config` 复现同一条
+  `cannot resolve profile bundle` 退出码非 0；守卫自愈后 exit 0 且合成配置里仍有 `- id: dsh-super-injector`。
+- 现场核对：本机 `~/.dsh/profiles/web` 当前链接可达，受管运行时 0.1.2-rc.1 手跑
+  `node .../bin.js web --port 3099 --no-open` 能起（09-15 23:52 安装包实测监听 3080、窗口标题正常）
+  → 用户现场是**间歇性**锁死（链接 momentarily 不可解析即触发），修复目标是「不再因此起不来」。
+- 安装包产物：`npm run tauri build`（nsis+msi）本地构建中/见 CHANGELOG 0.4.1；CI 双平台回归待推送。
+
+### 剩余风险 / 边界
+
+- dsh 0.1.2-rc.1 的 profile 加载仍是**全有或全无**：任何第三方 bundle 解析不到就拒绝启动，上游无
+  「跳过不可解析 bundle」开关。守卫只能在我们这一侧预清理；若用户在 dsh 外部（命令行 pnpm）改坏
+  profile，仍需重启应用才会被守卫纠正。验证日期 2026-09-16。
+- 守卫摘除 bundle 会让该插件静默失效（换来应用可启动），日志与 `package.json.bak-*` 是唯一线索；
+  后续可考虑在设置→插件显示「上次启动自愈了什么」。
+- 本机存在散装 `C:\Users\<user>\node_modules`（含 `@deepseek-ai/dsh-base` 等），dsh 的上溯解析会命中它；
+  守卫刻意与 dsh 保持一致（不误判为不可解析），但这意味着**家目录散装 node_modules 可能遮蔽 profile/运行时版本**，
+  属环境隐患，未在本轮处理。
+- 稳定副本与 vendored 源之间只按 `package.json` 的 `version` 判定是否刷新：改 vendored 代码不升版本号
+  不会自动同步（需重装套装或删 `.dsh-plugins`）。

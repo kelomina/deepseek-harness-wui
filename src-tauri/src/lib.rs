@@ -873,6 +873,11 @@ pub fn run() {
                 if let Ok(cfg_dir) = app.path().app_config_dir() {
                     mgr.set_managed_runtime_root(cfg_dir.join("runtimes"));
                 }
+                // vendored 注入器目录：启动前守卫需要它把 profile 里悬空的 bundle
+                // 链接重建到 $DSH_HOME 下的稳定副本（找不到则守卫只做摘除降级）。
+                if let Ok(injector) = dsh::routing_suite::vendored_injector_dir(handle) {
+                    mgr.set_plugin_vendor_root(injector);
+                }
                 mgr.replace_config(cfg.clone());
                 *state.proxy.lock().unwrap() = Some(proxy);
             }

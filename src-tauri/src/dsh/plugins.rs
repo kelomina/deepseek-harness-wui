@@ -13,6 +13,10 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// 与 `src-tauri/tauri.conf.json` 的 identifier 保持一致：受管运行时装在
+/// `app_config_dir/runtimes/<version>` 下，这里按同构路径推导（纯函数侧拿不到 AppHandle）。
+const APP_IDENTIFIER: &str = "com.deepseekharness.wui";
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PluginEntry {
     pub id: String,
@@ -36,11 +40,34 @@ pub fn dsh_home(cfg: &DshConfig) -> PathBuf {
         .join(".dsh")
 }
 
+/// 受管运行时根目录（`app_config_dir/runtimes`）。
+pub(crate) fn managed_runtimes_root() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join(APP_IDENTIFIER).join("runtimes"))
+}
+
+/// 解析 dsh CLI 入口：**受管运行时优先**，让插件/套装用的 dsh 与 manager 启动的
+/// dsh 是同一份。安装包不随包 `runtime/`，只找 bundled 会让安装版所有插件功能
+/// 直接不可用；dev 下混用两个版本也会写出对不上号的 profile。
+pub(crate) fn dsh_cli_bin(cfg: &DshConfig) -> Result<PathBuf, String> {
+    if let Some(version) = &cfg.managed_runtime_version {
+        if let Some(root) = managed_runtimes_root() {
+            let bin = root
+                .join(version)
+                .join("node_modules/@deepseek-ai/dsh/lib/bin.js");
+            if bin.is_file() {
+                return Ok(bin);
+            }
+        }
+    }
+    Ok(PathBuf::from(bundled_bin_path()?))
+}
+
 /// Run `node <dsh-cli> <args>` with the given DSH_HOME; returns combined output.
-pub(crate) fn run_dsh_cli(args: &[&str], home: &Path) -> Result<String, String> {
-    let bin = bundled_bin_path()?;
+pub(crate) fn run_dsh_cli(cfg: &DshConfig, args: &[&str]) -> Result<String, String> {
+    let bin = dsh_cli_bin(cfg)?;
+    let home = dsh_home(cfg);
     let mut cmd = Command::new("node");
-    cmd.arg(&bin).args(args).env("DSH_HOME", home);
+    cmd.arg(&bin).args(args).env("DSH_HOME", &home);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -101,8 +128,7 @@ fn parse_dump_config(text: &str) -> Vec<PluginEntry> {
 
 /// List effective plugins from the composed profile config.
 pub fn plugins_list(cfg: &DshConfig) -> Result<Vec<PluginEntry>, String> {
-    let home = dsh_home(cfg);
-    let out = run_dsh_cli(&["web", "--dump-config"], &home)?;
+    let out = run_dsh_cli(cfg, &["web", "--dump-config"])?;
     Ok(parse_dump_config(&out))
 }
 
@@ -251,8 +277,7 @@ pub fn plugins_import(cfg: &DshConfig, spec: &str) -> Result<String, String> {
     if spec.is_empty() {
         return Err("包名/路径不能为空".to_string());
     }
-    let home = dsh_home(cfg);
-    run_dsh_cli(&["plugin", "--profile", "web", "add", spec], &home)
+    run_dsh_cli(cfg, &["plugin", "--profile", "web", "add", spec])
         .map(|o| format!("导入成功（可能需要重启 dsh 生效）：\n{o}"))
 }
 
@@ -262,8 +287,7 @@ pub fn plugins_remove(cfg: &DshConfig, name: &str) -> Result<String, String> {
     if name.is_empty() {
         return Err("插件名不能为空".to_string());
     }
-    let home = dsh_home(cfg);
-    run_dsh_cli(&["plugin", "--profile", "web", "remove", name], &home)
+    run_dsh_cli(cfg, &["plugin", "--profile", "web", "remove", name])
         .map(|o| format!("已移除（可能需要重启 dsh 生效）：\n{o}"))
 }
 

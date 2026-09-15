@@ -4,6 +4,44 @@ All notable user-visible changes are aggregated here. / 本项目重要变更按
 
 ## [Unreleased]
 
+## [0.4.1] - 未发布（日期待发版填）
+
+### Added / 新增
+
+- 无。
+
+### Changed / 变更
+
+- 无。
+
+### Fixed / 修复
+
+- **安装包启动锁死（profile bundle 悬空 → dsh 完全起不来）**：dsh 在加载 profile 阶段要求
+  `dsh.profile.bundles` 每项都可解析，注入器的 `link:` 一旦指向已不存在的目录（开发仓库被移动/`git clean`、
+  应用就地升级换了安装目录），`dsh web` 就以 `cannot resolve profile bundle` 直接退出，健康重启只会重复同一条错误。
+  现在启动前（含自动启动、手动启动、健康重启三条路径）按 dsh 同一套解析顺序预检：注入器能自愈就重建链接、
+  不能自愈则把该条从 bundles 摘除并备份 `package.json.bak-<ts>`，保证应用一定起得来；日志给出包名与恢复路径。
+- **插件链接落点稳定化**：路由套装的注入器改为复制进 `$DSH_HOME/profiles/web/.dsh-plugins/dsh-super-injector/`
+  再被 profile 引用（旧副本自动 `.trash-*` 保留），不再记住开发仓库或应用安装目录；副本的运行时依赖
+  junction 按**当前生效运行时**重建。卸载时稳定副本一并回收。
+- **安装包内插件管理不可用**：dsh CLI 入口改为「受管运行时优先、回落 bundled」，与启动 dsh 用的是同一份，
+  设置 → 插件 / 路由套装在安装包内恢复可用（此前只找不随包发布的 `runtime/`，必然报
+  `bundled dsh runtime not found`），也消除 dev 下 CLI 与服务器跨版本共用 profile 的隐患。
+- **注入器依赖链接定位错误**：bundled 运行时从 `bin.js` 上溯层数写错（落在 `node_modules/@deepseek-ai`），
+  导致 `schemastery`/`cordis` 等裸依赖「目标不存在（跳过）」→ 注入器启动即 ERR_MODULE_NOT_FOUND；
+  改为按最近的 `node_modules` 目录定位。
+- **安装包内自带资源定位失败**：`bundle.resources` 里 `../plugins/…`、`../plugin-host/**` 这类越出
+  `src-tauri` 的资源键，NSIS 实际装到 `$INSTDIR\_up_\`，而代码只试 `resolve(rel, Resource)`
+  （= `$INSTDIR\<rel>`）→ 打包版既找不到 vendored 路由套装，也找不到 dsh-std sidecar。
+  统一改走 `dsh::resource_roots`（`$INSTDIR` 与 `$INSTDIR/_up_` 双候选）。
+  退出诊断同时新增 `cannot resolve profile bundle` 签名，给出「设置 → 插件 重装 / 清单备份回滚」提示。
+
+  验证：`cargo test --lib` 66 过 / 0 败；端到端活体测试
+  `cargo test -- --ignored profile_bundle_heal_live_end_to_end`（真实 dsh CLI 复现报错 → 守卫自愈 → dsh 正常加载）PASS。
+  根因与边界见 `docs/RISKS.md` 2026-09-16 段。
+
+- dsh 0.1.1-rc.2 未变。
+
 ## [0.4.0] - 2026-09-05
 
 ### Added / 新增
