@@ -48,6 +48,9 @@ pub struct DshManager {
     proxy_port: u16,
     proxy_used: Option<String>,
     managed_runtime_root: std::path::PathBuf,
+    /// vendored 插件套装里的注入器目录（打包资源或仓库 `plugins/`）：启动前用它
+    /// 把 profile 里悬空的 bundle 链接重建到 `$DSH_HOME` 下的稳定目录。
+    plugin_vendor_root: Option<std::path::PathBuf>,
 }
 
 impl DshManager {
@@ -65,6 +68,7 @@ impl DshManager {
             proxy_port,
             proxy_used: None,
             managed_runtime_root: std::path::PathBuf::new(),
+            plugin_vendor_root: None,
         }
     }
 
@@ -100,6 +104,11 @@ impl DshManager {
     /// 设置受管运行时根目录（app_config_dir/runtimes），用于 Bundled 模式解析受管版本。
     pub fn set_managed_runtime_root(&mut self, root: std::path::PathBuf) {
         self.managed_runtime_root = root;
+    }
+
+    /// 设置 vendored 注入器目录（`plugins/dsh-routing-suite/injector`）。
+    pub fn set_plugin_vendor_root(&mut self, root: std::path::PathBuf) {
+        self.plugin_vendor_root = Some(root);
     }
 
     pub fn replace_config(&mut self, cfg: DshConfig) {
@@ -171,6 +180,10 @@ impl DshManager {
                 ));
             }
         }
+        // 启动前守卫 profile bundles：dsh 在加载 profile 阶段要求 `dsh.profile.bundles`
+        // 每项都能解析，任一条目悬空就直接抛错退出（整个应用起不来，自动重启只会
+        // 重复同一条错误）。这里能修则修，修不了的摘除并备份清单，先让 dsh 起得来。
+        self.preflight_profile_bundles(&sink);
         let (program, args) = self.build_command()?;
         let mut cmd = Command::new(&program);
         cmd.args(&args)
@@ -261,6 +274,42 @@ impl DshManager {
             }
         }
         bundled_bin_path()
+    }
+
+    /// 当前生效运行时（受管优先，回落 bundled）的 `node_modules` 根：
+    /// dsh 就是从这里解析自带 bundle 的，预检必须用同一个锚点。
+    pub(crate) fn runtime_node_modules_root(&self) -> Option<std::path::PathBuf> {
+        let bin = self
+            .managed_runtime_bin_path()
+            .or_else(|_| bundled_bin_path())
+            .ok();
+        bin.and_then(|b| node_modules_root_of_bin(std::path::Path::new(&b)))
+    }
+
+    /// 见 `routing_suite::heal_profile_bundles`。自检/修复失败不阻断启动，
+    /// 由 dsh 自身的报错兜底，避免守卫反而把应用锁死。
+    fn preflight_profile_bundles<S: EventSink>(&mut self, sink: &S) {
+        let profile_dir = crate::dsh::plugins::dsh_home(&self.config)
+            .join("profiles")
+            .join(crate::dsh::routing_suite::WEB_PROFILE);
+        let runtime_nm = self.runtime_node_modules_root();
+        let vendor = self.plugin_vendor_root.clone();
+        match crate::dsh::routing_suite::heal_profile_bundles(
+            &profile_dir,
+            runtime_nm.as_deref(),
+            vendor.as_deref(),
+        ) {
+            Ok(None) => {}
+            Ok(Some(heal)) => {
+                for line in heal.summary_lines() {
+                    self.push_log(format!("[profile] {line}"), sink);
+                }
+            }
+            Err(e) => self.push_log(
+                format!("[profile] 启动前 bundles 自检失败（不阻断，由 dsh 报错兜底）: {e}"),
+                sink,
+            ),
+        }
     }
 
     fn build_command(&self) -> Result<(String, Vec<String>), String> {
@@ -512,9 +561,35 @@ fn spawn_exit_watcher<S: EventSink>(shared: Arc<Mutex<DshManager>>, sink: S, wat
 /// 从退出前的日志尾部提炼已知故障签名，产出一句可行动的诊断。
 /// 纯函数，便于单测；未命中已知签名时返回 None（保留原始堆栈供回报）。
 fn diagnose_exit(log_tail: &[String]) -> Option<String> {
-    const KNOWN: [&str; 4] = ["ERR_MODULE_NOT_FOUND", "Cannot find module", "EADDRINUSE", "MODULE_NOT_FOUND"];
+    const KNOWN: [&str; 5] = [
+        "ERR_MODULE_NOT_FOUND",
+        "Cannot find module",
+        "EADDRINUSE",
+        "MODULE_NOT_FOUND",
+        "cannot resolve profile bundle",
+    ];
     if !log_tail.iter().any(|l| KNOWN.iter().any(|k| l.contains(k))) {
         return None;
+    }
+    // profile bundle 解析失败：dsh 在加载 profile 阶段就 throw，应用完全起不来。
+    // 启动前守卫（preflight_profile_bundles）通常已自愈；走到这里说明守卫也没能修。
+    if log_tail.iter().any(|l| l.contains("cannot resolve profile bundle")) {
+        let pkg = log_tail.iter().find_map(|l| {
+            let idx = l.find("cannot resolve profile bundle \"")?;
+            let rest = &l[idx + "cannot resolve profile bundle \"".len()..];
+            rest.find('"').map(|end| rest[..end].to_string())
+        });
+        return Some(match pkg {
+            Some(name) => format!(
+                "profile 里的 bundle `{name}` 解析不到（通常是插件 link 指向的开发仓库/旧安装目录已不存在），\
+                 dsh 加载 profile 阶段即退出。应用会在启动前自动重建链接或把它从 bundles 摘除；\
+                 若仍反复失败，请到 设置→插件 重新安装 {name}，或手动清理 \
+                 $DSH_HOME/profiles/web/package.json（同目录有 package.json.bak-* 可回滚）。"
+            ),
+            None => "profile 里的插件 bundle 解析不到，dsh 加载 profile 阶段即退出；请到 设置→插件 \
+                     重新安装，或手动清理 $DSH_HOME/profiles/web/package.json。"
+                .to_string(),
+        });
     }
     // 提取缺失包名：`Cannot find package '<pkg>' imported from <path>`
     for line in log_tail {
@@ -600,6 +675,24 @@ pub(crate) fn bundled_bin_path() -> Result<String, String> {
         "bundled dsh runtime not found (looked for {}); run `npm install` in runtime/ or switch exec mode to npx/path",
         rel
     ))
+}
+
+/// 从 dsh CLI 入口推出其所属运行时的 `node_modules` 根：
+/// `…/node_modules/@deepseek-ai/dsh/lib/bin.js` → `…/node_modules`。
+/// 逐级上溯找第一个名为 node_modules 的目录，不依赖固定层数（打包/受管布局不同）。
+pub(crate) fn node_modules_root_of_bin(bin: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut cur = bin.parent();
+    while let Some(dir) = cur {
+        if dir
+            .file_name()
+            .map(|n| n == "node_modules")
+            .unwrap_or(false)
+        {
+            return Some(dir.to_path_buf());
+        }
+        cur = dir.parent();
+    }
+    None
 }
 
 /// 从 `\\wsl$\<distro>\...` 的 DSH_HOME UNC 路径推导 WSL 启动用户。
@@ -840,8 +933,37 @@ mod tests {
             "root"
         );
     }
+
+    #[test]
+    fn node_modules_root_of_bin_walks_to_the_real_node_modules() {
+        // 受管与 bundled 两种布局都必须落在 node_modules 本体（不是 @deepseek-ai）
+        let managed = std::path::Path::new(
+            r"/Users/x/Library/Application Support/com.deepseekharness.wui/runtimes/0.1.2-rc.1/node_modules/@deepseek-ai/dsh/lib/bin.js",
+        );
+        assert_eq!(
+            node_modules_root_of_bin(managed).unwrap(),
+            std::path::Path::new(
+                "/Users/x/Library/Application Support/com.deepseekharness.wui/runtimes/0.1.2-rc.1/node_modules"
+            )
+        );
+        let bundled = std::path::Path::new(r"E:\Project\runtime\node_modules\@deepseek-ai\dsh\lib\bin.js");
+        assert_eq!(
+            node_modules_root_of_bin(bundled).unwrap(),
+            std::path::Path::new(r"E:\Project\runtime\node_modules")
+        );
+        assert!(node_modules_root_of_bin(std::path::Path::new("/tmp/loose/bin.js")).is_none());
+    }
+
+    #[test]
+    fn diagnose_exit_names_the_unresolvable_profile_bundle() {
+        let tail = vec![
+            "[09-15 23:25:35] [err] Error: dsh: cannot resolve profile bundle \"@dsh-external/dsh-super-injector\" from the dsh installation or C:\\Users\\x\\.dsh\\profiles\\web; run 'dsh plugin --profile web install' if its dependency is not installed".to_string(),
+        ];
+        let diag = diagnose_exit(&tail).expect("should diagnose profile bundle failure");
+        assert!(
+            diag.contains("@dsh-external/dsh-super-injector"),
+            "diag: {diag}"
+        );
+        assert!(diag.contains("bundles") && diag.contains("插件"), "diag: {diag}");
+    }
 }
-
-
-
-

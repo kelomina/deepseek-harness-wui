@@ -86,8 +86,10 @@ impl PluginHostManager {
     /// （对齐 routing_suite::resolve_suite_root 的三级回退模式）。
     fn resolve_entry(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-        if let Ok(p) = app.path().resolve("plugin-host", tauri::path::BaseDirectory::Resource) {
-            candidates.push(p);
+        // 资源键 `../plugin-host/**` 在安装包里落到 `$INSTDIR/_up_/plugin-host`
+        // （见 `dsh::resource_roots`），只试 Resource 会让打包版找不到 sidecar。
+        for root in crate::dsh::resource_roots(app) {
+            candidates.push(root.join("plugin-host"));
         }
         if let Ok(dir) = std::env::var("DSH_WUI_PLUGIN_HOST_DIR") {
             candidates.push(std::path::PathBuf::from(dir));
